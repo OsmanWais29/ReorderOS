@@ -33,9 +33,16 @@ def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
         settings = get_settings()
+        # Per-instance budget: 5 + 5 = 10 connections. With the dev-tier
+        # cluster's 47-connection cap, we can safely run 4 app instances
+        # (40 conns) while leaving headroom for migrations, psql, and
+        # background workers.
         _engine = create_async_engine(
             str(settings.database_url),
             pool_pre_ping=True,
+            pool_size=5,
+            max_overflow=5,
+            pool_recycle=1800,
             future=True,
         )
     return _engine

@@ -68,17 +68,25 @@ Copy the **access key** and **secret** — the secret is shown once.
 
 ## Step 3 — First-time app create
 
+The app should live in the same DigitalOcean project as the database
+("ReOrderOS"), so capture that project's id first:
+
 ```bash
+PROJECT_ID=$(doctl projects list --format ID,Name --no-header \
+  | awk '/ReOrderOS/{print $1}')
+echo "$PROJECT_ID"
+
 cd /path/to/ReorderOS
-doctl apps create --spec .do/app.yaml
+doctl apps create --spec .do/app.yaml --project-id "$PROJECT_ID"
 ```
 
 This:
 
 - Pulls the GitHub repo (`OsmanWais29/ReorderOS`, branch `main`).
 - Builds `backend/Dockerfile`.
-- Binds the `reorderos-dev-pg` cluster you just created (the spec references it
-  by `cluster_name`).
+- Binds the `reorderos-dev-pg` cluster you created (the spec references it
+  by `cluster_name`); since the cluster is in `default-tor1` VPC and the app
+  is also deployed to `tor1`, traffic is private — no public ingress on the DB.
 - Boots one `basic-xxs` instance behind a `*.ondigitalocean.app` URL.
 
 Capture the **App ID** (you need it for CI):

@@ -33,9 +33,17 @@ def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
         settings = get_settings()
-        # asyncpg requires ssl=True via connect_args in production;
-        # sslmode is stripped from the URL in config._normalize_postgres_url.
-        connect_args: dict[str, Any] = {"ssl": True} if settings.is_production else {}
+        # DigitalOcean managed DB uses a self-signed CA not in Python's trust
+        # store. We still encrypt the connection; we just skip chain verification
+        # since this is internal DO-to-DO traffic.
+        if settings.is_production:
+            import ssl as _ssl
+            _ctx = _ssl.create_default_context()
+            _ctx.check_hostname = False
+            _ctx.verify_mode = _ssl.CERT_NONE
+            connect_args: dict[str, Any] = {"ssl": _ctx}
+        else:
+            connect_args = {}
         # Per-instance budget: 5 + 5 = 10 connections. With the dev-tier
         # cluster's 47-connection cap, we can safely run 4 app instances
         # (40 conns) while leaving headroom for migrations, psql, and

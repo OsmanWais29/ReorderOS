@@ -33,12 +33,16 @@ def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
         settings = get_settings()
+        # asyncpg requires ssl=True via connect_args in production;
+        # sslmode is stripped from the URL in config._normalize_postgres_url.
+        connect_args: dict[str, Any] = {"ssl": True} if settings.is_production else {}
         # Per-instance budget: 5 + 5 = 10 connections. With the dev-tier
         # cluster's 47-connection cap, we can safely run 4 app instances
         # (40 conns) while leaving headroom for migrations, psql, and
         # background workers.
         _engine = create_async_engine(
             str(settings.database_url),
+            connect_args=connect_args,
             pool_pre_ping=True,
             pool_size=5,
             max_overflow=5,

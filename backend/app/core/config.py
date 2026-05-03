@@ -54,10 +54,19 @@ class Settings(BaseSettings):
     @field_validator("database_url", mode="before")
     @classmethod
     def _normalize_postgres_url(cls, v: object) -> object:
-        if isinstance(v, str) and v.startswith("postgresql://"):
-            return "postgresql+asyncpg://" + v[len("postgresql://") :]
-        if isinstance(v, str) and v.startswith("postgres://"):
-            return "postgresql+asyncpg://" + v[len("postgres://") :]
+        from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
+        if not isinstance(v, str):
+            return v
+        if v.startswith("postgresql://"):
+            v = "postgresql+asyncpg://" + v[len("postgresql://"):]
+        elif v.startswith("postgres://"):
+            v = "postgresql+asyncpg://" + v[len("postgres://"):]
+        # asyncpg uses connect_args={"ssl": True} — strip libpq-style sslmode
+        if "sslmode" in v:
+            parsed = urlparse(v)
+            params = {k: vals for k, vals in parse_qs(parsed.query).items() if k != "sslmode"}
+            v = urlunparse(parsed._replace(query=urlencode(params, doseq=True)))
         return v
 
     @property

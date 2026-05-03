@@ -43,7 +43,9 @@ jobs:
             echo "and store the returned app id as the GitHub secret."
             exit 1
           fi
-          DEP_ID=$(doctl apps update "$APP_ID" --spec .do/app.yaml --format ID --no-header --wait=false)
+          doctl apps update "$APP_ID" --spec .do/app.yaml --wait=false
+          sleep 5
+          DEP_ID=$(doctl apps list-deployments "$APP_ID" --format ID --no-header | head -1)
           echo "deployment_id=$DEP_ID" >> "$GITHUB_OUTPUT"
           echo "Triggered deployment: $DEP_ID"
 

@@ -6,7 +6,7 @@
 #   doctl apps update <APP_ID> --spec .do/app.yaml
 #
 # Prerequisites you must create in the DO console first:
-#   1. A Managed PostgreSQL 16 cluster named "reorderos-db" in tor1.
+#   1. A Managed PostgreSQL 16 cluster named "reorderos-dev-pg" in tor1.
 #   2. A Spaces bucket named "reorderos-receipts" in nyc3 (Spaces is not
 #      available in tor1 — see docs/deploy-digitalocean.md).
 #   3. The Spaces access key + secret stored as secret env vars below.
@@ -41,12 +41,12 @@ services:
       - key: APP_LOG_LEVEL
         scope: RUN_AND_BUILD_TIME
         value: INFO
-      # App Platform replaces ${reorderos-db.DATABASE_URL} with the live URL
-      # for the bound managed database below. Our Settings validator upgrades
-      # postgresql:// to postgresql+asyncpg:// at startup.
+      # App Platform replaces ${reorderos-dev-pg.DATABASE_URL} with the live
+      # URL for the bound managed database below. Our Settings validator
+      # upgrades postgresql:// to postgresql+asyncpg:// at startup.
       - key: DATABASE_URL
         scope: RUN_TIME
-        value: ${reorderos-db.DATABASE_URL}
+        value: ${reorderos-dev-pg.DATABASE_URL}
       # Sprint 2: Clerk JWT validation reads these.
       - key: CLERK_JWKS_URL
         scope: RUN_TIME
@@ -76,8 +76,11 @@ services:
         value: ""
 
 databases:
-  - name: reorderos-db
+  # `name` is the spec component name used by ${...DATABASE_URL} interpolation
+  # above. `cluster_name` must match the actual managed-DB name in your DO
+  # account exactly. Both are set to the real cluster name to keep them aligned.
+  - name: reorderos-dev-pg
     engine: PG
     version: "16"
     production: true
-    cluster_name: reorderos-db
+    cluster_name: reorderos-dev-pg

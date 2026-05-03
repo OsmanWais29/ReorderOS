@@ -29,7 +29,7 @@ doctl auth init     # paste a DO API token (Account → API → Generate New Tok
 ## Step 1 — Create the Managed Postgres cluster
 
 ```bash
-doctl databases create reorderos-db \
+doctl databases create reorderos-dev-pg \
   --engine pg \
   --version 16 \
   --region tor1 \
@@ -46,7 +46,7 @@ doctl databases list
 Capture the cluster id (you'll need it once, for trusted-source firewall):
 
 ```bash
-DB_ID=$(doctl databases list --format ID,Name --no-header | awk '/reorderos-db/{print $1}')
+DB_ID=$(doctl databases list --format ID,Name --no-header | awk '/reorderos-dev-pg/{print $1}')
 echo "$DB_ID"
 ```
 
@@ -77,7 +77,7 @@ This:
 
 - Pulls the GitHub repo (`OsmanWais29/ReorderOS`, branch `main`).
 - Builds `backend/Dockerfile`.
-- Binds the `reorderos-db` cluster you just created (the spec references it
+- Binds the `reorderos-dev-pg` cluster you just created (the spec references it
   by `cluster_name`).
 - Boots one `basic-xxs` instance behind a `*.ondigitalocean.app` URL.
 
@@ -143,7 +143,7 @@ Postgres cluster.** Specifically `/health/ready` returning `{"status":"ok",
 - the App Platform service is up,
 - the bound managed Postgres cluster is reachable from the app's VPC,
 - async SQLAlchemy + asyncpg are working over TLS,
-- the DO-injected `${reorderos-db.DATABASE_URL}` was correctly normalized
+- the DO-injected `${reorderos-dev-pg.DATABASE_URL}` was correctly normalized
   by `app.core.config` from `postgresql://` → `postgresql+asyncpg://`.
 
 ---

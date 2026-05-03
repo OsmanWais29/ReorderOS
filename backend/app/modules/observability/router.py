@@ -36,6 +36,12 @@ async def ready(response: Response) -> dict[str, Any]:
     return {"status": "ok", **db}
 
 
+@router.get("/health/startup", summary="Startup probe")
+async def startup() -> dict[str, str]:
+    """Process has finished initializing. Mirrors liveness for App Platform."""
+    return {"status": "ok"}
+
+
 @router.get("/version", summary="Build info")
 async def version() -> dict[str, str]:
     return {"version": __version__}

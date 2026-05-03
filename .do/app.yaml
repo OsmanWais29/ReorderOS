@@ -81,6 +81,6 @@ databases:
   # account exactly. Both are set to the real cluster name to keep them aligned.
   - name: reorderos-dev-pg
     engine: PG
-    version: "16"
+    version: "17"
     production: true
     cluster_name: reorderos-dev-pg

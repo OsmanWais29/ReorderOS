@@ -113,3 +113,4 @@ jobs:
             echo "- /health/ready: see above (proves Postgres connectivity)"
             echo "- /version: see above"
           } >> "$GITHUB_STEP_SUMMARY"
+

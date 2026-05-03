@@ -1,0 +1,39 @@
+{
+  "expo": {
+    "name": "ReOrderOS",
+    "slug": "reorderos",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "reorderos",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0b0b0d"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.reorderos.app",
+      "infoPlist": {
+        "NSFaceIDUsageDescription": "ReOrderOS uses Face ID to unlock the app and approve purchase orders."
+      }
+    },
+    "android": {
+      "package": "com.reorderos.app",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0b0b0d"
+      }
+    },
+    "plugins": [
+      "expo-router",
+      "expo-font",
+      "expo-local-authentication"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

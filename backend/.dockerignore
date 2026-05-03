@@ -16,3 +16,4 @@ tests/
 docs/
 openapi.json
 *.md
+!README.md

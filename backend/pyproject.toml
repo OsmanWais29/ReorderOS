@@ -16,6 +16,7 @@ dependencies = [
     "httpx>=0.27",
     "structlog>=24.4",
     "python-json-logger>=2.0",
+    "boto3>=1.35",
 ]
 
 [project.optional-dependencies]
@@ -78,7 +79,7 @@ disallow_incomplete_defs = true
 exclude = "alembic/versions"
 
 [[tool.mypy.overrides]]
-module = ["asyncpg.*", "alembic.*"]
+module = ["asyncpg.*", "alembic.*", "boto3.*", "botocore.*"]
 ignore_missing_imports = true
 
 # ── pytest ────────────────────────────────────────────────────────────────────

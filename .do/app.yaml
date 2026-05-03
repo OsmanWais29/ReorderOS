@@ -1,0 +1,83 @@
+# DigitalOcean App Platform spec for ReorderOS API.
+#
+# First deploy:
+#   doctl apps create --spec .do/app.yaml
+# Subsequent deploys (also done by .github/workflows/deploy.yml):
+#   doctl apps update <APP_ID> --spec .do/app.yaml
+#
+# Prerequisites you must create in the DO console first:
+#   1. A Managed PostgreSQL 16 cluster named "reorderos-db" in tor1.
+#   2. A Spaces bucket named "reorderos-receipts" in nyc3 (Spaces is not
+#      available in tor1 — see docs/deploy-digitalocean.md).
+#   3. The Spaces access key + secret stored as secret env vars below.
+
+name: reorderos-api
+region: tor1
+
+services:
+  - name: api
+    github:
+      repo: OsmanWais29/ReorderOS
+      branch: main
+      deploy_on_push: true
+    source_dir: backend
+    dockerfile_path: backend/Dockerfile
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    health_check:
+      http_path: /health/ready
+      initial_delay_seconds: 20
+      period_seconds: 15
+      timeout_seconds: 5
+      success_threshold: 1
+      failure_threshold: 3
+    routes:
+      - path: /
+    envs:
+      - key: APP_ENV
+        scope: RUN_AND_BUILD_TIME
+        value: production
+      - key: APP_LOG_LEVEL
+        scope: RUN_AND_BUILD_TIME
+        value: INFO
+      # App Platform replaces ${reorderos-db.DATABASE_URL} with the live URL
+      # for the bound managed database below. Our Settings validator upgrades
+      # postgresql:// to postgresql+asyncpg:// at startup.
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: ${reorderos-db.DATABASE_URL}
+      # Sprint 2: Clerk JWT validation reads these.
+      - key: CLERK_JWKS_URL
+        scope: RUN_TIME
+        type: SECRET
+        value: ""
+      - key: CLERK_ISSUER
+        scope: RUN_TIME
+        type: SECRET
+        value: ""
+      # Sprint 6: Spaces (S3-compatible) used by receipts photo uploads.
+      - key: DO_SPACES_ENDPOINT
+        scope: RUN_TIME
+        value: https://nyc3.digitaloceanspaces.com
+      - key: DO_SPACES_REGION
+        scope: RUN_TIME
+        value: nyc3
+      - key: DO_SPACES_BUCKET
+        scope: RUN_TIME
+        value: reorderos-receipts
+      - key: DO_SPACES_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: ""
+      - key: DO_SPACES_SECRET
+        scope: RUN_TIME
+        type: SECRET
+        value: ""
+
+databases:
+  - name: reorderos-db
+    engine: PG
+    version: "16"
+    production: true
+    cluster_name: reorderos-db

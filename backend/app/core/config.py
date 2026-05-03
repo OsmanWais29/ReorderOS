@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["local", "ci", "staging", "production"]
@@ -32,8 +32,9 @@ class Settings(BaseSettings):
     app_port: int = Field(default=8000, alias="APP_PORT")
 
     # ── Database ─────────────────────────────────────────────────────────────
-    # Async DSN (asyncpg). Stored as plain str so SQLAlchemy can consume it
-    # directly; we only need it to be syntactically valid.
+    # Async DSN (asyncpg). DigitalOcean App Platform injects ``postgresql://``
+    # when binding a managed database; the validator upgrades that to the
+    # asyncpg driver scheme so the engine works without a separate env var.
     database_url: str = Field(
         default="postgresql+asyncpg://reorderos:reorderos@localhost:5432/reorderos",
         alias="DATABASE_URL",
@@ -42,6 +43,22 @@ class Settings(BaseSettings):
     # ── Auth (filled in Sprint 2) ────────────────────────────────────────────
     clerk_jwks_url: str | None = Field(default=None, alias="CLERK_JWKS_URL")
     clerk_issuer: str | None = Field(default=None, alias="CLERK_ISSUER")
+
+    # ── Object storage (DigitalOcean Spaces; lazy-init in app.core.storage) ──
+    spaces_endpoint: str | None = Field(default=None, alias="DO_SPACES_ENDPOINT")
+    spaces_region: str | None = Field(default=None, alias="DO_SPACES_REGION")
+    spaces_bucket: str | None = Field(default=None, alias="DO_SPACES_BUCKET")
+    spaces_key: str | None = Field(default=None, alias="DO_SPACES_KEY")
+    spaces_secret: str | None = Field(default=None, alias="DO_SPACES_SECRET")
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def _normalize_postgres_url(cls, v: object) -> object:
+        if isinstance(v, str) and v.startswith("postgresql://"):
+            return "postgresql+asyncpg://" + v[len("postgresql://") :]
+        if isinstance(v, str) and v.startswith("postgres://"):
+            return "postgresql+asyncpg://" + v[len("postgres://") :]
+        return v
 
     @property
     def is_production(self) -> bool:

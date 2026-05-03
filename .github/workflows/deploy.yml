@@ -1,0 +1,115 @@
+name: deploy-digitalocean
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".do/app.yaml"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-do
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy + smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Validate app spec
+        run: doctl apps spec validate .do/app.yaml
+
+      - name: Push spec → trigger deployment
+        id: deploy
+        env:
+          APP_ID: ${{ secrets.DIGITALOCEAN_APP_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_ID}" ]; then
+            echo "DIGITALOCEAN_APP_ID secret is empty. First-time setup: run"
+            echo "  doctl apps create --spec .do/app.yaml"
+            echo "and store the returned app id as the GitHub secret."
+            exit 1
+          fi
+          DEP_ID=$(doctl apps update "$APP_ID" --spec .do/app.yaml --format ID --no-header --wait=false)
+          echo "deployment_id=$DEP_ID" >> "$GITHUB_OUTPUT"
+          echo "Triggered deployment: $DEP_ID"
+
+      - name: Wait for deployment to go live
+        env:
+          APP_ID: ${{ secrets.DIGITALOCEAN_APP_ID }}
+          DEP_ID: ${{ steps.deploy.outputs.deployment_id }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            phase=$(doctl apps get-deployment "$APP_ID" "$DEP_ID" --format Phase --no-header)
+            echo "[$i/60] phase=$phase"
+            case "$phase" in
+              ACTIVE) exit 0 ;;
+              ERROR|CANCELED|SUPERSEDED) exit 1 ;;
+            esac
+            sleep 15
+          done
+          echo "Deployment did not reach ACTIVE in 15 minutes."
+          exit 1
+
+      - name: Resolve live URL
+        id: url
+        env:
+          APP_ID: ${{ secrets.DIGITALOCEAN_APP_ID }}
+        run: |
+          URL=$(doctl apps get "$APP_ID" --format DefaultIngress --no-header)
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Live URL: $URL"
+
+      - name: Smoke /health/live
+        env:
+          URL: ${{ steps.url.outputs.url }}
+        run: |
+          set -euo pipefail
+          body=$(curl -fsS --retry 5 --retry-delay 5 --max-time 10 "$URL/health/live")
+          echo "live: $body"
+          [ "$body" = '{"status":"ok"}' ]
+
+      - name: Smoke /health/ready (DB connectivity)
+        env:
+          URL: ${{ steps.url.outputs.url }}
+        run: |
+          set -euo pipefail
+          body=$(curl -fsS --retry 5 --retry-delay 5 --max-time 10 "$URL/health/ready")
+          echo "ready: $body"
+          echo "$body" | grep -q '"status":"ok"'
+          echo "$body" | grep -q '"db":"ok"'
+
+      - name: Smoke /version
+        env:
+          URL: ${{ steps.url.outputs.url }}
+        run: |
+          set -euo pipefail
+          body=$(curl -fsS --retry 5 --retry-delay 5 --max-time 10 "$URL/version")
+          echo "version: $body"
+          echo "$body" | grep -q '"version"'
+
+      - name: Summary
+        if: always()
+        env:
+          URL: ${{ steps.url.outputs.url }}
+        run: |
+          {
+            echo "## Deploy summary"
+            echo ""
+            echo "- App URL: ${URL:-unknown}"
+            echo "- /health/live: see above"
+            echo "- /health/ready: see above (proves Postgres connectivity)"
+            echo "- /version: see above"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,4761 @@
+
+
+
+
+REORDEROS
+
+
+
+Canadian Restaurant Product Bible
+
+
+
+v3.0 — Cafés &amp; Independent Restaurants · iOS-First · Recipe-Native · Moat-Driven
+
+
+
+Product Requirements Document, Moat Playbook, and Pre-Launch Checklist
+
+
+
+April 2026
+
+
+
+
+
+
+
+
+What Changed in v3 (and Why)
+
+
+
+The v2 Bible described a generic, multi-vertical inventory app aimed at Egyptian SMBs. v3 narrows the product to one vertical, one geography, and one platform so that every design choice compounds rather than competing with itself.
+
+
+
+
+
+Three forcing decisions
+
+
+
+Dimension
+
+
+
+v2 (previous)
+
+
+
+v3 (this document)
+
+
+
+Why it matters
+
+
+
+Vertical
+
+
+
+Retail / pharmacy / warehouse / restaurant / auto parts
+
+
+
+Independent cafés and restaurants only
+
+
+
+Restaurants require a recipe/BOM layer that is useless to retail. Building both well is two products; building one well is one product.
+
+
+
+Geography
+
+
+
+Egypt (EGP primary, Arabic/English)
+
+
+
+Canada (CAD primary, English with Québec French in Phase 2)
+
+
+
+Different regulations, different suppliers, different POS incumbents, different payment rails. The Bible must match the geography it targets.
+
+
+
+Platform
+
+
+
+iOS + PWA (Capacitor)
+
+
+
+iOS-first with PWA fallback
+
+
+
+Canadian restaurant owners and front-of-house staff carry iPhones in far higher proportion than Android. Ship one good app before shipping two mediocre ones.
+
+
+
+Agent
+
+
+
+Rule-based EWMA only, branded as &apos;not an LLM&apos;
+
+
+
+Hybrid: rule-based forecast + optional LLM reasoning layer for anomaly explanation and prep-list generation
+
+
+
+A pure rules engine is a commodity. A forecast tightly coupled to natural-language explanations becomes defensible (see Part 9 — Moat).
+
+
+
+Moat strategy
+
+
+
+Implicit
+
+
+
+Explicit three-layer moat: data network effects, supplier marketplace, proprietary forecasting. Every feature is labelled by which moat layer it feeds.
+
+
+
+Without an articulated moat, this is a nice app that Toast or Square can replicate in a quarter.
+
+
+
+
+
+What carries over from v2
+
+
+
+
+
+The no-WhatsApp architecture stays: native iOS push via APNs, in-app bot, iOS Share Sheet for PO delivery.
+
+
+
+
+
+Row-level-security-first Supabase backend stays.
+
+
+
+
+
+The 7-step purchasing flow (Detect → Draft → Notify → Review → Send → Track → Learn) stays, adapted for Canadian distributors.
+
+
+
+
+
+PIN approval, audit log, cold-start blending, confidence scoring all stay.
+
+
+
+
+
+What is removed
+
+
+
+
+
+All Arabic/RTL code paths (kept in i18n infrastructure, not actively maintained). French-Canadian is Phase 2.
+
+
+
+
+
+All Egyptian-specific POS integrations (Foodics, Geidea, Fawry) — replaced with Square for Restaurants, Toast, Lightspeed Restaurant, and TouchBistro.
+
+
+
+
+
+EGP and 15 other non-Canadian currencies from the onboarding default set. CAD is primary; USD is secondary (for Canadian restaurants buying US-dollar imports).
+
+
+
+
+
+The pharmacy sample data used to seed the current codebase.
+
+
+
+
+
+What is new
+
+
+
+
+
+Recipe and BOM subsystem (menu items → ingredients with unit conversion).
+
+
+
+
+
+Prep-list workflow (tomorrow&apos;s mise en place).
+
+
+
+
+
+Waste event tracking, with variance reporting (theoretical vs actual food cost).
+
+
+
+
+
+Day-of-week and daypart seasonality in the forecast.
+
+
+
+
+
+Benchmark network (anonymized peer comparisons — the first moat layer).
+
+
+
+
+
+Supplier marketplace architecture (two-sided platform — the second moat layer).
+
+
+
+
+
+Proprietary hierarchical forecasting (the third moat layer).
+
+
+
+
+
+CRA-compliant data retention, PIPEDA privacy framing, HACCP-aware waste logs.
+
+
+
+
+
+
+
+
+Part 1 — Canadian Restaurant Market &amp; Strategic Positioning
+
+
+
+
+
+1.1 The market we are entering
+
+
+
+Canada&apos;s foodservice industry is roughly $115 billion CAD annually with approximately 100,000 establishments and 1.2 million employees. Full-service restaurants account for ~$49.5 billion and 79,000+ locations, growing at a 1.1% CAGR. Fast-food adds ~$37 billion and 21,000+ locations. (Sources: Restaurants Canada Foodservice Facts 2025, Statistics Canada.)
+
+
+
+Traffic rose 3.2% in H1 2025 and consumer spending rose 5.7%, but this was driven almost entirely by price inflation, not real growth. Food cost pressure is the operator&apos;s number-one pain: 46.5% of Canadian operators call ingredient costs the biggest pricing challenge, and 78% say supplier costs have forced menu price changes. The typical independent restaurant runs food cost between 28% and 35% of revenue; best-in-class is under 28%.
+
+
+
+Why this matters for us
+
+
+
+Every percentage point of food cost we save an operator is worth, for a $1M revenue restaurant, $10,000 in recovered gross margin. That is a concrete, honest ROI anchor. We do not need to promise magic. Saving 1.5% of food cost — from waste reduction, better ordering, and supplier price visibility — pays for a $199/mo subscription sixty times over.
+
+
+
+
+
+1.2 The three customer segments
+
+
+
+Not every independent restaurant is a good first customer. We segment by operational complexity and owner sophistication, and we start at the sweet spot.
+
+
+
+Segment
+
+
+
+Profile
+
+
+
+Volume in Canada
+
+
+
+Fit for v1
+
+
+
+Independent cafés &amp; QSR
+
+
+
+1–2 locations, counter service, 30–150 SKUs of raw ingredients, 20–80 menu items. Owner-operator. Uses Square for Restaurants or Clover.
+
+
+
+~25,000–35,000
+
+
+
+PRIMARY TARGET
+
+
+
+Independent full-service
+
+
+
+1–3 locations, table service, 150–400 SKUs, 40–150 menu items with modifiers. Often uses TouchBistro, Lightspeed, or Toast.
+
+
+
+~20,000–25,000
+
+
+
+SECONDARY (v1.2)
+
+
+
+Chains &amp; franchises
+
+
+
+4+ locations, centralized commissary, complex procurement with vendor rebates.
+
+
+
+~8,000 groups controlling ~30,000 locations
+
+
+
+Out of scope for v1. Revisit at Phase 3.
+
+
+
+Hotels, institutional
+
+
+
+Healthcare, education, hotel F&amp;B. Purchasing handled by national contracts.
+
+
+
+—
+
+
+
+Out of scope.
+
+
+
+
+
+1.3 Competitive landscape
+
+
+
+The Canadian restaurant inventory-management market is not empty. It is, however, fragmented along a specific fault line that we exploit.
+
+
+
+Competitor
+
+
+
+What it does well
+
+
+
+What it doesn&apos;t do
+
+
+
+Our wedge
+
+
+
+MarketMan
+
+
+
+Broad inventory, decent recipe costing, Canadian customers.
+
+
+
+Slow, clunky UI; expensive (~$239 USD/mo); no forecasting worth the name; not mobile-native.
+
+
+
+Mobile-first, forecast-led, half the price.
+
+
+
+Craftable / Bevager
+
+
+
+Strong for bars and beverage programs.
+
+
+
+Food side is weaker; US-centric supplier integrations; onboarding takes weeks.
+
+
+
+Food-side parity, Canadian supplier data, 20-minute onboarding.
+
+
+
+xtraCHEF by Toast
+
+
+
+Tight Toast integration, invoice OCR.
+
+
+
+Only useful if you are already on Toast. ~1.8% of Canadian restaurant POS market.
+
+
+
+Works on every POS, not just Toast.
+
+
+
+Square for Restaurants inventory
+
+
+
+Free if you use Square.
+
+
+
+Surface-level counts only, no recipes, no forecasting, no variance reports.
+
+
+
+We plug into Square and do the work Square refuses to do.
+
+
+
+Optimum Control (TracRite)
+
+
+
+Mature, deep, used by many Canadian chains.
+
+
+
+Desktop-era software, server installs, no mobile, no modern API.
+
+
+
+Modern stack, API-first, 1/10 the setup time.
+
+
+
+Spreadsheets
+
+
+
+Free, flexible.
+
+
+
+No forecasting, no alerts, no audit trail, breaks at scale.
+
+
+
+Everything a spreadsheet can&apos;t do.
+
+
+
+The wedge sentence
+
+
+
+&quot;The inventory app your café should have had five years ago: it tells you what you&apos;ll run out of, drafts the order, and lets you send it in three taps — without forcing you off the POS you already use.&quot;
+
+
+
+
+
+1.4 Pricing — Canadian reality
+
+
+
+Canadian independent restaurant operators are aggressively price-sensitive and deeply skeptical of SaaS. 60%+ already feel squeezed by POS fees, payment processing, third-party delivery, and subscription software. Any new line item triggers immediate push-back. Pricing is therefore a wedge feature, not just a revenue lever.
+
+
+
+Tier
+
+
+
+What&apos;s included
+
+
+
+Price (CAD/mo)
+
+
+
+Gross margin at scale
+
+
+
+Starter
+
+
+
+1 location · ≤75 SKUs · 50 menu items · 1 user · forecasts · POs · Share-to-Supplier
+
+
+
+$49
+
+
+
+~96%
+
+
+
+Pro
+
+
+
+1 location · unlimited SKUs · unlimited menu items · 5 users · benchmarks · variance reports · Square/Toast/Lightspeed POS sync · invoice OCR
+
+
+
+$129
+
+
+
+~96%
+
+
+
+Multi
+
+
+
+Up to 5 locations · commissary view · consolidated POs · API access
+
+
+
+$299 per HQ + $49/extra location
+
+
+
+~97%
+
+
+
+Annual discount
+
+
+
+Pay 12, get 2 free
+
+
+
+—
+
+
+
+—
+
+
+
+Comparison: MarketMan runs ~$239 USD (~$330 CAD) for a comparable tier. xtraCHEF is bundled into Toast pricing starting at $69+ USD/location. We come in at less than half of MarketMan&apos;s price at the Pro tier with stronger forecasting and native mobile. That price gap is deliberate — it makes the switching decision a no-brainer for owner-operators who do their own math.
+
+
+
+
+
+1.5 Why Canada first (and not the United States)
+
+
+
+
+
+Smaller, more contained market. ~45,000 addressable independent restaurants and cafés. Big enough to build a real business ($50M+ ARR possible), small enough that a single focused team can dominate the mindshare.
+
+
+
+
+
+POS concentration is low. Toast has ~1.8% of Canadian POS market vs ~23% in the US. Square leads but Lightspeed (a Canadian company) and TouchBistro (Canadian) have meaningful share. No single POS owns the inventory layer. The integration wedge is wider than in the US.
+
+
+
+
+
+Bilingual regulatory complexity is a barrier to entry. PIPEDA, Québec Law 25, CRA bookkeeping retention, provincial FoodSafe, HACCP — US-built competitors treat these as an afterthought. We treat them as first-class.
+
+
+
+
+
+Supplier landscape is duopolistic. Sysco Canada and GFS Canada dominate broadline distribution. Two dominant players is easier to integrate with than the fragmented US distributor market. If we get Sysco and GFS onboarded to our supplier marketplace, we cover 60%+ of our customers&apos; order volume.
+
+
+
+
+
+Lower CAC. Restaurant associations are provincial and approachable (Restaurants Canada; Ontario Restaurant Hotel &amp; Motel Association; Association Restauration Québec). Association sponsorships deliver qualified leads far cheaper than Google Ads in the US.
+
+
+
+
+
+It&apos;s where the team is. Local operator interviews, in-kitchen testing, and supplier calls happen in days, not weeks.
+
+
+
+
+
+
+
+
+Part 2 — Architecture Overview
+
+
+
+
+
+2.1 The stack in one table
+
+
+
+Layer
+
+
+
+Technology
+
+
+
+Why this choice
+
+
+
+Mobile app
+
+
+
+React + Vite + TypeScript, wrapped in Capacitor for iOS
+
+
+
+One codebase, native feel, Share Sheet + APNs + Haptics + Badge via Capacitor plugins.
+
+
+
+Frontend state
+
+
+
+TanStack Query
+
+
+
+Cache invalidation is a solved problem; we do not re-solve it.
+
+
+
+Backend
+
+
+
+Supabase (Postgres 15 + Edge Functions + Auth + Realtime + Storage)
+
+
+
+Single vendor, Canadian data residency available via Supabase region selection, mature RLS story, Row Level Security as the core security primitive.
+
+
+
+Data residency
+
+
+
+Supabase ca-central-1 (Montréal)
+
+
+
+PIPEDA-friendly, Québec Law 25-compliant, short network path for Canadian users.
+
+
+
+Scheduled jobs
+
+
+
+pg_cron
+
+
+
+Built into Supabase Pro. No Lambda, no extra vendor.
+
+
+
+Push
+
+
+
+APNs via a send-push Edge Function with JWT-signed auth (jose library)
+
+
+
+Free, reliable, owned by us end-to-end.
+
+
+
+Forecasting
+
+
+
+TypeScript math in Edge Function (rule-based) + optional Anthropic Claude API call for anomaly explanation
+
+
+
+Deterministic math for the hot path; LLM only for the narrative layer. Per-call cost stays pennies.
+
+
+
+Invoice OCR
+
+
+
+Anthropic Claude with vision (uploaded invoice PDFs/photos)
+
+
+
+No separate OCR vendor, no per-page contract. We pay cents per invoice, not dollars.
+
+
+
+POS sync
+
+
+
+Webhooks in, Edge Functions route to sales table
+
+
+
+Square, Toast, Lightspeed Restaurant, and TouchBistro all support webhooks.
+
+
+
+Payments (for us, to collect subscription)
+
+
+
+Stripe Billing
+
+
+
+Canadian merchant of record via Stripe Canada; HST/GST/PST handled via Stripe Tax.
+
+
+
+Observability
+
+
+
+Sentry (errors) + Supabase logs + PostHog (product analytics)
+
+
+
+PostHog self-host option keeps analytics in Canada if we need it.
+
+
+
+App distribution
+
+
+
+Apple App Store (Canadian storefront)
+
+
+
+Avoids TestFlight-only anti-patterns; Apple reviews apps from Canadian developer accounts normally.
+
+
+
+
+
+2.2 What runs where
+
+
+
+
+
+Hot path (user taps a button): React → Supabase client → RLS-gated query. 95th percentile &lt;300ms.
+
+
+
+
+
+Cold path (agent run, 2 AM America/Toronto per tenant): pg_cron fires → agent-scheduler Edge Function → fans out to agent-daily-run per tenant → writes forecasts, POs, and queued push notifications.
+
+
+
+
+
+LLM path (optional, &lt;5% of runs): Edge Function calls Claude via the Anthropic API when a forecast anomaly exceeds 3σ or when the user clicks &quot;Explain this&quot;. Falls back gracefully if API errors.
+
+
+
+
+
+Webhook path (continuous, when POS is connected): Square/Toast/Lightspeed/TouchBistro → signed webhook → pos-webhook Edge Function → insert into sales with normalized menu item match.
+
+
+
+
+
+
+
+
+Part 3 — The Restaurant Data Model
+
+
+
+This is the section where v3 diverges most from v2. Restaurants do not sell SKUs directly; they sell menu items whose recipes consume SKUs. Every downstream feature — forecasting, variance, prep lists, waste tracking — depends on getting this model right.
+
+
+
+
+
+3.1 The conceptual model
+
+
+
+Seven entities carry the restaurant domain. Read these in order; each builds on the previous one.
+
+
+
+Entity
+
+
+
+Real-world meaning
+
+
+
+Example
+
+
+
+inventory_item
+
+
+
+A physical thing bought and stored. SKU-level.
+
+
+
+Chicken thigh, boneless, 10kg case
+
+
+
+unit_of_measure
+
+
+
+How you buy it, how you use it, and the conversion between them.
+
+
+
+Buy: case (10kg). Use: gram. 1 case = 10,000 grams.
+
+
+
+menu_item
+
+
+
+A thing a guest orders.
+
+
+
+Chicken Shawarma Plate
+
+
+
+recipe
+
+
+
+The bill of materials for a menu item or a prep batch.
+
+
+
+For 1 plate: 180g chicken, 1 pita, 20g garlic sauce, 40g tomato.
+
+
+
+sub_recipe (prep item)
+
+
+
+A recipe whose output is itself an ingredient in other recipes.
+
+
+
+Garlic sauce: 500g yogurt + 50g garlic + 30g lemon → yields 560g sauce.
+
+
+
+location (station)
+
+
+
+Where stock physically lives.
+
+
+
+Walk-in cooler, line reach-in, dry storage, prep bench.
+
+
+
+waste_event
+
+
+
+A unit of inventory destroyed without revenue.
+
+
+
+End of day: 0.8kg of cooked rice discarded.
+
+
+
+
+
+3.2 The full schema
+
+
+
+Tables new or materially changed from v2 are marked with ★.
+
+
+
+
+
+Tenant &amp; identity
+
+
+
+
+
+businesses — id, name, legal_name, hst_number, currency (CAD default), timezone (America/Toronto default), locale (en-CA default), business_type (enum: cafe, qsr, casual_dining, fine_dining, bar, ghost_kitchen), address, logo_url, stripe_customer_id, subscription_status, trial_ends_at, created_at.
+
+
+
+
+
+profiles — id, user_id (FK auth.users), business_id (FK), full_name, phone, role_in_restaurant (owner, manager, chef, server, other), pin_hash (bcrypt), pin_attempts, pin_locked_until, preferred_language (en, fr).
+
+
+
+
+
+user_roles — id, user_id, business_id, role (admin, manager, line, viewer). Multi-business support via the composite key.
+
+
+
+
+
+locations ★ — id, business_id, name, address, timezone, type (storefront, commissary). For multi-location tenants.
+
+
+
+
+
+Inventory core
+
+
+
+
+
+categories ★ — id, business_id, name, parent_id, color, icon, sort_order. Supports two levels (e.g., Proteins &gt; Poultry).
+
+
+
+
+
+units_of_measure ★ — id, code (g, kg, oz, lb, ml, L, each, case), kind (weight, volume, count), base_code. System-seeded; tenants cannot edit.
+
+
+
+
+
+inventory_items ★ — id, business_id, category_id, name, sku, brand, default_supplier_id, purchase_unit_id, storage_unit_id, recipe_unit_id, purchase_to_storage_factor, storage_to_recipe_factor, current_stock (in storage units), par_level, safety_stock, unit_cost, last_unit_cost_date, shelf_life_days, storage_location_id, risk_score, confidence_score, avg_daily_demand, last_forecast_at, is_sub_recipe (bool).
+
+
+
+
+
+unit_conversions ★ — id, business_id, item_id, from_unit, to_unit, factor, source (system, user). For item-specific conversions (a case of tomatoes is 25lb for Ontario Food Terminal but 30lb from GFS — density varies).
+
+
+
+
+
+stock_movements ★ — id, business_id, item_id, location_id, quantity, unit_id, movement_type (purchase, sale_depletion, waste, transfer_in, transfer_out, adjustment, count_correction, prep_consumption, prep_production), reference_type (po, sale, waste_event, prep_batch, count), reference_id, created_by, created_at. Append-only.
+
+
+
+
+
+Menu &amp; recipes (the restaurant layer)
+
+
+
+
+
+menu_items ★ — id, business_id, name, pos_external_id, pos_platform, category_id, price, active, station (kitchen, grill, cold, bar, pastry, expo), daypart_tags[]. POS external ID enables matching incoming sales webhooks to our menu items.
+
+
+
+
+
+menu_item_modifiers ★ — id, menu_item_id, modifier_name, extra_ingredients (jsonb: ingredient + qty pairs). Handles &quot;add extra chicken,&quot; &quot;no cheese,&quot; &quot;sub fries for salad.&quot;
+
+
+
+
+
+recipes ★ — id, business_id, target_type (menu_item, sub_recipe), target_id, yield_quantity, yield_unit_id, prep_time_minutes, notes, active_from, active_to. Versioned: changing a recipe creates a new row with active_from = now() so historical depletion math stays correct.
+
+
+
+
+
+recipe_ingredients ★ — id, recipe_id, ingredient_type (inventory_item, sub_recipe), ingredient_id, quantity, unit_id, is_optional, notes.
+
+
+
+
+
+prep_batches ★ — id, business_id, sub_recipe_id, planned_qty, produced_qty, produced_unit_id, made_by, made_at, consumed_at, notes. Records that a prep item was produced (consumes raw ingredients, creates stock of the prep item).
+
+
+
+
+
+Sales &amp; waste
+
+
+
+
+
+sales ★ — id, business_id, location_id, menu_item_id (nullable for generic sales), menu_item_external_id, item_name, quantity, unit_price, total, source (manual, square, toast, lightspeed, touchbistro, cashier_mode), payment_method, pos_ticket_id, sold_at. Triggers recipe-based depletion on insert.
+
+
+
+
+
+waste_events ★ — id, business_id, location_id, item_id (inventory or sub-recipe), quantity, unit_id, reason (expired, spoiled, prep_overproduction, cooking_error, dropped, end_of_day, staff_meal, comp), logged_by, logged_at. Feeds variance reporting.
+
+
+
+
+
+Suppliers &amp; purchasing
+
+
+
+
+
+suppliers ★ — id, business_id, name, contact_name, phone, whatsapp, email, website, default_lead_days, minimum_order_amount, currency, delivery_days[] (bitmask of Mon-Sun), notes, is_connected_to_marketplace (bool — see Part 9).
+
+
+
+
+
+purchase_orders ★ — id, business_id, supplier_id, po_number, status (draft, approved, sent, confirmed, partial, delivered, cancelled), currency, subtotal, tax, total, requested_delivery_date, created_by, approved_by, approved_at, sent_at, sent_via (whatsapp, email, sms, marketplace, other), delivered_at, created_at. One row = one PO to one supplier.
+
+
+
+
+
+po_line_items ★ — id, po_id, item_id, quantity, unit_id, unit_cost, line_total, notes. The items inside a PO.
+
+
+
+
+
+invoices ★ — id, business_id, supplier_id, po_id (nullable), file_url, ocr_status, ocr_json, subtotal, tax, total, invoice_date, received_date, reconciled (bool). Feeds supplier price tracking and three-way match (PO vs invoice vs delivery).
+
+
+
+
+
+Agent &amp; notifications
+
+
+
+
+
+forecasts ★ — id, business_id, item_id, forecast_date, horizon_days, avg_daily_demand, std_dev, safety_stock, reorder_point, days_of_cover, risk_score, confidence_score, forecast_json (raw model output). One row per item per run.
+
+
+
+
+
+agent_runs ★ — id, business_id, run_type (forecast, brief, anomaly_scan), items_analyzed, pos_drafted, errors_count, started_at, finished_at.
+
+
+
+
+
+bot_messages ★ — id, business_id, user_id, direction (user, bot), content, command_parsed, metadata_json, created_at.
+
+
+
+
+
+notification_preferences ★ — id, user_id, business_id, daily_brief (bool), stockout_alerts, po_updates, variance_alerts, anomaly_alerts, quiet_hours_start, quiet_hours_end, timezone.
+
+
+
+
+
+device_tokens ★ — id, user_id, token, platform (ios, web), last_seen, created_at.
+
+
+
+
+
+Audit &amp; compliance
+
+
+
+
+
+audit_log ★ — id, business_id, user_id, action, entity_type, entity_id, before_json, after_json, ip_address, user_agent, created_at. INSERT-only RLS. 7-year retention for CRA.
+
+
+
+
+
+data_exports ★ — id, business_id, requested_by, scope, status, file_url, expires_at. Supports PIPEDA right-of-access requests.
+
+
+
+
+
+3.3 The recipe-to-depletion mechanism
+
+
+
+When a sale is inserted, we do not decrement one SKU by one; we walk the recipe tree.
+
+
+
+Example. A guest orders 2× &quot;Chicken Shawarma Plate&quot;. The POS webhook fires. The pos-webhook Edge Function inserts a sales row with quantity=2 and menu_item_id matching the POS external ID. An AFTER INSERT trigger on sales calls a stored procedure deplete_from_sale(sale_id) which:
+
+
+
+
+
+Looks up the active recipe for that menu_item_id (the one whose active_from ≤ sold_at AND active_to IS NULL OR &gt; sold_at).
+
+
+
+
+
+For each recipe_ingredient, multiplies quantity × sales.quantity. So 180g chicken × 2 plates = 360g chicken total.
+
+
+
+
+
+If the ingredient is a sub-recipe (e.g., garlic sauce), it recurses: 20g of garlic sauce × 2 plates = 40g sauce, which is then decomposed into yogurt + garlic + lemon using the garlic sauce&apos;s own recipe. Sub-recipes deduct from the sub-recipe&apos;s own stock first (we produced a batch yesterday); only if that stock is exhausted do we deplete the raw ingredients.
+
+
+
+
+
+Writes a stock_movements row for each deducted ingredient with movement_type=&apos;sale_depletion&apos; and reference_id=sale.id.
+
+
+
+
+
+Updates inventory_items.current_stock in a single UPDATE per item.
+
+
+
+
+
+Applies any modifier&apos;s extra_ingredients (e.g., &quot;extra chicken&quot; adds 100g more).
+
+
+
+Modifiers matter more than you think
+
+
+
+A restaurant that sells 300 &quot;build your own burrito&quot; orders a day cannot model each one as a single menu item. Modifiers (add guac, sub black beans, extra cheese) must compose onto the base recipe at depletion time. Our schema supports this via menu_item_modifiers.extra_ingredients, and the deplete_from_sale procedure applies them in the same pass.
+
+
+
+POS integrations must normalize modifiers. Square calls them modifier_sets; Toast calls them modifier_groups; Lightspeed uses options. The webhook handler translates them all into our shape.
+
+
+
+
+
+3.4 Unit conversion and yield
+
+
+
+The hardest part of restaurant inventory is not the BOM — it&apos;s the units.
+
+
+
+
+
+Three units per item. Every inventory_item has a purchase_unit (how the supplier sells it, e.g., &quot;case of 10kg&quot;), a storage_unit (how the walk-in tracks it, e.g., &quot;kg&quot;), and a recipe_unit (how the recipe calls for it, e.g., &quot;gram&quot;). Factors convert one to another.
+
+
+
+
+
+Yield adjustments. A 5kg whole chicken does not yield 5kg of usable meat. We let the operator set a yield_percentage (default 100%) on items that are butchered or trimmed. The effective cost per gram of usable meat is unit_cost / (net_weight × yield_percentage). This makes menu item costing accurate.
+
+
+
+
+
+Prep yields. A batch of tomato sauce that called for 2kg of raw tomato may yield 1.6kg of finished sauce. prep_batches captures produced_qty (1.6kg) and the raw ingredients consumed (2kg tomato, 30g garlic, etc.). Variance between planned and actual produced feeds the variance report.
+
+
+
+
+
+System-seeded conversions. 1kg = 1000g, 1L = 1000ml, 1lb = 453.592g, 1oz (volume) = 29.5735ml. These live in units_of_measure and are not user-editable. Item-specific conversions (1 case of tomatoes = 25lb) live in unit_conversions and are editable by tenants.
+
+
+
+
+
+
+
+
+Part 4 — The Forecast Engine
+
+
+
+The one thing that matters
+
+
+
+If the predictions are accurate, users trust the system and keep paying. If the predictions are wrong, nothing else matters — not the push notifications, not the share sheet, not the benchmarks. Build the forecast engine first. Test it against known data. Everything else is delivery mechanism for the engine&apos;s output.
+
+
+
+
+
+4.1 What the v2 code got wrong (so we don&apos;t repeat it)
+
+
+
+The current agent-daily-run Edge Function claims to run EWMA but doesn&apos;t. It computes an EWMA value in a loop and then throws it away, substituting a flat 90-day mean. The input array is per-sale-event, not per-day. No safety stock is ever calculated. Risk score ignores lead time. Confidence is a field-completeness score, not a statistical one. Fix these in the rewrite.
+
+
+
+
+
+4.2 The correct forecast pipeline
+
+
+
+Five stages, executed nightly at 2 AM per tenant timezone.
+
+
+
+
+
+Stage 1 — Observe
+
+
+
+
+
+Pull the last 90 days of sales events for this tenant.
+
+
+
+
+
+For each inventory item, reconstruct daily consumption from stock_movements (movement_type IN (&apos;sale_depletion&apos;, &apos;waste&apos;, &apos;prep_consumption&apos;)).
+
+
+
+
+
+Bucket by calendar date in the tenant&apos;s timezone — not UTC.
+
+
+
+
+
+Store as a dense array: one value per day for each of the last 90 days, with 0 for days of no movement.
+
+
+
+
+
+Stage 2 — Decompose
+
+
+
+
+
+Extract day-of-week component: mean consumption by DoW (Mon through Sun).
+
+
+
+
+
+Extract trend component: linear regression slope over the 90-day window.
+
+
+
+
+
+Residual = actual − (DoW baseline + trend).
+
+
+
+
+
+Flag days where |residual| &gt; 3σ as anomalies (holidays, events, stockouts).
+
+
+
+
+
+Exclude flagged anomaly days from the demand signal used downstream.
+
+
+
+
+
+Stage 3 — Forecast
+
+
+
+
+
+Run EWMA (α = 0.3) on the cleaned daily series to get a smooth daily-demand level.
+
+
+
+
+
+Apply the DoW multipliers on top: next-Friday demand = level × DoW_multiplier[Fri].
+
+
+
+
+
+Standard deviation σ computed on the residual series (for safety stock).
+
+
+
+
+
+Safety stock = z × σ × √lead_time, where z = 1.65 for 95% service level (user-adjustable per item).
+
+
+
+
+
+Reorder point = avg_daily_demand × lead_time + safety_stock.
+
+
+
+
+
+Days-of-cover = current_stock / avg_daily_demand.
+
+
+
+
+
+Stage 4 — Score
+
+
+
+Metric
+
+
+
+Formula
+
+
+
+What it tells the user
+
+
+
+Risk score (0–100)
+
+
+
+Piecewise function of days_of_cover vs lead_days + safety_days. 100 = will run out before supplier can deliver.
+
+
+
+How urgently you need to act.
+
+
+
+Confidence score (0–100)
+
+
+
+Function of: (a) days of observed data, (b) coefficient of variation of the residuals, (c) number of anomalies excluded. Capped at 95% until item has 60+ days of data.
+
+
+
+How much to trust this forecast.
+
+
+
+Volatility flag
+
+
+
+True if CV &gt; 0.6
+
+
+
+This item&apos;s demand is erratic. Safety stock is wide. Consider par-level ordering instead of forecast-driven.
+
+
+
+Trend flag
+
+
+
+True if |slope| &gt; 10% of mean over the window
+
+
+
+Demand is systematically rising or falling. Flag the operator to verify (new menu item ramping up? Discontinued item?).
+
+
+
+
+
+Stage 5 — Act
+
+
+
+Condition
+
+
+
+Action
+
+
+
+Authority level
+
+
+
+risk &gt; 90 AND confidence &gt; 40
+
+
+
+Auto-draft PO (grouped by supplier)
+
+
+
+Auto-draft, owner approves
+
+
+
+risk &gt; 80
+
+
+
+Push notification alert
+
+
+
+Notify only
+
+
+
+risk &gt; 60
+
+
+
+Update item to &apos;Watching&apos; status
+
+
+
+Autonomous
+
+
+
+confidence &lt; 30
+
+
+
+Flag prediction as unreliable, hide auto-draft
+
+
+
+Autonomous
+
+
+
+volatility_flag = true for 30+ days
+
+
+
+Push a one-time message suggesting par-level mode
+
+
+
+Notify only
+
+
+
+anomaly detected (today&apos;s sales &gt; 3σ)
+
+
+
+Push alert: &quot;Today is running hot — are you out of X?&quot;
+
+
+
+Notify only
+
+
+
+
+
+4.3 The cold-start problem (days 0–28)
+
+
+
+New items and new tenants have no history. We blend the operator&apos;s estimated_daily_sales with actual observed data as evidence accumulates.
+
+
+
+Days of actual data
+
+
+
+Demand estimate used
+
+
+
+Confidence cap
+
+
+
+0–7
+
+
+
+100% operator estimate
+
+
+
+≤40%
+
+
+
+7–14
+
+
+
+70% estimate + 30% actual EWMA
+
+
+
+≤55%
+
+
+
+14–28
+
+
+
+30% estimate + 70% actual EWMA
+
+
+
+≤75%
+
+
+
+28+
+
+
+
+100% actual EWMA
+
+
+
+≤95% (reserves 5% for structural uncertainty)
+
+
+
+
+
+4.4 When we add the LLM layer
+
+
+
+The forecast engine above is pure math. It runs in &lt;100ms per tenant and costs us zero marginal dollars. The LLM layer is an optional enhancement, called only in three situations:
+
+
+
+
+
+Anomaly explanation. When an anomaly is detected, we call Claude with: &quot;Restaurant X sold 3× the usual chicken on Thursday. Weather: rainy. Local events: [from Google Places]. Explain plausible causes in one sentence.&quot; The output is surfaced in the daily brief.
+
+
+
+
+
+Prep list generation. Every afternoon at 4 PM, we call Claude with tomorrow&apos;s forecasted menu-item demand plus today&apos;s prep stock levels. Claude outputs a natural-language prep list: &quot;Tomorrow is forecast busy (Friday, clear weather, typical 340 covers). You&apos;ll need 12kg of chicken thawed, 3 batches of tomato sauce, 2L of garlic mayo. Current prep stock: 4kg chicken thawed, no sauce prepped, 0.8L mayo — plan 90 minutes of morning prep.&quot;
+
+
+
+
+
+Bot command fallback. When the in-app bot cannot parse a command via regex (&quot;hey can you show me what we&apos;re low on except the seasonal stuff&quot;), Claude parses the natural-language query into a structured command and the Edge Function executes it.
+
+
+
+Per-tenant LLM cost projection: ~$0.15 CAD/month at average usage (1 anomaly explanation + 30 prep lists + ~10 bot fallbacks), using Claude Haiku for high-frequency calls and Claude Sonnet for prep lists. Even at our $129/mo Pro tier, LLM cost is &lt; 0.2% of revenue.
+
+
+
+
+
+
+
+
+Part 5 — The Canadian Purchasing Flow
+
+
+
+
+
+5.1 The reality of Canadian restaurant procurement
+
+
+
+Independent Canadian restaurants typically order from three tiers of suppliers:
+
+
+
+
+
+Broadline distributors. Sysco Canada and Gordon Food Service (GFS) dominate. 60–75% of a typical menu by volume. Weekly or bi-weekly deliveries. Both have online portals (Sysco Shop, GFS Order Ahead) and account reps. Both publish GS1-encoded product catalogues.
+
+
+
+
+
+Specialty distributors and local farms. Produce (Ontario Food Terminal vendors, BC farms, Fresh Direct Produce Inc.), seafood (Seacore, Hooked), halal/kosher proteins, organic dairy. Often phone- or text-ordered.
+
+
+
+
+
+Cash-and-carry. Costco Business, Restaurant Depot, GFS Stores. Owner drives there, buys what&apos;s urgent, expenses it. No PO.
+
+
+
+Our integration strategy
+
+
+
+v1: iOS Share Sheet sends text/PDF POs to any supplier — works for every tier, zero supplier onboarding needed.
+
+
+
+v1.5: Official Sysco and GFS integrations via their ordering APIs (both publish partner programs). Orders placed through us land directly in the distributor&apos;s system. This is the start of the supplier marketplace moat (see Part 9).
+
+
+
+v2: Specialty distributor onboarding via a lightweight supplier portal — suppliers see incoming orders from our customers in a dashboard.
+
+
+
+
+
+5.2 The seven-step flow
+
+
+
+Adapted from v2, with Canadian-specific improvements at each step.
+
+
+
+
+
+Step 1 — Detect (2 AM nightly)
+
+
+
+
+
+Agent runs forecast. Items with risk &gt; 90 AND confidence &gt; 40 become PO candidates.
+
+
+
+
+
+Canadian-specific: account for STAT holidays (Canada Day, Labour Day, Thanksgiving, etc.) — suppliers do not deliver on stat days, so effective lead time extends.
+
+
+
+
+
+Account for supplier delivery days (e.g., GFS delivers to my zone on Tuesdays and Fridays only).
+
+
+
+
+
+Step 2 — Draft
+
+
+
+
+
+Group candidates by supplier into one PO per supplier.
+
+
+
+
+
+Compute order quantity per item: round up to case pack (8-pack, 12-pack, etc. from supplier catalogue).
+
+
+
+
+
+Apply supplier minimum order amount — if the total is under the minimum, add slower-moving items up to the threshold rather than paying a small-order fee.
+
+
+
+
+
+Use the last known unit cost from the most recent reconciled invoice; surface if cost has drifted &gt;5% in 30 days.
+
+
+
+
+
+Generate a PO number: [Business-prefix]-YYYY-NNNN.
+
+
+
+
+
+Status = DRAFT.
+
+
+
+
+
+Step 3 — Notify
+
+
+
+
+
+APNs push to all admin users: &quot;PO-2026-0042 drafted for Sysco — 8 items, $1,240 CAD total. Review?&quot;
+
+
+
+
+
+In-app bot receives a message card with &quot;Review PO&quot; button.
+
+
+
+
+
+Badge count on app icon increments.
+
+
+
+
+
+Step 4 — Review &amp; Approve
+
+
+
+
+
+User taps the notification or opens the Orders tab.
+
+
+
+
+
+Sees the draft PO grouped by supplier, items, quantities, costs, total.
+
+
+
+
+
+Can approve as-is (PIN entry required), edit quantities, remove items, add items, or reject.
+
+
+
+
+
+The agent learns from every edit — see Step 7.
+
+
+
+
+
+PIN is 4-digit, bcrypt-hashed at rest, with 3-attempts-then-15-min-lockout. Biometric unlock is Phase 2.
+
+
+
+
+
+Step 5 — Send
+
+
+
+Channel
+
+
+
+How it works in v1
+
+
+
+Planned upgrade
+
+
+
+iOS Share Sheet → WhatsApp
+
+
+
+Taps Share → WhatsApp → supplier pre-filled from suppliers.whatsapp. Message is pre-formatted text.
+
+
+
+Same, plus delivery read-receipt detection.
+
+
+
+Email (PDF)
+
+
+
+Share Sheet → Mail. Subject pre-filled, PDF attached, supplier email pre-filled.
+
+
+
+Scheduled send for 8am delivery windows.
+
+
+
+SMS
+
+
+
+Share Sheet → Messages.
+
+
+
+—
+
+
+
+Copy to clipboard
+
+
+
+For supplier portals (Sysco Shop, GFS Order Ahead) the user pastes into their web portal.
+
+
+
+Direct API submission via Sysco/GFS partner programs (v1.5).
+
+
+
+Marketplace-connected supplier
+
+
+
+Not in v1.
+
+
+
+One-tap send; order appears in supplier&apos;s portal instantly. This is the two-sided moat (Part 9).
+
+
+
+
+
+Step 6 — Track delivery
+
+
+
+
+
+Delivery date reminder push notification the morning of expected delivery.
+
+
+
+
+
+User opens the PO, taps &quot;Mark as Delivered&quot;. Option to edit received quantities per line (partial delivery handling).
+
+
+
+
+
+Confirmed stock increment writes to stock_movements (movement_type=&apos;purchase&apos;).
+
+
+
+
+
+If the PO was sent via marketplace API, delivery confirmation can come in as a webhook — no manual tap needed.
+
+
+
+
+
+Risk scores recalculate; badge count decrements.
+
+
+
+
+
+Prompt to upload the invoice photo/PDF for OCR-based three-way match.
+
+
+
+
+
+Step 7 — Learn
+
+
+
+
+
+Lead time adjustment. Sent March 1, delivered March 4 → effective lead time 3 days. If stored lead time was 5, new value = 0.7 × stored + 0.3 × observed = 4.4 days. Slow EMA, no overreacting to one-off delays.
+
+
+
+
+
+Quantity edit learning. User edited agent&apos;s suggestion from 50 to 30. The delta (−40%) is stored. After 3 consistent negative edits, the agent&apos;s formula for that item gets a correction factor.
+
+
+
+
+
+Price drift tracking. Every delivered PO updates unit_cost on each item. Sudden jumps &gt;10% surface as a supplier alert: &quot;Chicken thighs up 14% from GFS. Quick compare with Sysco?&quot;
+
+
+
+
+
+Rejection learning. If the user rejects 2 consecutive POs for an item, raise the auto-draft threshold for that item to risk &gt; 95.
+
+
+
+
+
+
+
+
+Part 6 — The In-App Bot
+
+
+
+The bot is the fastest interface to the data. Typed commands are faster than navigating screens. A restaurant owner on the line at 7pm does not want to tap through menus — they want to type &quot;sold 4 shawarma&quot; and move on.
+
+
+
+
+
+6.1 What the bot is (and isn&apos;t)
+
+
+
+
+
+Is: a deterministic command parser over inventory/sales/PO data, with templated responses, running in a Supabase Edge Function (&lt;200ms response time).
+
+
+
+
+
+Is not: an LLM chatbot (except for the fallback path described in §4.4).
+
+
+
+
+
+6.2 Command set
+
+
+
+User types
+
+
+
+What happens
+
+
+
+Example response
+
+
+
+stock
+
+
+
+Queries inventory grouped by risk tier
+
+
+
+&quot;3 critical · 5 watching · 124 safe. $1,840 at risk.&quot; + list of critical items.
+
+
+
+stock chicken
+
+
+
+Fuzzy match, show item
+
+
+
+&quot;Chicken thigh boneless: 2.4 kg · 8.2 kg/day avg · 0.3 days cover · Risk 97 · Confidence 82%.&quot;
+
+
+
+sold shawarma 4
+
+
+
+Insert sale, depletion runs, risk recalc
+
+
+
+&quot;Logged. Chicken Shawarma × 4. Chicken stock now 1.7 kg (critical).&quot;
+
+
+
+orders
+
+
+
+List POs by status
+
+
+
+&quot;2 pending approval, 1 sent to GFS (expected Fri), 0 overdue.&quot;
+
+
+
+approve PO-2026-0042
+
+
+
+Prompt for PIN, approve
+
+
+
+&quot;Enter PIN to approve PO-2026-0042 (Sysco, 8 items, $1,240 CAD)&quot;
+
+
+
+send PO-2026-0042
+
+
+
+Opens Share Sheet
+
+
+
+(opens iOS Share Sheet with PO text)
+
+
+
+waste 500g chicken spoiled
+
+
+
+Log waste event
+
+
+
+&quot;Logged 500g chicken as spoiled. Today&apos;s waste: 1.2kg, $14.40. This week: 6.8kg.&quot;
+
+
+
+prep
+
+
+
+Show today&apos;s prep list from agent
+
+
+
+&quot;Thaw 12kg chicken · 3 batches tomato sauce · 2L garlic mayo. Current prep: 4kg chicken thawed. ~90 min prep needed.&quot;
+
+
+
+variance
+
+
+
+Show yesterday&apos;s theoretical vs actual
+
+
+
+&quot;Yesterday: Theo food cost 28.3%, actual 32.1%. Gap $142. Top variance: chicken (+340g), tomato (+1.2kg), lemon (+8 units).&quot;
+
+
+
+benchmark
+
+
+
+Show peer comparison (see Part 9)
+
+
+
+&quot;Your food cost: 31.2%. Peer group (Toronto cafés, similar AOV): median 29.8%, top quartile 27.4%. You&apos;re in the 58th percentile.&quot;
+
+
+
+brief
+
+
+
+Return today&apos;s 7 AM brief
+
+
+
+The same brief as the morning push.
+
+
+
+help
+
+
+
+List commands
+
+
+
+All commands with examples.
+
+
+
+
+
+6.3 The bilingual path
+
+
+
+English-Canada ships in v1. Québec French ships in v1.2. The parser handles French commands by mapping them to the same internal command set: &quot;vendu 4 shawarmas&quot; maps to &quot;sold 4 shawarmas&quot;. Response templates are localized. Spend time here — Québec&apos;s Law 25 effectively requires French-first UX for Québec restaurants, and the market is worth the effort.
+
+
+
+
+
+
+
+
+Part 7 — Onboarding (the 20-minute flow)
+
+
+
+v2 promised 10 minutes. For a restaurant, that&apos;s dishonest — recipes alone take longer. We promise 20 minutes and we deliver a working system in 20 minutes.
+
+
+
+
+
+7.1 The steps
+
+
+
+Step
+
+
+
+Time
+
+
+
+What the user does
+
+
+
+1. Account
+
+
+
+1 min
+
+
+
+Email + password. Trial starts (14 days, no card).
+
+
+
+2. Business profile
+
+
+
+2 min
+
+
+
+Legal name, trade name, HST number (optional), address, timezone (default America/Toronto), business type (café, QSR, casual dining, fine dining, bar, ghost kitchen), currency (CAD default).
+
+
+
+3. Connect your POS
+
+
+
+3 min
+
+
+
+Square / Toast / Lightspeed Restaurant / TouchBistro OAuth. Or skip to use manual entry. We pull menu items automatically on connect.
+
+
+
+4. Categories
+
+
+
+2 min
+
+
+
+Suggested categories based on business type (proteins, produce, dairy, dry goods, beverages, packaging, cleaning). User can accept, rename, add.
+
+
+
+5. Inventory starter
+
+
+
+5 min
+
+
+
+For each category, the agent suggests the top 15–25 SKUs a business of your type usually carries (seeded from our benchmark data). User checks the boxes for items they carry, enters current count and supplier.
+
+
+
+6. Suppliers
+
+
+
+2 min
+
+
+
+Fill in Sysco, GFS, and specialty supplier contacts. Lead times default from our supplier database (e.g., GFS = 2 days).
+
+
+
+7. Recipes (priority subset)
+
+
+
+5 min
+
+
+
+For top 10 menu items by POS volume, wizard asks: &quot;For 1 order of [dish], how much of each ingredient do you use?&quot; Fast path with best-guess defaults. Rest are built over time.
+
+
+
+The recipe-building problem (and our answer)
+
+
+
+Most operators will never build 100 recipes. So we do not demand 100. We ask for the 10 that drive 60–70% of volume, then let the agent run with estimates for the rest. Over the first 4 weeks, the &quot;Recipes&quot; tab shows a nudge for the next 5 most-sold untagged items. Recipe completion grows organically, not in a cliff on day 1.
+
+
+
+For Toast and Lightspeed users, we offer an optional recipe-estimation assist: upload your menu PDF and we&apos;ll draft recipes by parsing the descriptions with Claude. User reviews and edits. This turns a 2-hour job into 15 minutes.
+
+
+
+
+
+7.2 The first 14 days (the trial that converts)
+
+
+
+A trial only converts if, inside it, the user has a moment where they realize they can&apos;t go back. We engineer that moment.
+
+
+
+
+
+Day 1: POS connected → sales flow in. User sees their existing data in our dashboard. &quot;Oh, that&apos;s my store.&quot;
+
+
+
+
+
+Day 3: Enough data for a first real forecast. User gets their first daily brief push — with a specific, actionable item (&quot;You&apos;ll run out of avocados Thursday — GFS delivers Wed and Fri — order by 4 PM tomorrow&quot;).
+
+
+
+
+
+Day 7: First auto-drafted PO. User approves it in 30 seconds and sends via WhatsApp to their GFS rep. &quot;Holy shit, that was easy.&quot;
+
+
+
+
+
+Day 10: First variance report. &quot;Theoretical food cost 28%, actual 32% — you spent $340 more on chicken than your sales justify.&quot; This is the number that converts owner-operators.
+
+
+
+
+
+Day 14: Trial ending reminder with a personalized savings recap: &quot;In 14 days we flagged $840 of variance, drafted 6 POs, and saved you [X] minutes/week. Continue?&quot;
+
+
+
+
+
+
+
+
+Part 8 — Compliance, Privacy, and Tax (Canadian-Specific)
+
+
+
+Canadian SMB software must handle three regulatory vectors from day one. These are not v2 &quot;later&quot; items — they are baked into the schema and UX.
+
+
+
+
+
+8.1 PIPEDA and Québec Law 25
+
+
+
+
+
+Data residency. Supabase region set to ca-central-1 (Montréal). All customer data — PII, sales, recipes — stays in Canada. Document this in the privacy policy.
+
+
+
+
+
+Right of access. Any user can request an export of their data. The data_exports table supports this — admin taps &quot;Export my data&quot;, we generate a ZIP of JSON + CSV within 24 hours (Law 25 requires response within 30 days; ours is next-day).
+
+
+
+
+
+Right of erasure. Account deletion cascades to all PII while preserving pseudonymized aggregate data for the benchmark network. We disclose this trade-off in plain language during signup (&quot;When you delete, your identifiable data is destroyed within 30 days. Anonymized patterns that can&apos;t identify you remain in our benchmark data.&quot;).
+
+
+
+
+
+French-language mandate. Under Québec Law 25 and Bill 96, a Québec business must be able to use the service in French. v1.2 ships Québec French. Any Québec tenants in v1.0–v1.1 get a good-faith English service with a French migration notice.
+
+
+
+
+
+Breach notification. PIPEDA s. 10.1 requires notification of breaches causing &quot;real risk of significant harm&quot; to affected individuals and the Privacy Commissioner. Our incident-response runbook must include 72-hour notification workflow.
+
+
+
+
+
+8.2 CRA record retention
+
+
+
+
+
+Six years, plus current. CRA requires businesses to keep all records supporting a tax return for six years from the end of the fiscal year the records relate to. For a restaurant this means sales, invoices, POs, adjustments — everything we store.
+
+
+
+
+
+Our policy. Default retention of operational data is 7 years (one-year safety buffer). audit_log, sales, invoices, and purchase_orders are never hard-deleted within this window, even on account cancellation. Instead we mark them archived and exclude from UI. Hard delete only after 7+ years.
+
+
+
+
+
+Export on cancellation. When a tenant cancels, auto-generate a full data export and email it to the admin. Retain the archive in cold storage (Supabase storage, tenant-specific key) until the 7-year mark.
+
+
+
+
+
+8.3 HST/GST/PST handling
+
+
+
+
+
+Subscription billing. Stripe Tax computes sales tax on our subscription charges. Canadian provinces have different rates (5% GST in AB, 13% HST in ON, etc.). Stripe handles this — we don&apos;t roll our own.
+
+
+
+
+
+Restaurant&apos;s own tax. On purchase orders and invoices, we track tax per line (so the operator&apos;s bookkeeping reflects real supplier invoices). POs show subtotal, tax, and total separately. We do not attempt to advise on input tax credits — that&apos;s the accountant&apos;s job.
+
+
+
+
+
+QuickBooks / Xero export. One-click export of PO and invoice data in QuickBooks-friendly CSV format. Phase 2: native QuickBooks Online API integration (popular in Canada for SMBs).
+
+
+
+
+
+8.4 Food-safety and labour (Phase 2 hooks)
+
+
+
+
+
+HACCP awareness. waste_events with reason=&apos;spoiled&apos; or &apos;expired&apos; generate a weekly summary to help operators prepare for health inspections. We do not market as a HACCP system — that&apos;s a regulated product class — but we give operators the data they need.
+
+
+
+
+
+FoodSafe records. Phase 2: temperature log attachment per location, with threshold alerts. We defer this to v1.5 to stay focused on inventory in v1.
+
+
+
+
+
+Labour costing. Phase 2: pull labour hours from POS or scheduling apps (7shifts, Push Operations) to produce prime-cost reports (food + labour as % of revenue). Essential for restaurant P&amp;L but out of v1 scope.
+
+
+
+
+
+
+
+
+Part 9 — The Moat Playbook
+
+
+
+Why this section is the most important one in the document
+
+
+
+If we ship everything in Parts 1–8 and call it a day, we have a nice product. Toast, Square, or a well-funded entrant can clone it in a quarter. A moat means that every day in market, the product becomes harder to replicate — not by adding features, but by accumulating advantages that a new entrant cannot easily buy their way around. This document commits to three of them, layered.
+
+
+
+
+
+9.1 Moat Layer 1 — Data Network Effects (Benchmark Network)
+
+
+
+
+
+The thesis
+
+
+
+Every independent restaurant operator is flying blind on one question: &quot;is my number good?&quot; They look at their 31% food cost and don&apos;t know whether that&apos;s great or terrible for their format. Toast and Square won&apos;t tell them because they don&apos;t have the cross-restaurant data in a format that can be benchmarked. MarketMan has some, but doesn&apos;t surface it meaningfully. We turn this into our first moat by collecting, normalizing, and peer-anonymizing every operator&apos;s data from day one and showing them where they stand — with enough granularity to act on.
+
+
+
+
+
+What we measure
+
+
+
+Benchmark
+
+
+
+What it compares
+
+
+
+Cohort definition
+
+
+
+Food cost %
+
+
+
+COGS / revenue, trailing 30 days
+
+
+
+Same business_type, same city tier, similar AOV band
+
+
+
+Top 5 variance items
+
+
+
+Which SKUs bleed money most commonly
+
+
+
+Same cuisine tag, same city tier
+
+
+
+Supplier price percentile
+
+
+
+For each common SKU (e.g., boneless chicken thigh), what&apos;s the median CAD/kg paid by peers in your region this month
+
+
+
+Same region (e.g., GTA, Greater Vancouver, Montréal metro), same supplier category
+
+
+
+Prep waste rate
+
+
+
+Waste kg / sales kg
+
+
+
+Same business type
+
+
+
+Reorder lead time reality
+
+
+
+Time from PO sent to delivered for each supplier, aggregated
+
+
+
+Same supplier + region
+
+
+
+Menu engineering matrix
+
+
+
+Which menu items are stars vs dogs by margin × popularity
+
+
+
+Same business type
+
+
+
+
+
+How we protect it (so competitors can&apos;t just scrape it)
+
+
+
+
+
+k-anonymity. No benchmark is shown unless at least 10 peers are in the cohort. Less than 10 → we show a wider cohort or a diplomatic &quot;not enough peers yet, check back&quot;.
+
+
+
+
+
+Differential privacy on rare SKUs. For long-tail SKUs, add a small random noise term before surfacing price percentiles, so no single peer&apos;s data can be backed out.
+
+
+
+
+
+Consent is explicit. At onboarding we show: &quot;Join the benchmark network: contribute your (anonymized) data to get access to peer comparisons. You can opt out anytime — if you do, you also stop receiving benchmark features.&quot; Most operators will opt in for the benefit. A small percentage won&apos;t, and that&apos;s fine.
+
+
+
+
+
+Tenant-leaving-doesn&apos;t-break-it. Cancelled accounts&apos; historical data stays in the benchmark (de-identified). So the network grows monotonically even with churn.
+
+
+
+
+
+Why this is a moat
+
+
+
+A competitor launching next quarter starts with zero peer data. Their benchmarks are empty for 6–12 months while they bootstrap. For an operator, a product with a living benchmark network is strictly better than one with an empty cohort grid. The gap compounds: our 100th customer helps the 101st, whose data helps the 102nd. After 300 Canadian café customers, our GTA café cohort is the single best source of comparative data in the country, and rebuilding it is a two-year grind for any entrant.
+
+
+
+
+
+9.2 Moat Layer 2 — Supplier Marketplace (Two-Sided Network)
+
+
+
+
+
+The thesis
+
+
+
+v1 uses iOS Share Sheet to send POs to suppliers. This works, but it keeps the supplier at arm&apos;s length. v1.5 begins a deliberate supplier-acquisition playbook that turns suppliers into a second side of the platform — and every supplier we onboard increases retention on the restaurant side, while every restaurant we onboard increases leverage with suppliers.
+
+
+
+
+
+The staged build
+
+
+
+Phase
+
+
+
+What ships
+
+
+
+Target
+
+
+
+Lock-in mechanism
+
+
+
+v1.0
+
+
+
+Share Sheet to any supplier
+
+
+
+—
+
+
+
+Habit only
+
+
+
+v1.5 (months 4–6)
+
+
+
+Official Sysco Canada integration + GFS Canada integration via their partner APIs
+
+
+
+2 broadline distributors
+
+
+
+Orders flow directly; restaurants save 5 min per order; mild lock-in
+
+
+
+v2.0 (months 6–12)
+
+
+
+Supplier Portal: any supplier can claim their listing, accept orders via web, chat with buyer, push delivery confirmation
+
+
+
+50–200 specialty suppliers onboarded
+
+
+
+Two-sided: suppliers that rely on us for order flow won&apos;t want to lose their restaurant buyers
+
+
+
+v2.5 (year 2)
+
+
+
+Price competition layer: restaurant posts a need, 3+ suppliers bid, app shows lowest qualified price
+
+
+
+Marketplace revenue share: 1–2% of GMV on bids accepted through the platform
+
+
+
+Price discovery becomes impossible without the platform
+
+
+
+v3.0 (year 2+)
+
+
+
+Supplier-initiated promotions and deadstock clearance surfaced to relevant restaurants
+
+
+
+Sysco/GFS co-marketing
+
+
+
+Becomes the sales channel for suppliers&apos; distressed inventory
+
+
+
+
+
+Why a supplier would join
+
+
+
+
+
+Free order ingestion. Their restaurant buyers are already using ReorderOS. Suppliers that claim their listing get orders as structured data instead of messy WhatsApp text. This saves their order desk 30+ min/day per 20-restaurant route.
+
+
+
+
+
+Demand forecasting. We show them anonymized demand trends from restaurants in their region. &quot;Your customer base is ramping up chicken thigh demand 12% over last year.&quot; This is genuinely useful to their purchasing team.
+
+
+
+
+
+Leads. Restaurants onboarding with us who don&apos;t yet have a supplier for [X] get matched with connected suppliers. We charge a lead referral fee — modest but real.
+
+
+
+
+
+Why this is a moat
+
+
+
+A two-sided network is the classic defensible structure. Once Sysco Canada and GFS Canada are integrated — and both offer partner programs, so this is engineer-work, not deals-work — every new Canadian restaurant we acquire inherits an integrated supplier ecosystem. A new competitor must redo both sides. And once we have 50+ specialty suppliers on the portal, we are the default front-end for ordering in many Canadian cuisines, because the suppliers now tell their new customers &quot;we take orders through ReorderOS.&quot;
+
+
+
+
+
+9.3 Moat Layer 3 — Proprietary Forecasting
+
+
+
+
+
+The thesis
+
+
+
+A vanilla EWMA model is not a moat — any engineer can build it in a day. What becomes defensible is a forecasting stack that (a) outperforms generic models on restaurant data specifically, (b) gets better as we accumulate more data, and (c) incorporates signals no competitor has access to.
+
+
+
+
+
+The three models, in order of ambition
+
+
+
+
+
+Model 1 — Hierarchical Bayesian forecast (ship in v1.5)
+
+
+
+
+
+A per-SKU, per-tenant forecast that shrinks toward a tenant-type prior (e.g., &quot;cafés like you&quot;).
+
+
+
+
+
+Handles cold-start gracefully because the prior has mass even when the tenant has 2 days of data.
+
+
+
+
+
+Updates Bayesian posteriors nightly as new data arrives.
+
+
+
+
+
+Outperforms raw EWMA by 15–30% on MAPE for items with &lt;60 days of history (our measurement target).
+
+
+
+
+
+Implementable in a Supabase Edge Function using lightweight sampling, or offloaded to a small Python worker on Fly.io / Railway.
+
+
+
+
+
+Model 2 — External signal ingestion (ship in v2.0)
+
+
+
+
+
+Weather. Environment Canada forecast API (free, no key needed). Rain in Toronto drops café foot traffic 12–18% day-of. We use local forecasts to adjust tomorrow&apos;s demand.
+
+
+
+
+
+Local events. Ticketmaster / Eventbrite / SeatGeek scraping for venue events within 500m. A Raptors game shifts a nearby sports bar&apos;s demand pattern.
+
+
+
+
+
+Statistics Canada CPI &amp; Food Price Index. When beef CPI jumps 8%, substitution effects cascade — we surface these early.
+
+
+
+
+
+Holidays &amp; Canadian cultural calendar. Mother&apos;s Day demand spike, Nuit Blanche, Caribana, Celebration of Light, Calgary Stampede. Each has a predictable shape by venue type.
+
+
+
+
+
+Google Places foot-traffic signal. Hourly busyness index for the operator&apos;s own location and nearby competitors. We blend this with sales data for a leading indicator.
+
+
+
+
+
+Model 3 — Cross-tenant transfer learning (ship in v3.0, year 2+)
+
+
+
+
+
+A neural network trained on our entire fleet&apos;s (anonymized) sales time series.
+
+
+
+
+
+For any new tenant, the model initializes from a learned &quot;restaurant demand manifold&quot; — it already knows the shape of Friday-night-Italian-QSR-demand because it&apos;s seen 80 of them.
+
+
+
+
+
+This is the feature that becomes existentially hard for competitors to replicate. They need our scale of anonymized time-series data. Without it, their cold-start is markedly worse than ours forever.
+
+
+
+
+
+How we communicate this to the operator (without overselling)
+
+
+
+
+
+Transparency by default. Every forecast shows a confidence band and a short explanation: &quot;Forecast for Fri: 42 servings of shawarma (90% range: 34–52). Reason: typical Friday pattern + rain forecast drops dine-in 15%.&quot; This beats the black-box feel of competitors.
+
+
+
+
+
+We publish our MAPE. Quarterly, we post our aggregate forecast accuracy (Mean Absolute Percentage Error) publicly. This is a marketing asset (nobody else does this) and an honesty device (it keeps us accountable to ourselves).
+
+
+
+
+
+Why the three moats compound
+
+
+
+Benchmarks require data, and the forecast model produces calibrated per-SKU demand history which feeds benchmarks. The supplier marketplace generates price-time-series data that feeds both the benchmarks and the forecast model (input cost elasticity). The forecast model&apos;s superior accuracy is the headline feature that wins new restaurant customers, which grows the benchmark network, which justifies more supplier integrations. A competitor would have to solve all three simultaneously from zero.
+
+
+
+
+
+
+
+
+Part 10 — Complete Feature Specification
+
+
+
+MVP ships by month 4. Phase 2 is months 4–9. Phase 3 is month 10+.
+
+
+
+#
+
+
+
+Feature
+
+
+
+Phase
+
+
+
+Moat layer
+
+
+
+1
+
+
+
+Real-time dashboard (critical count, at-risk value, worst item)
+
+
+
+MVP
+
+
+
+—
+
+
+
+2
+
+
+
+Stock management (search, categories, pagination, bulk import)
+
+
+
+MVP
+
+
+
+—
+
+
+
+3
+
+
+
+Menu items + recipes (manual + PDF-assisted builder)
+
+
+
+MVP
+
+
+
+—
+
+
+
+4
+
+
+
+Sub-recipes / prep items
+
+
+
+MVP
+
+
+
+—
+
+
+
+5
+
+
+
+Unit-of-measure system with conversions and yields
+
+
+
+MVP
+
+
+
+—
+
+
+
+6
+
+
+
+Multi-location support (up to 5 in Pro/Multi)
+
+
+
+MVP
+
+
+
+—
+
+
+
+7
+
+
+
+Cold-start blending + confidence scoring
+
+
+
+MVP
+
+
+
+Forecasting
+
+
+
+8
+
+
+
+EWMA + DoW seasonality forecast
+
+
+
+MVP
+
+
+
+Forecasting
+
+
+
+9
+
+
+
+Auto-draft POs grouped by supplier
+
+
+
+MVP
+
+
+
+—
+
+
+
+10
+
+
+
+iOS Share Sheet PO delivery
+
+
+
+MVP
+
+
+
+—
+
+
+
+11
+
+
+
+PIN approval (bcrypt, 3-attempt lockout)
+
+
+
+MVP
+
+
+
+—
+
+
+
+12
+
+
+
+In-app bot (command parser + templates)
+
+
+
+MVP
+
+
+
+—
+
+
+
+13
+
+
+
+Native push (APNs)
+
+
+
+MVP
+
+
+
+—
+
+
+
+14
+
+
+
+7 AM daily brief (tenant timezone)
+
+
+
+MVP
+
+
+
+—
+
+
+
+15
+
+
+
+Cashier mode (fast-sale)
+
+
+
+MVP
+
+
+
+—
+
+
+
+16
+
+
+
+POS sync (Square + Toast OAuth)
+
+
+
+MVP
+
+
+
+—
+
+
+
+17
+
+
+
+Waste event logging + reason codes
+
+
+
+MVP
+
+
+
+—
+
+
+
+18
+
+
+
+Audit log (INSERT-only, 7yr retention)
+
+
+
+MVP
+
+
+
+—
+
+
+
+19
+
+
+
+Data export (PIPEDA right of access)
+
+
+
+MVP
+
+
+
+—
+
+
+
+20
+
+
+
+Onboarding (20-min guided flow)
+
+
+
+MVP
+
+
+
+—
+
+
+
+21
+
+
+
+Invoice OCR + three-way match
+
+
+
+Phase 2
+
+
+
+—
+
+
+
+22
+
+
+
+Lightspeed + TouchBistro POS sync
+
+
+
+Phase 2
+
+
+
+—
+
+
+
+23
+
+
+
+Variance report (theoretical vs actual)
+
+
+
+Phase 2
+
+
+
+Benchmarks
+
+
+
+24
+
+
+
+Benchmark network v1 (food cost %, peer comparison)
+
+
+
+Phase 2
+
+
+
+Benchmarks
+
+
+
+25
+
+
+
+Hierarchical Bayesian forecast (Model 1)
+
+
+
+Phase 2
+
+
+
+Forecasting
+
+
+
+26
+
+
+
+QuickBooks / Xero export
+
+
+
+Phase 2
+
+
+
+—
+
+
+
+27
+
+
+
+Sysco Canada integration
+
+
+
+Phase 2
+
+
+
+Supplier marketplace
+
+
+
+28
+
+
+
+GFS Canada integration
+
+
+
+Phase 2
+
+
+
+Supplier marketplace
+
+
+
+29
+
+
+
+Prep list generator (Claude-assisted)
+
+
+
+Phase 2
+
+
+
+—
+
+
+
+30
+
+
+
+Weather + events signal ingestion (Model 2)
+
+
+
+Phase 2
+
+
+
+Forecasting
+
+
+
+31
+
+
+
+Supplier portal (web app for suppliers)
+
+
+
+Phase 3
+
+
+
+Supplier marketplace
+
+
+
+32
+
+
+
+Price competition / bidding flow
+
+
+
+Phase 3
+
+
+
+Supplier marketplace
+
+
+
+33
+
+
+
+Cross-tenant transfer learning (Model 3)
+
+
+
+Phase 3
+
+
+
+Forecasting
+
+
+
+34
+
+
+
+Québec French localization
+
+
+
+Phase 2
+
+
+
+—
+
+
+
+35
+
+
+
+Benchmarks v2 (supplier price percentiles, menu engineering)
+
+
+
+Phase 3
+
+
+
+Benchmarks
+
+
+
+36
+
+
+
+Labour costing (7shifts, Push integrations)
+
+
+
+Phase 3
+
+
+
+—
+
+
+
+37
+
+
+
+Biometric unlock
+
+
+
+Phase 2
+
+
+
+—
+
+
+
+38
+
+
+
+Offline mode (dashboard + cashier)
+
+
+
+Phase 2
+
+
+
+—
+
+
+
+39
+
+
+
+Menu engineering matrix (Boston Consulting Group quadrants)
+
+
+
+Phase 3
+
+
+
+Benchmarks
+
+
+
+40
+
+
+
+API access (for custom integrations)
+
+
+
+Phase 3
+
+
+
+—
+
+
+
+
+
+
+
+
+Part 11 — Cost Model &amp; Unit Economics
+
+
+
+
+
+11.1 Infrastructure cost per customer
+
+
+
+Cost component
+
+
+
+Per customer / month (CAD)
+
+
+
+Notes
+
+
+
+Supabase Pro (shared)
+
+
+
+$0.40
+
+
+
+$35 CAD tier serves 100+ tenants comfortably
+
+
+
+APNs push
+
+
+
+$0.00
+
+
+
+Apple&apos;s rate is unlimited free
+
+
+
+Claude API (LLM layer)
+
+
+
+$0.25
+
+
+
+~30 prep list generations + anomaly explanations + bot fallbacks per month
+
+
+
+Stripe Billing (2.9% + $0.30)
+
+
+
+$4.10
+
+
+
+On a $129 Pro subscription: $3.74 + $0.30 fee
+
+
+
+PostHog analytics
+
+
+
+$0.05
+
+
+
+Self-hosted or free tier
+
+
+
+Sentry errors
+
+
+
+$0.10
+
+
+
+Team tier scales to ~100 tenants
+
+
+
+App Store Apple fee (first year)
+
+
+
+$3.87
+
+
+
+30% on first year subscriptions; drops to 15% after 12 months and on sub-$1M revenue overall (Small Business Program)
+
+
+
+Total Year 1
+
+
+
+$8.77
+
+
+
+Per Pro customer, all-in
+
+
+
+Total Year 2+
+
+
+
+$6.83
+
+
+
+With Small Business Program 15% fee
+
+
+
+
+
+11.2 Tier economics
+
+
+
+Tier
+
+
+
+Price (CAD)
+
+
+
+Cost to serve
+
+
+
+Gross margin
+
+
+
+Starter ($49)
+
+
+
+$49.00
+
+
+
+$6.20
+
+
+
+87%
+
+
+
+Pro ($129)
+
+
+
+$129.00
+
+
+
+$8.77 (Y1) / $6.83 (Y2+)
+
+
+
+93% Y1, 95% Y2+
+
+
+
+Multi ($299 + $49)
+
+
+
+$446.00 (HQ + 3 locs)
+
+
+
+$17.00
+
+
+
+96%
+
+
+
+
+
+11.3 Revenue projection
+
+
+
+Customer growth assumes a seed-funded, product-led approach: association sponsorships + word-of-mouth in Toronto café/QSR community, expanding to Vancouver and Montréal in month 6. Realistic, not heroic.
+
+
+
+Month
+
+
+
+Customers
+
+
+
+MRR (CAD)
+
+
+
+Gross profit
+
+
+
+Notes
+
+
+
+M1–3
+
+
+
+15
+
+
+
+$1,600
+
+
+
+$1,400
+
+
+
+Alpha in Toronto. Free or heavily discounted.
+
+
+
+M4–6
+
+
+
+60
+
+
+
+$6,200
+
+
+
+$5,700
+
+
+
+Beta open. Pro tier launch.
+
+
+
+M7–12
+
+
+
+180
+
+
+
+$19,500
+
+
+
+$18,100
+
+
+
+Benchmark network launches. Word of mouth kicks in.
+
+
+
+M13–18
+
+
+
+400
+
+
+
+$44,000
+
+
+
+$41,000
+
+
+
+Montréal expansion. QC French shipping.
+
+
+
+M19–24
+
+
+
+750
+
+
+
+$83,000
+
+
+
+$78,000
+
+
+
+Sysco/GFS integrations live.
+
+
+
+M25–36
+
+
+
+1,600
+
+
+
+$180,000
+
+
+
+$170,000
+
+
+
+Supplier marketplace v1.
+
+
+
+Break-even: approximately 6–8 Pro customers cover one FTE fully-loaded cost in Canada (~$9,000 CAD/month burn inclusive of benefits/office/tools). At 60 customers we break even on a solo-founder basis; at 180 we can hire the first engineer; at 400 we have a small team. This is a venture-returnable trajectory without requiring heroic assumptions, and a lifestyle-profitable trajectory even in the downside case.
+
+
+
+
+
+
+
+
+Part 12 — Build Sequence
+
+
+
+The existing smart-stock-scout codebase is ~30% of the way to a Canadian restaurant MVP. The build sequence below assumes we keep the UI skeleton and RLS scaffolding, rewrite the forecast engine, and add the restaurant-specific data model. Timelines assume one engineer at 4–6 hours/day.
+
+
+
+Week
+
+
+
+Milestone
+
+
+
+Deliverable
+
+
+
+Verification
+
+
+
+1
+
+
+
+Cleanup &amp; hardening
+
+
+
+Remove WhatsApp UI, rotate Supabase keys, add .env to gitignore, strip pharmacy sample data
+
+
+
+git log clean; no &apos;whatsapp&apos; strings in src/; .env not tracked
+
+
+
+2
+
+
+
+Schema migration to v3
+
+
+
+All 22 tables + RLS policies + indexes; Canadian defaults on businesses; units_of_measure seeded
+
+
+
+Every table has RLS; integration tests verify cross-tenant isolation
+
+
+
+3
+
+
+
+Forecast engine rewrite
+
+
+
+Correct EWMA + DoW + safety stock + confidence; agent-daily-run tested against 3 synthetic datasets with known-correct answers
+
+
+
+Unit tests pass on fixtures; MAPE &lt; 25% on synthetic data
+
+
+
+4
+
+
+
+Recipes &amp; depletion
+
+
+
+menu_items, recipes, recipe_ingredients, prep_batches, deplete_from_sale procedure; recipe builder UI
+
+
+
+Inserting a sale correctly decrements all ingredient quantities incl. sub-recipes
+
+
+
+5
+
+
+
+POs &amp; suppliers
+
+
+
+suppliers table, po_line_items, grouped PO drafting, PIN hashing + approval, Share Sheet integration via Capacitor
+
+
+
+Full PO lifecycle demo: draft → approve → share → deliver
+
+
+
+6
+
+
+
+Push &amp; Capacitor
+
+
+
+Capacitor setup, APNs key, send-push Edge Function, device_tokens, badge counter, pg_cron 2 AM + 7 AM jobs
+
+
+
+Push lands on physical device; badge updates; brief fires at tenant 7 AM
+
+
+
+7
+
+
+
+In-app bot
+
+
+
+Chat UI tab, bot-command Edge Function, all 11 commands from §6.2, bot_messages persistence
+
+
+
+All commands pass manual test script; Arabic i18n removed, English clean
+
+
+
+8
+
+
+
+Onboarding
+
+
+
+20-minute guided flow, POS OAuth for Square + Toast, recipe builder with PDF-assist
+
+
+
+New tenant completes onboarding with working forecasts in &lt;25 min
+
+
+
+9
+
+
+
+Compliance
+
+
+
+PIPEDA export, audit_log wiring, Stripe Tax, data residency verification, privacy policy published
+
+
+
+Self-audit of §8 checklist passes
+
+
+
+10
+
+
+
+Polish + beta
+
+
+
+Empty states, error states, offline-detect, Sentry, PostHog, TestFlight build
+
+
+
+10 alpha restaurants running without P0 bugs for 7 days
+
+
+
+11–12
+
+
+
+Variance + benchmarks v0
+
+
+
+Variance report (Phase 2 accelerated), anonymized cohort comparison v0
+
+
+
+10 alpha users report &quot;saved us from&quot; incidents
+
+
+
+13–14
+
+
+
+App Store submission + launch
+
+
+
+App Store approval, marketing site, association outreach begins
+
+
+
+App live on Canadian App Store; first paid customer
+
+
+
+Reality check on weeks 1–10
+
+
+
+This is 10 focused weeks, not 10 calendar weeks. If you can only code evenings and weekends, double it. The bigger risk is not the timeline — it&apos;s scope creep. Every week the temptation is to add one more feature before launch. Resist. Ship the MVP, get real restaurants using it, and let their feedback drive the Phase 2 priorities. Benchmarks and marketplace are only moats if you have customers to run them with.
+
+
+
+
+
+
+
+
+Part 13 — Pre-Launch Checklists
+
+
+
+Run these before App Store submission. These are gates, not suggestions.
+
+
+
+
+
+13.1 Database security
+
+
+
+
+
+Every table has RLS ENABLED.
+
+
+
+
+
+Every table has policies for SELECT, INSERT, UPDATE. DELETE policy only where business-justified.
+
+
+
+
+
+All policies filter by business_id through get_user_business_id(auth.uid()).
+
+
+
+
+
+audit_log has INSERT-only policy. No UPDATE or DELETE policy exists.
+
+
+
+
+
+No policy uses USING (true).
+
+
+
+
+
+pin_hash column never selected in frontend queries (verify via grep over generated types).
+
+
+
+
+
+service_role key absent from all frontend code and committed env files.
+
+
+
+
+
+All foreign keys have explicit ON DELETE behaviour.
+
+
+
+
+
+Indexes on every business_id column.
+
+
+
+
+
+SQL injection impossible: queries use parameterized .eq()/.match() or RPC-only.
+
+
+
+
+
+13.2 Forecast engine
+
+
+
+
+
+agent-daily-run passes the 3 synthetic dataset tests.
+
+
+
+
+
+EWMA is computed on daily buckets, not per-sale events.
+
+
+
+
+
+DoW multipliers applied on top of EWMA baseline.
+
+
+
+
+
+Safety stock = 1.65 × σ × √lead_time.
+
+
+
+
+
+Auto-draft threshold respects both risk &gt; 90 AND confidence &gt; 40.
+
+
+
+
+
+Cold-start blending matches the table in §4.3.
+
+
+
+
+
+Timezone-correct: 2 AM cron runs in each tenant&apos;s timezone.
+
+
+
+
+
+Forecasts table receives a snapshot row per item per run.
+
+
+
+
+
+Agent never auto-approves. PIN required before approved status.
+
+
+
+
+
+Anomaly detection fires on |residual| &gt; 3σ.
+
+
+
+
+
+13.3 Recipe &amp; depletion
+
+
+
+
+
+deplete_from_sale recurses sub-recipes correctly.
+
+
+
+
+
+Modifier extras apply (tested with Square modifier_sets webhook).
+
+
+
+
+
+Yield percentage applied to butchered items.
+
+
+
+
+
+Sub-recipe stock preferred before raw depletion.
+
+
+
+
+
+Recipe version immutability — editing creates new active_from row, preserves history.
+
+
+
+
+
+Unit conversions correct for: kg↔g, L↔ml, lb↔oz, case→kg, dozen→each.
+
+
+
+
+
+13.4 Purchasing flow
+
+
+
+
+
+POs group by supplier (one PO per supplier per run).
+
+
+
+
+
+Quantity rounds to case pack.
+
+
+
+
+
+Tops up to supplier minimum-order-amount.
+
+
+
+
+
+PIN approval flow: 3 attempts → 15-min lockout, bcrypt-hashed.
+
+
+
+
+
+Share Sheet opens on iOS with formatted text + PDF option.
+
+
+
+
+
+Mark-delivered increments stock via stock_movements correctly.
+
+
+
+
+
+Partial delivery handled (received qty editable per line).
+
+
+
+
+
+Lead time and quantity learning update item parameters after each PO.
+
+
+
+
+
+13.5 POS integration
+
+
+
+
+
+Square OAuth completes without redirect issues.
+
+
+
+
+
+Toast OAuth completes.
+
+
+
+
+
+Incoming sales webhook signature verified (Square uses HMAC SHA-256).
+
+
+
+
+
+Menu items auto-imported on first connect.
+
+
+
+
+
+Ongoing new menu items prompt admin to map to recipes.
+
+
+
+
+
+Webhook handler idempotent (same pos_ticket_id cannot insert twice).
+
+
+
+
+
+13.6 Push notifications
+
+
+
+
+
+App requests notification permission on first launch.
+
+
+
+
+
+Device token written to device_tokens after grant.
+
+
+
+
+
+Daily brief push lands at 7 AM tenant timezone (not UTC).
+
+
+
+
+
+PO draft push lands within 2 minutes of agent run.
+
+
+
+
+
+Badge count matches critical item count.
+
+
+
+
+
+Deep links open correct screen.
+
+
+
+
+
+Push works when app is closed.
+
+
+
+
+
+Quiet hours respected per user preference.
+
+
+
+
+
+13.7 Compliance
+
+
+
+
+
+Supabase project in ca-central-1 region.
+
+
+
+
+
+Privacy policy published and linked from app + signup.
+
+
+
+
+
+Terms of service published.
+
+
+
+
+
+data_exports flow works end-to-end (request → email with ZIP link).
+
+
+
+
+
+Account deletion cascades to all PII; pseudonymized benchmark data retained.
+
+
+
+
+
+audit_log has 7-year retention policy documented.
+
+
+
+
+
+Stripe Tax configured for all Canadian provinces.
+
+
+
+
+
+Incident response runbook exists (who to call, how to file breach notice).
+
+
+
+
+
+13.8 App Store
+
+
+
+
+
+App runs on iOS 16+ without crashes across 10 screens.
+
+
+
+
+
+Push notifications verified on physical device.
+
+
+
+
+
+Haptics fire on approve/checkout/sale.
+
+
+
+
+
+Splash screen and icon correct.
+
+
+
+
+
+All strings reviewed for English-Canada voice (not US English).
+
+
+
+
+
+Screenshots from latest build, representative Canadian data.
+
+
+
+
+
+Demo account populated for Apple reviewer.
+
+
+
+
+
+App Store description uses Canadian spellings.
+
+
+
+
+
+Category: Business. Age rating: 4+.
+
+
+
+
+
+Privacy questionnaire reflects actual data practices.
+
+
+
+
+
+
+
+
+Part 14 — Decision Summary
+
+
+
+
+
+14.1 What changed from v2
+
+
+
+Removed: all WhatsApp code paths, Arabic/RTL, Egyptian POS integrations (Foodics/Geidea/Fawry), EGP as default currency, pharmacy sample data, and the generic multi-vertical positioning.
+
+
+
+Added: recipe &amp; BOM subsystem, unit conversions, waste tracking, Canadian supplier integrations (Sysco, GFS), HST/GST handling, PIPEDA data residency in ca-central-1, 20-minute guided onboarding, Bayesian forecasting, three-layer moat (benchmarks + supplier marketplace + proprietary forecasting), and Canadian compliance (Québec Law 25, CRA 7-year retention).
+
+
+
+Kept: RLS-first Supabase backend, PIN approval flow, audit log, cold-start blending, iOS Share Sheet, native push, in-app bot, no-LLM-for-hot-path principle.
+
+
+
+
+
+14.2 The core bet
+
+
+
+Independent Canadian restaurant operators will pay $129/month for an app that (a) drafts their orders to Sysco and GFS automatically, (b) tells them honestly how they compare to peer restaurants, and (c) forecasts accurately enough that they stop running out of chicken on Friday nights. None of these are individually a moat. Together, over 24 months, they compound into one: we own the benchmark network, we own the supplier integrations, and we own the forecasting model that every competitor has to build from scratch.
+
+
+
+
+
+14.3 The one thing that matters
+
+
+
+The forecast engine is still the heart of everything. If the predictions are accurate, users trust the system and keep paying. If the predictions are wrong, nothing else matters — not the benchmarks, not the marketplace, not the Sysco integration, not the variance report. Build the forecast engine correctly. Test it against real data. Everything else is delivery mechanism for what that engine produces.
+
+
+
+
+
+14.4 What to do tomorrow morning
+
+
+
+
+
+Commit to the vertical. This document assumes Canadian cafés and independent restaurants as the target. If that is no longer the plan, stop and re-spec.
+
+
+
+
+
+Pull the WhatsApp references out of the existing codebase. One hour of work, unambiguously good.
+
+
+
+
+
+Rewrite agent-daily-run. Start with a test harness — three synthetic 90-day sales datasets with known-correct forecasts — then write the code to pass them. One focused day. This alone unlocks more value than any other single change.
+
+
+
+
+
+Schedule 5 restaurant-owner interviews in the next two weeks. Not to validate the idea (the market is validated). To validate the wedge and the price. Find out which of the three moats they care about most — the answer will change the phase sequence.
+
+
+
+— End of Document —
+
+
+
+
+

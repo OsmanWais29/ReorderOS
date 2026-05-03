@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>ReOrderOS — Mobile</title>
+<template id="__bundler_thumbnail" data-bg-color="#0b0b0d">
+  <svg viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg">
+    <rect width="400" height="400" fill="#0b0b0d"/>
+    <g transform="translate(200 200)">
+      <circle r="84" fill="none" stroke="#10b981" stroke-width="6"/>
+      <path d="M -40 0 Q 0 -54 40 0" fill="none" stroke="#10b981" stroke-width="6" stroke-linecap="round"/>
+      <path d="M -40 0 Q 0 54 40 0" fill="none" stroke="#10b981" stroke-width="6" stroke-linecap="round"/>
+      <circle cx="16" cy="0" r="6" fill="#10b981"/>
+    </g>
+    <text x="200" y="336" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="18" font-weight="700" fill="#10b981" letter-spacing="2">REORDEROS</text>
+  </svg>
+</template>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0;
+    background: #0b0b0d;
+    font-family: -apple-system, 'SF Pro Text', 'SF Pro Display', 'Outfit', system-ui, sans-serif;
+    color: #fff; overflow: hidden; height: 100%;
+    -webkit-font-smoothing: antialiased;
+  }
+  #root { width: 100vw; height: 100vh; display: flex; align-items: center;
+    justify-content: center; position: relative;
+    background:
+      radial-gradient(ellipse at 20% 10%, rgba(16,62,44,0.55) 0%, transparent 55%),
+      radial-gradient(ellipse at 85% 90%, rgba(18,38,64,0.50) 0%, transparent 55%),
+      #0b0b0d;
+  }
+  button { font-family: inherit; }
+  button:active { transform: scale(0.97); opacity: 0.88; }
+  button { transition: transform 0.12s, opacity 0.12s; }
+  ::-webkit-scrollbar { width: 0; height: 0; }
+
+  @keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes slideup { from { transform: translateY(100%); } to { transform: translateY(0); } }
+  @keyframes pagein { from { opacity: 0; transform: translateX(8px); }
+    to { opacity: 1; transform: translateX(0); } }
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  .screen-scroll { height: 100%; overflow-y: auto; overflow-x: hidden;
+    animation: pagein 0.22s cubic-bezier(0.22,1,0.36,1); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="app/Tokens.jsx"></script>
+<script type="text/babel" src="app/Data.jsx"></script>
+<script type="text/babel" src="app/Icon.jsx"></script>
+<script type="text/babel" src="app/Atoms.jsx"></script>
+<script type="text/babel" src="app/Charts.jsx"></script>
+<script type="text/babel" src="app/ios-frame.jsx"></script>
+<script type="text/babel" src="app/ScreenHome.jsx"></script>
+<script type="text/babel" src="app/ScreenSales.jsx"></script>
+<script type="text/babel" src="app/ScreenOrders.jsx"></script>
+<script type="text/babel" src="app/ScreenStock.jsx"></script>
+<script type="text/babel" src="app/ScreenMore.jsx"></script>
+
+<script type="text/babel">
+const TAB_SCREENS   = ['home', 'sales', 'orders', 'stock', 'more'];
+const CHROMELESS    = ['chat', 'invoice', 'search', 'waste', 'po', 'send-po', 'item-detail'];
+
+function App() {
+  // Routing stack — persists current screen + history for back.
+  const [screen, setScreenRaw] = React.useState(() => {
+    const s = localStorage.getItem('roo_screen') || 'home';
+    // Any non-tab screen should reset to home on fresh load (no orphaned sub-pages).
+    return TAB_SCREENS.includes(s) ? s : 'home';
+  });
+  const [stack, setStack] = React.useState([]);           // history for back-nav
+  const [selectedItem, setSelectedItem] = React.useState(null);
+  const [pinOpen, setPinOpen] = React.useState(false);
+
+  const persist = (s) => { localStorage.setItem('roo_screen', s); };
+
+  const goto = React.useCallback((s, data) => {
+    if (data && s === 'item-detail') setSelectedItem(data);
+    setStack(st => [...st, screen]);
+    setScreenRaw(s);
+    persist(s);
+  }, [screen]);
+
+  const setTab = (id) => {
+    setStack([]);           // tabs reset history
+    setScreenRaw(id);
+    persist(id);
+  };
+
+  // PO review → PIN → send
+  const handlePOApprove = () => setPinOpen(true);
+  const handlePINSuccess = () => { setPinOpen(false); goto('send-po'); };
+
+  // Tab bar is visible everywhere — users always need a way to jump sections.
+  const showTabBar = true;
+  // Which tab to highlight: map sub-screens back to their parent tab.
+  const activeTab = (() => {
+    if (TAB_SCREENS.includes(screen)) return screen;
+    if (['item-detail', 'po', 'send-po'].includes(screen)) return 'orders';
+    if (['waste'].includes(screen)) return 'stock';
+    if (['chat', 'benchmark', 'invoice', 'profile', 'notifications', 'search'].includes(screen)) return 'more';
+    return 'home';
+  })();
+
+  const screenNode = (() => {
+    switch (screen) {
+      case 'home':        return <ScreenHome   goto={goto}/>;
+      case 'sales':       return <ScreenSales  goto={goto}/>;
+      case 'orders':      return <ScreenOrders goto={goto}/>;
+      case 'stock':       return <ScreenStock  goto={goto}/>;
+      case 'more':        return <ScreenMore   goto={goto}/>;
+
+      case 'item-detail': return <ScreenItemDetail item={selectedItem} goto={goto}/>;
+      case 'po':          return <ScreenPOReview  goto={goto} onApprove={handlePOApprove}/>;
+      case 'send-po':     return <ScreenSendPO    goto={goto}/>;
+      case 'waste':       return <WasteLogScreen  goto={goto}/>;
+
+      case 'chat':          return <ScreenChat          goto={goto}/>;
+      case 'benchmark':     return <ScreenBenchmark/>;
+      case 'invoice':       return <ScreenInvoice       goto={goto}/>;
+      case 'notifications': return <ScreenNotifications goto={goto}/>;
+      case 'search':        return <ScreenSearch        goto={goto}/>;
+      case 'profile':       return <ScreenProfile       goto={goto}/>;
+
+      default:            return <ScreenHome goto={goto}/>;
+    }
+  })();
+
+  const tabs = [
+    { id: 'home',   label: 'Home',   icon: 'home' },
+    { id: 'sales',  label: 'Sales',  icon: 'trend-up' },
+    { id: 'orders', label: 'Orders', icon: 'box' },
+    { id: 'stock',  label: 'Stock',  icon: 'warehouse' },
+    { id: 'more',   label: 'More',   icon: 'bars' },
+  ];
+
+  return (
+    <IOSDevice dark={true} width={402} height={874}>
+      <div style={{
+        width: '100%', height: '100%', position: 'relative',
+        background: T.bg, color: T.label,
+      }}>
+        {/* status-bar reserve (status bar is absolute in IOSDevice) */}
+        <div key={screen} className="screen-scroll" style={{
+          position: 'absolute', inset: 0,
+          paddingTop: 54,   // clear dynamic-island + status-bar
+          paddingBottom: showTabBar ? 88 : 34,
+        }}>
+          {screenNode}
+        </div>
+
+        {/* Bottom tab bar — glass */}
+        {showTabBar && <TabBar active={activeTab} onChange={setTab} items={tabs}/>}
+
+        {/* PIN approval sheet (triggered from PO review) */}
+        <PINSheet open={pinOpen}
+          onClose={() => setPinOpen(false)}
+          onSuccess={handlePINSuccess}/>
+      </div>
+    </IOSDevice>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+
+</body>
+</html>

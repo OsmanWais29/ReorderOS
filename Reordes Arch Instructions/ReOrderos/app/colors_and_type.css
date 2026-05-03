@@ -1,0 +1,212 @@
+/* ==========================================================================
+   ViralFish · colors_and_type.css
+   Single source of truth for color, type, radius, spacing, shadow.
+   Reflects production values from frontend/css/main.css.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   FONTS — Outfit (UI), Bebas Neue (display), DM Sans (editorial/story)
+   All three are loaded via CDN in production; recommended @import below.
+   -------------------------------------------------------------------------- */
+@import url('https://cdn.jsdelivr.net/npm/@fontsource/outfit@5.1.1/index.css');
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+:root {
+  /* ── Core surfaces ──────────────────────────────────────────────────── */
+  --vf-bg:        #07070D;   /* app base (near-black, cool) */
+  --vf-bg-2:      #0F0F1C;   /* card surface */
+  --vf-bg-3:      #111120;   /* input / inner container */
+  --vf-nav:       #090910;   /* bottom nav chrome */
+  --vf-border:    #1A1A2E;   /* 1px divider + card stroke */
+  --vf-border-soft:#16162A;  /* progress tracks, subtle dividers */
+
+  /* ── Text ramp ──────────────────────────────────────────────────────── */
+  --vf-fg:        #F0F0FF;   /* primary */
+  --vf-fg-2:      #C0C0D8;   /* body */
+  --vf-fg-3:      #7A7A9D;   /* secondary */
+  --vf-fg-4:      #35355A;   /* tertiary / muted labels */
+
+  /* ── Brand accents ──────────────────────────────────────────────────── */
+  --vf-ac:        #7C3AED;   /* primary violet — buttons, rings, active */
+  --vf-ac-2:      #A78BFA;   /* light violet — highlights, logo "VIRAL" */
+  --vf-ac-tint:   rgba(124, 58, 237, 0.12);
+  --vf-ac-line:   rgba(124, 58, 237, 0.30);
+
+  /* ── Semantic status ────────────────────────────────────────────────── */
+  --vf-success:     #10B981;
+  --vf-success-tint:rgba(16, 185, 129, 0.08);
+  --vf-success-line:rgba(16, 185, 129, 0.25);
+  --vf-warning:     #F59E0B;
+  --vf-warning-tint:rgba(245, 158, 11, 0.10);
+  --vf-warning-line:rgba(245, 158, 11, 0.25);
+  --vf-error:       #EF4444;
+  --vf-error-tint:  rgba(239, 68, 68, 0.08);
+  --vf-error-line:  rgba(239, 68, 68, 0.25);
+  --vf-info:        #818CF8;
+  --vf-cyan:        #06B6D4;
+
+  /* ── Semantic tinted card backgrounds (signature pattern) ──────────── */
+  --vf-surface-violet: #0C0916;  /* violet feature card bg */
+  --vf-surface-green:  #070D09;  /* success/intel card bg */
+  --vf-surface-red:    #0D0508;  /* problem/diagnosis card bg */
+  --vf-surface-amber:  #0A0A14;  /* neutral-warning card bg */
+
+  /* ── Fonts ──────────────────────────────────────────────────────────── */
+  --vf-font-display:  'Bebas Neue', 'Impact', sans-serif;
+  --vf-font-ui:       'Outfit', -apple-system, system-ui, sans-serif;
+  --vf-font-editorial:'DM Sans', 'Outfit', sans-serif;
+
+  /* ── Type scale (px) ────────────────────────────────────────────────── */
+  --vf-size-hero:    44px;   /* Bebas onboarding headline */
+  --vf-size-h1:      26px;   /* big dashboard numbers / page H */
+  --vf-size-h2:      24px;   /* scroll page header .ht desktop */
+  --vf-size-h3:      18px;   /* .ht mobile / card title */
+  --vf-size-body:    14px;   /* buttons / inputs */
+  --vf-size-body-sm: 13px;
+  --vf-size-meta:    12px;
+  --vf-size-label:   11px;
+  --vf-size-micro:   10px;   /* uppercase section labels .sl */
+  --vf-size-tiny:    9px;
+
+  /* ── Line-height ────────────────────────────────────────────────────── */
+  --vf-lh-tight:   1.1;
+  --vf-lh-heading: 1.25;
+  --vf-lh-body:    1.55;
+
+  /* ── Letter-spacing ─────────────────────────────────────────────────── */
+  --vf-tracking-hero:   0.04em;   /* Bebas headlines */
+  --vf-tracking-tight: -0.03em;   /* Outfit .ht compressed */
+  --vf-tracking-label:  0.08em;   /* uppercase section labels */
+  --vf-tracking-pill:   0.06em;
+
+  /* ── Radius ─────────────────────────────────────────────────────────── */
+  --vf-r-sm: 7px;     /* tool chips */
+  --vf-r-md: 9px;     /* inputs sm, chips */
+  --vf-r-lg: 13px;    /* buttons, inputs */
+  --vf-r-xl: 14px;    /* cards */
+  --vf-r-2xl:18px;    /* desktop cards */
+  --vf-r-sheet: 20px; /* modal bottom-sheet */
+  --vf-r-pill: 9999px;
+
+  /* ── Spacing (4px baseline, tight mobile density) ──────────────────── */
+  --vf-sp-1:  4px;
+  --vf-sp-2:  6px;
+  --vf-sp-3:  8px;
+  --vf-sp-4:  10px;
+  --vf-sp-5:  13px;
+  --vf-sp-6:  16px;
+  --vf-sp-7:  22px;
+  --vf-sp-8:  32px;
+
+  /* ── Shadow ─────────────────────────────────────────────────────────── */
+  --vf-shadow-none:   none;
+  --vf-shadow-cta:    0 6px 24px rgba(124, 58, 237, 0.30);
+  --vf-shadow-lift:   0 0 10px rgba(245, 158, 11, 0.8); /* on-canvas markers */
+
+  /* ── Motion ─────────────────────────────────────────────────────────── */
+  --vf-ease:       cubic-bezier(0.22, 1, 0.36, 1);
+  --vf-dur-quick:  0.12s;
+  --vf-dur-fast:   0.22s;
+  --vf-dur-mid:    0.35s;
+  --vf-dur-slow:   1.1s;     /* progress bars */
+  --vf-dur-reveal: 1.6s;     /* score ring */
+
+  /* ── Container ──────────────────────────────────────────────────────── */
+  --vf-phone-max:   430px;
+  --vf-tablet-max:  720px;
+  --vf-desktop-max: 1120px;
+}
+
+/* --------------------------------------------------------------------------
+   SEMANTIC TYPE ROLES — recreations of prod classes, namespaced vf-*
+   -------------------------------------------------------------------------- */
+
+.vf-hero {                        /* Bebas welcome headline */
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-size-hero);
+  letter-spacing: var(--vf-tracking-hero);
+  line-height: 1.0;
+  color: var(--vf-fg);
+}
+.vf-hero em { font-style: normal; color: var(--vf-ac-2); }
+
+.vf-h1 {                          /* big numerics */
+  font-family: var(--vf-font-ui);
+  font-size: var(--vf-size-h1);
+  font-weight: 900;
+  letter-spacing: -0.04em;
+  color: var(--vf-fg);
+  line-height: var(--vf-lh-tight);
+}
+
+.vf-h2,
+.vf-ht {                          /* .ht — page header */
+  font-family: var(--vf-font-ui);
+  font-size: var(--vf-size-h3);      /* mobile */
+  font-weight: 800;
+  letter-spacing: var(--vf-tracking-tight);
+  color: var(--vf-fg);
+}
+@media (min-width: 641px)  { .vf-h2, .vf-ht { font-size: 21px; } }
+@media (min-width: 1025px) { .vf-h2, .vf-ht { font-size: 24px; } }
+
+.vf-card-title {
+  font-family: var(--vf-font-ui);
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--vf-fg);
+  line-height: var(--vf-lh-heading);
+}
+
+.vf-body {
+  font-family: var(--vf-font-ui);
+  font-size: var(--vf-size-body);
+  font-weight: 400;
+  color: var(--vf-fg-2);
+  line-height: var(--vf-lh-body);
+}
+.vf-body-sm { font-size: var(--vf-size-body-sm); color: var(--vf-fg-3); line-height: var(--vf-lh-body); }
+.vf-meta    { font-size: var(--vf-size-meta);    color: var(--vf-fg-3); }
+.vf-label   {                     /* .sl — uppercase eyebrow */
+  font-family: var(--vf-font-ui);
+  font-size: var(--vf-size-micro);
+  font-weight: 700;
+  letter-spacing: var(--vf-tracking-label);
+  text-transform: uppercase;
+  color: var(--vf-fg-4);
+}
+.vf-editorial {                   /* DM Sans story copy */
+  font-family: var(--vf-font-editorial);
+  font-size: var(--vf-size-body-sm);
+  font-weight: 400;
+  color: var(--vf-fg-3);
+  line-height: var(--vf-lh-body);
+}
+
+/* Score number — the most distinctive numeric spec */
+.vf-score {
+  font-family: var(--vf-font-ui);
+  font-size: 48px;
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  color: var(--vf-fg);
+  line-height: 1;
+}
+.vf-score-big {           /* Bebas giant ("85") */
+  font-family: var(--vf-font-display);
+  font-size: 130px;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  color: var(--vf-fg);
+}
+
+/* --------------------------------------------------------------------------
+   BASE / RESET — opt-in (add `.vf-app` to <body> or root)
+   -------------------------------------------------------------------------- */
+.vf-app {
+  background: var(--vf-bg);
+  color: var(--vf-fg);
+  font-family: var(--vf-font-ui);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}

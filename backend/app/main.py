@@ -1,11 +1,4 @@
-"""FastAPI application factory.
-
-Sprint 1 wires only the observability/health router. Subsequent sprints add:
-- Sprint 2: auth middleware, tenants/users/rbac routers
-- Sprint 3: inventory router
-- Sprint 4: pos_clover router + webhook
-- ...
-"""
+"""FastAPI application factory."""
 
 from __future__ import annotations
 
@@ -48,8 +41,16 @@ def create_app() -> FastAPI:
         default_response_class=JSONResponse,
     )
 
-    # Sprint 1 surface: health + version only.
     app.include_router(observability_router)
+
+    # Sprint 2: auth, tenants, invitations
+    from app.modules.auth.router import router as auth_router
+    from app.modules.invitations.router import router as invitations_router
+    from app.modules.tenants.router import router as tenants_router
+
+    app.include_router(auth_router, prefix="/api/v1")
+    app.include_router(tenants_router, prefix="/api/v1")
+    app.include_router(invitations_router, prefix="/api/v1")
 
     return app
 

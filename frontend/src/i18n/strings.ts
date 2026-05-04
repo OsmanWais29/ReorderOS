@@ -19,7 +19,7 @@ export const STRINGS = {
 
     // ── Account ─────────────────────────────────────────────────────────
     create: 'Create your account',
-    createSub: 'We need a few basics to get you set up.',
+    createSub: 'Set up wont take long, we are happy to help!',
     firstName: 'First name',
     bizName: 'Restaurant name',
     email: 'Email',
@@ -73,7 +73,7 @@ export const STRINGS = {
     haveAccount: 'J\u2019ai d\u00e9j\u00e0 un compte',
 
     create: 'Cr\u00e9ez votre compte',
-    createSub: 'Quelques informations pour d\u00e9marrer.',
+    createSub: 'La configuration ne prendra pas longtemps, nous sommes heureux de vous aider!',
     firstName: 'Pr\u00e9nom',
     bizName: 'Nom du restaurant',
     email: 'Courriel',

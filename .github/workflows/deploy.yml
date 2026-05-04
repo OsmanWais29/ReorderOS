@@ -43,10 +43,20 @@ jobs:
             echo "and store the returned app id as the GitHub secret."
             exit 1
           fi
+          # Sync spec. deploy_on_push already started a deployment from the git push.
           doctl apps update "$APP_ID" --spec .do/app.yaml --wait=false
-          DEP_ID=$(doctl apps create-deployment "$APP_ID" --format ID --no-header | tail -1)
+          # Give DO a moment to register the deployment.
+          sleep 10
+          # head -1 causes SIGPIPE with pipefail — disable temporarily.
+          set +o pipefail
+          DEP_ID=$(doctl apps list-deployments "$APP_ID" --format ID --no-header 2>/dev/null | head -1)
+          set -o pipefail
+          if [ -z "$DEP_ID" ]; then
+            echo "No deployment found."
+            exit 1
+          fi
           echo "deployment_id=$DEP_ID" >> "$GITHUB_OUTPUT"
-          echo "Triggered deployment: $DEP_ID"
+          echo "Tracking deployment: $DEP_ID"
 
       - name: Wait for deployment to go live
         env:

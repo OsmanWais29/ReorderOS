@@ -59,9 +59,9 @@ class Settings(BaseSettings):
         if not isinstance(v, str):
             return v
         if v.startswith("postgresql://"):
-            v = "postgresql+asyncpg://" + v[len("postgresql://"):]
+            v = "postgresql+asyncpg://" + v[len("postgresql://") :]
         elif v.startswith("postgres://"):
-            v = "postgresql+asyncpg://" + v[len("postgres://"):]
+            v = "postgresql+asyncpg://" + v[len("postgres://") :]
         # asyncpg uses connect_args={"ssl": True} — strip libpq-style sslmode
         if "sslmode" in v:
             parsed = urlparse(v)

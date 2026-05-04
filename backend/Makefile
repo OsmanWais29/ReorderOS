@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-PY := python
+PY := python3
 VENV := .venv
 ACT := source $(VENV)/bin/activate
 COMPOSE := docker compose

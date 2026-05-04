@@ -9,15 +9,13 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+# Import every modules' models package so autogenerate sees them.
+import app.modules.auth.models
+import app.modules.invitations.models
+import app.modules.tenants.models  # noqa: F401
 from alembic import context
 from app.core.config import get_settings
 from app.core.database import Base
-
-# Import every modules' models package so autogenerate sees them.
-# Sprint 1: nothing yet. Future sprints append imports below this line.
-# import app.modules.tenants.models
-# import app.modules.inventory.models
-
 
 config = context.config
 if config.config_file_name is not None:

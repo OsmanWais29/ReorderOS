@@ -93,6 +93,19 @@ async def dispose_engine() -> None:
         _sessionmaker = None
 
 
+def dispose_engine_sync() -> None:
+    """Synchronous pool reset — used between tests to avoid cross-loop connections.
+
+    Uses close=False so we don't attempt to close connections that may be
+    tied to an already-closed event loop.
+    """
+    global _engine, _sessionmaker
+    if _engine is not None:
+        _engine.sync_engine.dispose(close=False)
+        _engine = None
+        _sessionmaker = None
+
+
 async def ping_database() -> dict[str, Any]:
     """Cheap readiness check: SELECT 1."""
     from sqlalchemy import text

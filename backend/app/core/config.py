@@ -40,9 +40,12 @@ class Settings(BaseSettings):
         alias="DATABASE_URL",
     )
 
-    # ── Auth (filled in Sprint 2) ────────────────────────────────────────────
-    clerk_jwks_url: str | None = Field(default=None, alias="CLERK_JWKS_URL")
-    clerk_issuer: str | None = Field(default=None, alias="CLERK_ISSUER")
+    # ── Auth (WorkOS) ────────────────────────────────────────────────────────
+    # Sprint 2 sets these. Empty in Sprint 1; auth middleware no-ops when unset.
+    workos_client_id: str | None = Field(default=None, alias="WORKOS_CLIENT_ID")
+    workos_jwks_url: str | None = Field(default=None, alias="WORKOS_JWKS_URL")
+    workos_issuer: str = Field(default="https://api.workos.com", alias="WORKOS_ISSUER")
+    workos_verify_audience: bool = Field(default=False, alias="WORKOS_VERIFY_AUDIENCE")
 
     # ── Object storage (DigitalOcean Spaces; lazy-init in app.core.storage) ──
     spaces_endpoint: str | None = Field(default=None, alias="DO_SPACES_ENDPOINT")

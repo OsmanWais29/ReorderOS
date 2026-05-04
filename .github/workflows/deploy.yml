@@ -44,7 +44,7 @@ jobs:
             exit 1
           fi
           doctl apps update "$APP_ID" --spec .do/app.yaml --wait=false
-          DEP_ID=$(doctl apps create-deployment "$APP_ID" --format ID --no-header)
+          DEP_ID=$(doctl apps create-deployment "$APP_ID" --format ID --no-header | tail -1)
           echo "deployment_id=$DEP_ID" >> "$GITHUB_OUTPUT"
           echo "Triggered deployment: $DEP_ID"
 

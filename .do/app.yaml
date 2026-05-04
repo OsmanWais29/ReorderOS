@@ -47,15 +47,21 @@ services:
       - key: DATABASE_URL
         scope: RUN_TIME
         value: ${reorderos-dev-pg.DATABASE_URL}
-      # Sprint 2: Clerk JWT validation reads these.
-      - key: CLERK_JWKS_URL
+      # Sprint 2: WorkOS JWT validation.
+      - key: WORKOS_CLIENT_ID
         scope: RUN_TIME
         type: SECRET
         value: ""
-      - key: CLERK_ISSUER
+      - key: WORKOS_JWKS_URL
         scope: RUN_TIME
         type: SECRET
         value: ""
+      - key: WORKOS_ISSUER
+        scope: RUN_TIME
+        value: https://api.workos.com
+      - key: WORKOS_VERIFY_AUDIENCE
+        scope: RUN_TIME
+        value: "false"
       # Sprint 6: Spaces (S3-compatible) used by receipts photo uploads.
       - key: DO_SPACES_ENDPOINT
         scope: RUN_TIME

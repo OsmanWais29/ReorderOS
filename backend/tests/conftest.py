@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
@@ -14,7 +15,17 @@ from httpx import ASGITransport, AsyncClient
 from app.core.security import Identity
 from app.main import app
 
-DB_URL_SYNC = "postgresql://reorderos:reorderos@localhost:5433/reorderos"
+# Derive sync URL from DATABASE_URL env var so the same fixtures work in CI
+# (port 5432) and local dev (port 5433). Strip the +asyncpg driver prefix since
+# asyncpg.connect() doesn't use SQLAlchemy DSNs.
+DB_URL_SYNC = (
+    os.environ.get(
+        "DATABASE_URL",
+        "postgresql+asyncpg://reorderos:reorderos@localhost:5433/reorderos",
+    )
+    .replace("postgresql+asyncpg://", "postgresql://")
+    .replace("postgres://", "postgresql://")
+)
 
 
 # ── Engine reset between tests ────────────────────────────────────────────────

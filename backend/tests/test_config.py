@@ -11,9 +11,10 @@ from app.core.config import Settings
     ("input_url", "expected"),
     [
         # DigitalOcean App Platform injects this form when binding a managed DB.
+        # sslmode is stripped because asyncpg uses connect_args={"ssl": ...} instead.
         (
             "postgresql://u:p@db-postgresql-tor1-12345.b.db.ondigitalocean.com:25060/d?sslmode=require",
-            "postgresql+asyncpg://u:p@db-postgresql-tor1-12345.b.db.ondigitalocean.com:25060/d?sslmode=require",
+            "postgresql+asyncpg://u:p@db-postgresql-tor1-12345.b.db.ondigitalocean.com:25060/d",
         ),
         # Heroku-style alias.
         (

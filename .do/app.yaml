@@ -48,14 +48,15 @@ services:
         scope: RUN_TIME
         value: ${reorderos-dev-pg.DATABASE_URL}
       # Sprint 2: WorkOS JWT validation.
+      # Set WORKOS_CLIENT_ID and WORKOS_JWKS_URL via the DO console only.
+      # Never include value: here — spec pushes with value: "" will overwrite
+      # console-managed secrets back to empty strings.
       - key: WORKOS_CLIENT_ID
         scope: RUN_TIME
         type: SECRET
-        value: ""
       - key: WORKOS_JWKS_URL
         scope: RUN_TIME
         type: SECRET
-        value: ""
       - key: WORKOS_ISSUER
         scope: RUN_TIME
         value: https://api.workos.com
@@ -75,11 +76,9 @@ services:
       - key: DO_SPACES_KEY
         scope: RUN_TIME
         type: SECRET
-        value: ""
       - key: DO_SPACES_SECRET
         scope: RUN_TIME
         type: SECRET
-        value: ""
 
 databases:
   # `name` is the spec component name used by ${...DATABASE_URL} interpolation

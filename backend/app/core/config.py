@@ -44,8 +44,14 @@ class Settings(BaseSettings):
     # Sprint 2 sets these. Empty in Sprint 1; auth middleware no-ops when unset.
     workos_client_id: str | None = Field(default=None, alias="WORKOS_CLIENT_ID")
     workos_jwks_url: str | None = Field(default=None, alias="WORKOS_JWKS_URL")
+    # User Management JWTs use a client-scoped issuer:
+    #   https://api.workos.com/user_management/<client_id>
+    # This must match the `iss` claim in the token exactly.
     workos_issuer: str = Field(default="https://api.workos.com", alias="WORKOS_ISSUER")
     workos_verify_audience: bool = Field(default=False, alias="WORKOS_VERIFY_AUDIENCE")
+    # Secret key used to fetch user profiles from WorkOS API when the JWT
+    # does not include an email claim (standard for User Management tokens).
+    workos_secret_key: str | None = Field(default=None, alias="WORKOS_SECRET_KEY")
 
     # ── Object storage (DigitalOcean Spaces; lazy-init in app.core.storage) ──
     spaces_endpoint: str | None = Field(default=None, alias="DO_SPACES_ENDPOINT")

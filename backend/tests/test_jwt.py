@@ -67,7 +67,7 @@ async def test_alg_none_rejected(verifier: JWTVerifier) -> None:
 
     header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT","kid":"test-key-1"}').rstrip(b"=")
     payload = base64.urlsafe_b64encode(
-        b'{"sub":"u","email":"a@b.com","iss":"https://api.workos.com","exp":9999999999}'
+        b'{"sub":"u","email":"a@b.com","iss":"https://api.workos.com/user_management/client_ci_fake","exp":9999999999}'
     ).rstrip(b"=")
     token = f"{header.decode()}.{payload.decode()}."
     with pytest.raises(Exception) as exc_info:
@@ -82,7 +82,7 @@ async def test_hs256_rejected(verifier: JWTVerifier) -> None:
         {
             "sub": "u1",
             "email": "a@b.com",
-            "iss": "https://api.workos.com",
+            "iss": "https://api.workos.com/user_management/client_ci_fake",
             "exp": int(time.time()) + 3600,
         },
         "secret",
@@ -104,7 +104,7 @@ async def test_missing_kid_rejected(verifier: JWTVerifier, rsa_private_key: Any)
         {
             "sub": "u1",
             "email": "a@b.com",
-            "iss": "https://api.workos.com",
+            "iss": "https://api.workos.com/user_management/client_ci_fake",
             "exp": int(time.time()) + 3600,
         },
         rsa_private_key,
@@ -133,30 +133,32 @@ async def test_expired_token_rejected(verifier: JWTVerifier, make_token: Any) ->
     assert exc_info.value.status_code == 401  # type: ignore[attr-defined]
 
 
-async def test_missing_email_rejected(verifier: JWTVerifier, rsa_private_key: Any) -> None:
+async def test_no_email_claim_passes_verifier(verifier: JWTVerifier, rsa_private_key: Any) -> None:
+    """JWTVerifier accepts tokens without email — WorkOS User Management JWTs
+    omit email by design.  Email is resolved upstream in get_identity via the
+    WorkOS profile API."""
     import jwt as _jwt
 
     token = _jwt.encode(
         {
             "sub": "u1",
-            "iss": "https://api.workos.com",
+            "iss": "https://api.workos.com/user_management/client_ci_fake",
             "exp": int(time.time()) + 3600,
-            # No email claim
         },
         rsa_private_key,
         algorithm="RS256",
         headers={"kid": "test-key-1"},
     )
-    with pytest.raises(Exception) as exc_info:
-        await verifier.verify(token)
-    assert exc_info.value.status_code == 401  # type: ignore[attr-defined]
+    claims = await verifier.verify(token)
+    assert claims["sub"] == "u1"
+    assert "email" not in claims
 
 
 async def test_audience_rejected_when_enabled(fake_jwks: dict[str, Any], make_token: Any) -> None:
     """When verify_audience=True, wrong audience is rejected."""
     v = JWTVerifier(
         jwks_url="https://fake.jwks/",
-        issuer="https://api.workos.com",
+        issuer="https://api.workos.com/user_management/client_ci_fake",
         client_id="correct_client",
         verify_audience=True,
     )
@@ -179,7 +181,7 @@ async def test_unknown_kid_forces_refresh(fake_jwks: dict[str, Any], make_token:
     """Unknown kid inside TTL triggers a refresh and then succeeds."""
     v = JWTVerifier(
         jwks_url="https://fake.jwks/",
-        issuer="https://api.workos.com",
+        issuer="https://api.workos.com/user_management/client_ci_fake",
         client_id=None,
         verify_audience=False,
         ttl=9999.0,
@@ -210,7 +212,7 @@ async def test_empty_cache_outage_returns_503(make_token: Any) -> None:
     """JWKS endpoint down + empty cache → 503."""
     v = JWTVerifier(
         jwks_url="https://down.jwks/",
-        issuer="https://api.workos.com",
+        issuer="https://api.workos.com/user_management/client_ci_fake",
         client_id=None,
         verify_audience=False,
     )
@@ -233,7 +235,7 @@ async def test_stale_populated_cache_serves_valid_token(
     """JWKS down but stale cache populated → token accepted, warning logged."""
     v = JWTVerifier(
         jwks_url="https://down.jwks/",
-        issuer="https://api.workos.com",
+        issuer="https://api.workos.com/user_management/client_ci_fake",
         client_id=None,
         verify_audience=False,
         ttl=0.0,  # Force stale immediately
@@ -261,7 +263,7 @@ async def test_malformed_jwks_does_not_wipe_good_cache(
     """Malformed JWKS response keeps existing cache intact."""
     v = JWTVerifier(
         jwks_url="https://fake.jwks/",
-        issuer="https://api.workos.com",
+        issuer="https://api.workos.com/user_management/client_ci_fake",
         client_id=None,
         verify_audience=False,
         ttl=0.0,

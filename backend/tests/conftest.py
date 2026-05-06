@@ -90,7 +90,7 @@ def make_token(rsa_private_key: Any) -> Callable[..., str]:
         sub: str = "user_workos_test",
         email: str = "test@example.com",
         email_verified: bool | str = True,
-        iss: str = "https://api.workos.com",
+        iss: str = "https://api.workos.com/user_management/client_ci_fake",
         exp_delta: int = 3600,
         kid: str = "test-key-1",
         alg: str = "RS256",
@@ -135,7 +135,7 @@ def verifier(fake_jwks: dict[str, Any]) -> Any:
 
     v = JWTVerifier(
         jwks_url="https://fake.jwks/",
-        issuer="https://api.workos.com",
+        issuer="https://api.workos.com/user_management/client_ci_fake",
         client_id="client_test",
         verify_audience=False,
     )

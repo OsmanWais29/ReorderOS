@@ -44,8 +44,8 @@ jobs:
     # so Settings validation passes.
     env:
       WORKOS_CLIENT_ID: client_ci_fake
-      WORKOS_JWKS_URL: https://api.workos.com/auth/jwks/client_ci_fake
-      WORKOS_ISSUER: https://api.workos.com
+      WORKOS_JWKS_URL: https://api.workos.com/sso/jwks/client_ci_fake
+      WORKOS_ISSUER: https://api.workos.com/user_management/client_ci_fake
       WORKOS_VERIFY_AUDIENCE: "false"
     steps:
       - uses: actions/checkout@v4
@@ -86,8 +86,8 @@ jobs:
     env:
       DATABASE_URL: postgresql+asyncpg://reorderos:reorderos@localhost:5432/reorderos
       WORKOS_CLIENT_ID: client_ci_fake
-      WORKOS_JWKS_URL: https://api.workos.com/auth/jwks/client_ci_fake
-      WORKOS_ISSUER: https://api.workos.com
+      WORKOS_JWKS_URL: https://api.workos.com/sso/jwks/client_ci_fake
+      WORKOS_ISSUER: https://api.workos.com/user_management/client_ci_fake
       WORKOS_VERIFY_AUDIENCE: "false"
     steps:
       - uses: actions/checkout@v4

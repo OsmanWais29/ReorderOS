@@ -48,21 +48,23 @@ services:
         scope: RUN_TIME
         value: ${reorderos-dev-pg.DATABASE_URL}
       # Sprint 2: WorkOS JWT validation.
-      # Set WORKOS_CLIENT_ID and WORKOS_JWKS_URL via the DO console only.
-      # Never include value: here — spec pushes with value: "" will overwrite
-      # console-managed secrets back to empty strings.
+      # client_id and JWKS URL are non-sensitive public identifiers — no need
+      # for SECRET type. DO_SPACES_KEY/SECRET are the only real secrets below.
       - key: WORKOS_CLIENT_ID
         scope: RUN_TIME
-        type: SECRET
+        value: client_01KQT0CRCZP8W8AMAYE5Y1F9SP
       - key: WORKOS_JWKS_URL
         scope: RUN_TIME
-        type: SECRET
+        value: https://api.workos.com/sso/jwks/client_01KQT0CRCZP8W8AMAYE5Y1F9SP
       - key: WORKOS_ISSUER
         scope: RUN_TIME
-        value: https://api.workos.com
+        value: https://api.workos.com/user_management/client_01KQT0CRCZP8W8AMAYE5Y1F9SP
       - key: WORKOS_VERIFY_AUDIENCE
         scope: RUN_TIME
         value: "false"
+      - key: WORKOS_SECRET_KEY
+        scope: RUN_TIME
+        type: SECRET
       # Sprint 6: Spaces (S3-compatible) used by receipts photo uploads.
       - key: DO_SPACES_ENDPOINT
         scope: RUN_TIME

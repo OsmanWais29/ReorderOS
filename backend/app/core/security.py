@@ -116,9 +116,6 @@ class JWTVerifier:
         except jwt.InvalidTokenError as exc:
             raise HTTPException(status_code=401, detail=f"Invalid token: {exc}") from exc
 
-        if not claims.get("email"):
-            raise HTTPException(status_code=401, detail="Missing email claim")
-
         return claims
 
     async def _get_key(self, kid: str) -> Any:
@@ -219,6 +216,28 @@ def _parse_email_verified(val: bool | str | int | None) -> bool:
     return False
 
 
+async def _fetch_workos_profile(workos_user_id: str) -> dict[str, Any]:
+    """Fetch user profile from WorkOS API when JWT lacks email claim.
+
+    WorkOS User Management tokens omit profile data by default.  The secret
+    key (WORKOS_SECRET_KEY) must be set for this to succeed.
+    """
+    s = get_settings()
+    if not s.workos_secret_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Auth not configured (WORKOS_SECRET_KEY missing — cannot fetch user profile)",
+        )
+    url = f"https://api.workos.com/user_management/users/{workos_user_id}"
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.get(
+            url, headers={"Authorization": f"Bearer {s.workos_secret_key}"}
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=401, detail="Could not retrieve user profile from WorkOS")
+    return resp.json()  # type: ignore[no-any-return]
+
+
 async def get_identity(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
     verifier: JWTVerifier = Depends(get_jwt_verifier),
@@ -227,12 +246,28 @@ async def get_identity(
     if not credentials:
         raise HTTPException(status_code=401, detail="Missing Authorization header")
     claims = await verifier.verify(credentials.credentials)
+
+    workos_id: str = claims["sub"]
+
+    # WorkOS User Management JWTs omit profile claims; fetch from API if needed.
+    if claims.get("email"):
+        email: str = claims["email"]
+        email_verified = _parse_email_verified(claims.get("email_verified"))
+        first_name: str | None = claims.get("first_name") or claims.get("given_name")
+        last_name: str | None = claims.get("last_name") or claims.get("family_name")
+    else:
+        profile = await _fetch_workos_profile(workos_id)
+        email = profile["email"]
+        email_verified = bool(profile.get("email_verified", False))
+        first_name = profile.get("first_name")
+        last_name = profile.get("last_name")
+
     return Identity(
-        workos_id=claims["sub"],
-        email=claims["email"],
-        email_verified=_parse_email_verified(claims.get("email_verified")),
-        first_name=claims.get("first_name") or claims.get("given_name"),
-        last_name=claims.get("last_name") or claims.get("family_name"),
+        workos_id=workos_id,
+        email=email,
+        email_verified=email_verified,
+        first_name=first_name,
+        last_name=last_name,
     )
 
 

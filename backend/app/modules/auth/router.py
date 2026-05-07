@@ -1,14 +1,16 @@
-"""Auth routes: /auth/register-tenant, /auth/me, /auth/active-tenant."""
+"""Auth routes: /auth/register-tenant, /auth/me, /auth/active-tenant, /auth/exchange."""
 
 from __future__ import annotations
 
 import uuid
 from typing import Annotated
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import IntegrityError
 
+from app.core.config import get_settings
 from app.core.database import get_session
 from app.core.security import Identity, Principal, get_identity, get_principal
 from app.modules.auth.models import User
@@ -165,3 +167,47 @@ async def set_active_tenant(
         tenant_id=uuid.UUID(principal.tenant_id),
         role=principal.role,
     )
+
+
+# ── PKCE code exchange ────────────────────────────────────────────────────────
+
+
+class ExchangeRequest(BaseModel):
+    code: str
+    code_verifier: str
+    redirect_uri: str
+
+
+class ExchangeResponse(BaseModel):
+    access_token: str
+
+
+@router.post("/exchange", response_model=ExchangeResponse)
+async def exchange_code(body: ExchangeRequest) -> ExchangeResponse:
+    """Exchange a PKCE authorization code for a WorkOS access token.
+
+    The mobile/web client sends code + code_verifier here so the client_secret
+    never leaves the server.
+    """
+    s = get_settings()
+    if not s.workos_secret_key or not s.workos_client_id:
+        raise HTTPException(status_code=503, detail="Auth not configured")
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.post(
+            "https://api.workos.com/user_management/authenticate",
+            json={
+                "client_id": s.workos_client_id,
+                "client_secret": s.workos_secret_key,
+                "grant_type": "authorization_code",
+                "code": body.code,
+                "code_verifier": body.code_verifier,
+                "redirect_uri": body.redirect_uri,
+            },
+        )
+
+    if r.status_code != 200:
+        detail = r.json().get("message") or r.json().get("error", "authentication failed")
+        raise HTTPException(status_code=401, detail=detail)
+
+    return ExchangeResponse(access_token=r.json()["access_token"])

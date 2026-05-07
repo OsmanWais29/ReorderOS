@@ -7,6 +7,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import { LangProvider } from '@/i18n/LangProvider';
+import { AuthProvider } from '@/auth/AuthContext';
 import { T } from '@/theme/tokens';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -21,6 +22,7 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: T.bg }}>
       <SafeAreaProvider>
         <LangProvider>
+          <AuthProvider>
           <StatusBar style="light" />
           <Stack
             screenOptions={{
@@ -29,6 +31,7 @@ export default function RootLayout() {
               animation: 'slide_from_right',
             }}
           />
+          </AuthProvider>
         </LangProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

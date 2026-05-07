@@ -103,5 +103,4 @@ const styles = StyleSheet.create({
   statLabel: { ...TYPE.caption1, color: T.sec, textTransform: 'uppercase', letterSpacing: 0.5 },
   statValue: { ...TYPE.title2, color: T.text, marginTop: 4 },
   statDelta: { ...TYPE.caption1, color: T.sec, marginTop: 2 },
-  amber: T.amber,
 });

@@ -29,6 +29,7 @@ export default function SignIn() {
         response_type: 'code',
         code_challenge: challenge,
         code_challenge_method: 'S256',
+        provider: 'authkit',
       });
 
       window.location.href = `${WORKOS_AUTH_URL}?${params.toString()}`;

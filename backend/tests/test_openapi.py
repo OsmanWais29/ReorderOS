@@ -21,6 +21,7 @@ async def test_openapi_served(client: AsyncClient) -> None:
     assert "/api/v1/auth/register-tenant" in paths
     assert "/api/v1/auth/me" in paths
     assert "/api/v1/auth/active-tenant" in paths
+    assert "/api/v1/auth/exchange" in paths
     assert "/api/v1/tenants" in paths
     assert "/api/v1/invitations" in paths
     assert "/api/v1/invitations/accept" in paths

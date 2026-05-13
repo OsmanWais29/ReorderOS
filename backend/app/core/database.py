@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
@@ -104,6 +105,40 @@ def dispose_engine_sync() -> None:
         _engine.sync_engine.dispose(close=False)
         _engine = None
         _sessionmaker = None
+
+
+def get_db_session() -> AsyncSession:
+    """FastAPI dependency: returns a fresh session from the connection pool.
+
+    Route handlers call ``await db.commit()`` / ``await db.rollback()``
+    explicitly; the session is closed when garbage-collected.
+    """
+    return get_sessionmaker()()
+
+
+def make_bound_session(conn: AsyncConnection) -> AsyncSession:
+    """Test factory only.
+
+    Returns a session that reuses *conn* so that the test's outer savepoint
+    can be rolled back to undo all changes made during a single test.
+    Never call this from production code — it bypasses the pool lifecycle.
+    """
+    return AsyncSession(bind=conn, expire_on_commit=False)
+
+
+class _EngineProxy:
+    """Lazy proxy that delegates every attribute access to ``get_engine()``.
+
+    Exported as ``engine`` so test fixtures can write ``engine.begin()`` without
+    caring about the lazy-initialisation lifecycle.  The underlying engine is
+    still created on first use and is reset between tests by ``dispose_engine_sync``.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(get_engine(), name)
+
+
+engine = _EngineProxy()
 
 
 async def ping_database() -> dict[str, Any]:

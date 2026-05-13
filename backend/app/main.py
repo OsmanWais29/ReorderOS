@@ -52,6 +52,11 @@ def create_app() -> FastAPI:
     app.include_router(tenants_router, prefix="/api/v1")
     app.include_router(invitations_router, prefix="/api/v1")
 
+    # Sprint 3: inventory
+    from app.modules.inventory.router import router as inventory_router
+
+    app.include_router(inventory_router, prefix="/api/v1")
+
     return app
 
 

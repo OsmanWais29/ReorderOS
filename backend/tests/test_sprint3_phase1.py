@@ -14,7 +14,7 @@ import uuid
 import asyncpg
 import pytest
 
-from tests.conftest import seed_tenant, seed_user
+from tests.conftest import seed_tenant
 
 pytestmark = pytest.mark.integration
 
@@ -100,7 +100,9 @@ async def test_1_1_app_user_cannot_update_movements(
     item_id = await _mk_item(admin_conn, str(tid), uom_id)
 
     # Insert via superuser so we have a row to try updating.
-    await _insert_movement(admin_conn, str(tid), item_id, movement_type="opening_balance", delta=100)
+    await _insert_movement(
+        admin_conn, str(tid), item_id, movement_type="opening_balance", delta=100
+    )
 
     # Attempt UPDATE as app_user.
     with pytest.raises(asyncpg.InsufficientPrivilegeError):

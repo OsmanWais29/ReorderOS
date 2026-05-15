@@ -172,7 +172,11 @@ async def record_sale_inventory_effect(
             f"{inventory_item_id} not found (tenant {tenant_id})"
         )
 
-    theoretical_qty = Decimal(str(row.sale_qty)) * Decimal(str(row.recipe_qty)) / Decimal(str(row.factor))
+    theoretical_qty = (
+        Decimal(str(row.sale_qty))
+        * Decimal(str(row.recipe_qty))
+        / Decimal(str(row.factor))
+    )
 
     if row.mode == "recipe_deducted":
         movement_type = "sale_depletion"

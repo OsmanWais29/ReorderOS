@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import asyncpg
@@ -13,7 +13,7 @@ from tests.conftest import seed_tenant
 
 pytestmark = pytest.mark.integration
 
-UTC = timezone.utc
+UTC = UTC
 
 
 # ── shared helpers ────────────────────────────────────────────────────────────

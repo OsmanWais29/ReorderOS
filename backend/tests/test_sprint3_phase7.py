@@ -4,21 +4,21 @@ All 29 Sprint 3 acceptance criteria in one comprehensive suite.
 Sprint 3 is complete only when every test in this file passes.
 
 Groups:
-  7.1–7.2   GRANT    — append-only enforcement (asyncpg)
-  7.3–7.5   OB       — opening balance constraints
-  7.6–7.9   ON_HAND  — on_hand() SQL function correctness (asyncpg)
-  7.10–7.14 TRIGGER  — count event trigger / mode branching (asyncpg)
-  7.15–7.17 SALE     — record_sale_inventory_effect() (service layer)
-  7.18–7.20 RECEIPT  — commit_receipt() (service layer)
-  7.21–7.23 IDEM     — idempotency middleware (HTTP)
-  7.24–7.26 MONITOR  — monitoring_alerts UPSERT and thresholds (service layer)
-  7.27–7.29 STOCK    — GET /inventory/items stock warning flags (HTTP)
+  7.1-7.2   GRANT    — append-only enforcement (asyncpg)
+  7.3-7.5   OB       — opening balance constraints
+  7.6-7.9   ON_HAND  — on_hand() SQL function correctness (asyncpg)
+  7.10-7.14 TRIGGER  — count event trigger / mode branching (asyncpg)
+  7.15-7.17 SALE     — record_sale_inventory_effect() (service layer)
+  7.18-7.20 RECEIPT  — commit_receipt() (service layer)
+  7.21-7.23 IDEM     — idempotency middleware (HTTP)
+  7.24-7.26 MONITOR  — monitoring_alerts UPSERT and thresholds (service layer)
+  7.27-7.29 STOCK    — GET /inventory/items stock warning flags (HTTP)
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import asyncpg
@@ -41,7 +41,7 @@ from tests.conftest import seed_tenant
 
 pytestmark = pytest.mark.integration
 
-UTC_TZ = timezone.utc
+UTC_TZ = UTC
 
 # ── constants for savepoint-based tests (service + HTTP) ─────────────────────
 T7_TENANT_ID = uuid.UUID("e7000000-0000-0000-0000-000000000001")
@@ -80,7 +80,7 @@ async def session(app_instance):
 
     Service tests call service functions directly with this session.
     HTTP tests use the bound session via get_db_session override.
-    Asyncpg tests (7.1–7.14) do not request this fixture.
+    Asyncpg tests (7.1-7.14) do not request this fixture.
     """
     async with engine.begin() as conn:
         tx = await conn.begin_nested()      # SAVEPOINT
@@ -130,7 +130,7 @@ async def session(app_instance):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Asyncpg helpers  (groups 1–4)
+# Asyncpg helpers  (groups 1-4)
 # ═════════════════════════════════════════════════════════════════════════════
 
 
@@ -233,7 +233,7 @@ async def _insert_count_event(
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Session helpers  (groups 5–9)
+# Session helpers  (groups 5-9)
 # ═════════════════════════════════════════════════════════════════════════════
 
 
@@ -363,7 +363,7 @@ async def _get_item_http(client: AsyncClient, item_id: uuid.UUID) -> dict:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 7.1–7.2  GRANT TESTS
+# 7.1-7.2  GRANT TESTS
 # ═════════════════════════════════════════════════════════════════════════════
 
 
@@ -393,7 +393,7 @@ async def test_7_2_app_user_cannot_update_count_events(
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 7.3–7.5  OPENING BALANCE TESTS
+# 7.3-7.5  OPENING BALANCE TESTS
 # ═════════════════════════════════════════════════════════════════════════════
 
 
@@ -457,7 +457,7 @@ async def test_7_5_mode_b_opening_balance_sets_anchor(session) -> None:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 7.6–7.9  ON_HAND TESTS
+# 7.6-7.9  ON_HAND TESTS
 # ═════════════════════════════════════════════════════════════════════════════
 
 
@@ -545,7 +545,7 @@ async def test_7_9_mode_b_missing_yield_factor_defaults_to_1(
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 7.10–7.14  COUNT TRIGGER TESTS
+# 7.10-7.14  COUNT TRIGGER TESTS
 # ═════════════════════════════════════════════════════════════════════════════
 
 
@@ -691,7 +691,7 @@ async def test_7_14_predicted_captured_before_trigger(session) -> None:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 7.15–7.17  SALE TESTS
+# 7.15-7.17  SALE TESTS
 # ═════════════════════════════════════════════════════════════════════════════
 
 
@@ -788,7 +788,7 @@ async def test_7_17_sale_is_idempotent(session) -> None:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 7.18–7.20  RECEIPT TESTS
+# 7.18-7.20  RECEIPT TESTS
 # ═════════════════════════════════════════════════════════════════════════════
 
 
@@ -882,7 +882,7 @@ async def test_7_20_receipt_commit_is_idempotent(session) -> None:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 7.21–7.23  IDEMPOTENCY TESTS  (HTTP)
+# 7.21-7.23  IDEMPOTENCY TESTS  (HTTP)
 # ═════════════════════════════════════════════════════════════════════════════
 
 
@@ -1002,7 +1002,7 @@ async def test_7_23_in_flight_key_returns_409(
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 7.24–7.26  MONITORING TESTS
+# 7.24-7.26  MONITORING TESTS
 # ═════════════════════════════════════════════════════════════════════════════
 
 
@@ -1101,7 +1101,7 @@ async def test_7_26_monitoring_upsert_increments_alert_count(session) -> None:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 7.27–7.29  STOCK WARNING TESTS  (HTTP)
+# 7.27-7.29  STOCK WARNING TESTS  (HTTP)
 # ═════════════════════════════════════════════════════════════════════════════
 
 
@@ -1110,7 +1110,6 @@ async def test_7_27_stock_flags_are_correct(session, client: AsyncClient) -> Non
     """GET /inventory/items returns correct stock_status, low_stock, out_of_stock."""
     item_ok  = uuid.uuid4()
     item_low = uuid.uuid4()
-    item_oos = uuid.uuid4()
 
     # ok: on_hand=500, par=100
     await _seed_item(session, item_ok,  "recipe_deducted", par=100.0)

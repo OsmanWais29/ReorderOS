@@ -153,7 +153,8 @@ def smoke_test(token: str) -> None:
             if r.status_code in (200, 403):
                 role_hint = "owner → 200" if r.status_code == 200 else "manager/staff → 403"
                 passed += ok(
-                    f"GET /api/v1/invitations ({role_hint})", r.status_code, r.status_code, _parse(r)
+                    f"GET /api/v1/invitations ({role_hint})",
+                    r.status_code, r.status_code, _parse(r)
                 )
             else:
                 ok("GET /api/v1/invitations", r.status_code, 200, _parse(r))

@@ -34,7 +34,7 @@ assertion in this file holds.
 """
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -48,7 +48,7 @@ from app.modules.inventory.services import record_sale_inventory_effect
 
 pytestmark = pytest.mark.integration
 
-UTC = timezone.utc
+UTC = UTC
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -289,15 +289,15 @@ async def create_sale_line(
 # ============================================================================
 # SCENARIO A — Mode A Full Day
 #
-# opening(+2000) → 3×sale(-150ea) → waste(-80) → receipt(+500) → count(1900)
+# opening(+2000) → 3xsale(-150ea) → waste(-80) → receipt(+500) → count(1900)
 #
 # Proof chain:
 #   After OB:       on_hand = 2000
-#   After 3 sales:  on_hand = 2000 − 3×150 = 1550
-#   After waste:    on_hand = 1550 − 80   = 1470   (waste INCLUDED in Mode A)
+#   After 3 sales:  on_hand = 2000 - 3x150 = 1550
+#   After waste:    on_hand = 1550 - 80   = 1470   (waste INCLUDED in Mode A)
 #   After receipt:  on_hand = 1470 + 500  = 1970
-#   Count: predicted=1970, counted=1900 → count_adjust = −70
-#   After count:    on_hand = 1970 − 70   = 1900
+#   Count: predicted=1970, counted=1900 → count_adjust = -70
+#   After count:    on_hand = 1970 - 70   = 1900
 #   Total movements: OB + 3 sales + 1 waste + 1 receive + 1 count_adjust = 7
 # ============================================================================
 
@@ -401,12 +401,12 @@ async def test_scenario_a_mode_a_full_lifecycle(session, client):
 #
 # Proof chain (yield_factor = 1.15):
 #   After OB:             on_hand = 3000  (anchor, no post-anchor movements)
-#   After signals:        on_hand = 3000 − (200+350)×1.15 = 2367.5
+#   After signals:        on_hand = 3000 - (200+350)x1.15 = 2367.5
 #   After waste:          on_hand = 2367.5  (waste EXCLUDED from Mode B)
 #   After receipt +400:   on_hand = 2367.5 + 400 = 2767.5
 #   Recount counted=2700: anchor=2700, no count_adjust
 #   After recount:        on_hand = 2700  (pre-recount movements excluded)
-#   Post-recount signal:  on_hand = 2700 − 100×1.15 = 2585
+#   Post-recount signal:  on_hand = 2700 - 100x1.15 = 2585
 #
 # Timing invariant: the OB uses an explicit past recorded_at so that all
 # service-inserted movements (at PostgreSQL DEFAULT NOW() = T_tx) are
@@ -512,7 +512,7 @@ async def test_scenario_b_mode_b_full_lifecycle(session, client):
     assert await count_movements(session, ITEM_B, "count_adjust") == 0
     assert await read_on_hand(session, ITEM_B) == 2700
 
-    # Step 8: Post-recount signal via service (0.5 × 200g = 100g).
+    # Step 8: Post-recount signal via service (0.5 x 200g = 100g).
     # record_sale_inventory_effect computes the delta and inserts the movement.
     # We then update recorded_at via clock_timestamp() to ensure it lands
     # strictly AFTER the recount anchor (T_wall), so on_hand() includes it.
@@ -534,7 +534,7 @@ async def test_scenario_b_mode_b_full_lifecycle(session, client):
     """), {"id": mv_id3})
     await session.flush()
 
-    # on_hand = 2700 − 100×1.15 = 2585
+    # on_hand = 2700 - 100x1.15 = 2585
     assert await read_on_hand(session, ITEM_B) == 2585
 
 
@@ -809,5 +809,7 @@ async def test_scenario_f_monitoring_from_count_events(session, client):
 
     alert = await get_alert(session, "integrity_drift_high")
     assert alert["severity"]    == "critical",  f"25 % drift → critical; got {alert['severity']}"
-    assert alert["alert_count"] == 2,           f"UPSERT must increment to 2; got {alert['alert_count']}"
+    assert alert["alert_count"] == 2, (
+        f"UPSERT must increment to 2; got {alert['alert_count']}"
+    )
     assert await read_on_hand(session, ITEM_A) == 754

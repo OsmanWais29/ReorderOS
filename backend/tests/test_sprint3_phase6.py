@@ -1,4 +1,4 @@
-"""Sprint 3 – Phase 6: GET /inventory/items Verification
+"""Sprint 3 - Phase 6: GET /inventory/items Verification
 
 Covers every spec scenario for stock_status, count_state, and related flags:
   6.1  — Mode A ok
@@ -45,7 +45,7 @@ All tests run inside a savepoint transaction that rolls back in teardown.
 """
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -237,7 +237,7 @@ async def test_6_1_mode_a_ok(session, client):
     """Mode A, on_hand=500, par=100 → stock_status=ok, all flags nominal."""
     await seed_item(session, ITEM_A, "recipe_deducted", par_level=100)
     await add_movement(session, ITEM_A, "opening_balance", 500,
-                       datetime(2025, 9, 1, tzinfo=timezone.utc))
+                       datetime(2025, 9, 1, tzinfo=UTC))
     item = await get_item(client, ITEM_A)
     assert item["on_hand"] == 500
     assert item["stock_status"] == "ok"
@@ -252,7 +252,7 @@ async def test_6_2_mode_a_low_stock(session, client):
     """Mode A, on_hand=50 ≤ par=100 → stock_status=low_stock."""
     await seed_item(session, ITEM_A, "recipe_deducted", par_level=100)
     await add_movement(session, ITEM_A, "opening_balance", 50,
-                       datetime(2025, 9, 1, tzinfo=timezone.utc))
+                       datetime(2025, 9, 1, tzinfo=UTC))
     item = await get_item(client, ITEM_A)
     assert item["on_hand"] == 50
     assert item["stock_status"] == "low_stock"
@@ -269,7 +269,7 @@ async def test_6_3_mode_a_out_of_stock(session, client):
     """
     await seed_item(session, ITEM_A, "recipe_deducted", par_level=100)
     await add_movement(session, ITEM_A, "opening_balance", 0,
-                       datetime(2025, 9, 1, tzinfo=timezone.utc))
+                       datetime(2025, 9, 1, tzinfo=UTC))
     item = await get_item(client, ITEM_A)
     assert item["on_hand"] == 0
     assert item["stock_status"] == "out_of_stock"
@@ -301,7 +301,7 @@ async def test_6_5_mode_b_fresh(session, client):
     Mode B, count 2 days ago (cadence=7) → count_state=fresh.
     on_hand = 100 (anchor) + 20 (receive after count) = 120.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     await seed_item(session, ITEM_B, "count_anchored",
                     count_cadence_days=7, count_grace_days=9,
                     last_count_quantity=100,
@@ -323,7 +323,7 @@ async def test_6_6_mode_b_stale(session, client):
     on_hand = 70 (anchor, no movements since).
     grace=7 satisfies v5 constraint: grace >= cadence.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     await seed_item(session, ITEM_B, "count_anchored",
                     count_cadence_days=7, count_grace_days=7,
                     last_count_quantity=70,
@@ -344,7 +344,7 @@ async def test_6_7_mode_b_expired(session, client):
     on_hand = 100 + 30 receive = 130.
     grace=7 satisfies v5 constraint: grace >= cadence.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     await seed_item(session, ITEM_B, "count_anchored",
                     count_cadence_days=7, count_grace_days=7,
                     last_count_quantity=100,
@@ -365,7 +365,7 @@ async def test_6_8_mode_b_low_stock_beats_stale(session, client):
     stock_status = low_stock, not count_stale.
     grace=7 satisfies v5 constraint: grace >= cadence.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     await seed_item(session, ITEM_B, "count_anchored",
                     count_cadence_days=7, count_grace_days=7,
                     last_count_quantity=30,
@@ -397,7 +397,7 @@ async def test_6_9_cadence_coherence_rejects_mode_b_null_cadence(session, client
       count_grace_days   IS NOT NULL
       count_grace_days   >= count_cadence_days
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     with pytest.raises(Exception) as exc_info:
         await seed_item(session, ITEM_B, "count_anchored",
                         count_cadence_days=None,   # violates IS NOT NULL
@@ -415,10 +415,10 @@ async def test_6_9_cadence_coherence_rejects_mode_b_null_cadence(session, client
 async def test_6_10_missing_yield_factor_defaults_to_one(session, client):
     """
     Mode B item with no inventory_yield_factors row.
-    on_hand = 100 − (20 × COALESCE(NULL, 1.0)) = 80.
+    on_hand = 100 - (20 x COALESCE(NULL, 1.0)) = 80.
     """
-    anchor_at = datetime(2025, 6, 1, 8, 0, tzinfo=timezone.utc)
-    signal_at  = datetime(2025, 6, 2, 12, 0, tzinfo=timezone.utc)
+    anchor_at = datetime(2025, 6, 1, 8, 0, tzinfo=UTC)
+    signal_at  = datetime(2025, 6, 2, 12, 0, tzinfo=UTC)
     await seed_item(session, ITEM_B, "count_anchored",
                     count_cadence_days=7, count_grace_days=9,
                     last_count_quantity=100,
@@ -432,4 +432,4 @@ async def test_6_10_missing_yield_factor_defaults_to_one(session, client):
     await add_movement(session, ITEM_B, "sale_signal", 20, signal_at)
     await session.flush()
     item = await get_item(client, ITEM_B)
-    assert item["on_hand"] == 80   # 100 − (20 × 1.0) via COALESCE default
+    assert item["on_hand"] == 80   # 100 - (20 x 1.0) via COALESCE default

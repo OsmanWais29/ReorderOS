@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 
 import asyncpg
@@ -219,7 +219,7 @@ async def test_4_3_opening_balance_cannot_be_second(
     await db_session.commit()
 
     # Second call is idempotent (returns existing ID — no new row, no exception).
-    mv_id_2 = await record_opening_balance(
+    _ = await record_opening_balance(
         db_session,
         tenant_id=uuid.UUID(tid),
         inventory_item_id=uuid.UUID(item),

@@ -1,4 +1,4 @@
-"""Sprint 3 – Phase 5: Idempotency Middleware Verification
+"""Sprint 3 - Phase 5: Idempotency Middleware Verification
 
 Covers:
   5.1 — Replay with same key + body returns original response (1 event + 1 adjust)
@@ -35,7 +35,6 @@ Bugs fixed vs. original test spec
     from request.url.path.
 """
 
-import json
 import uuid
 
 import pytest

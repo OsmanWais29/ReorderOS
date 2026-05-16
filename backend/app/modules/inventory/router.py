@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db_session
+from app.core.deps import get_rls_session
 from app.core.security import Principal, get_principal
 from app.modules.inventory.idempotency import (
     check_and_lock,
@@ -60,7 +60,7 @@ def _idem_key(request: Request) -> str | None:
 async def create_count_event(
     request: Request,
     body: CountEventCreate,
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_rls_session),
     principal: Principal = Depends(get_principal),
 ) -> JSONResponse:
     tenant_id = UUID(principal.tenant_id)
@@ -125,7 +125,7 @@ async def create_opening_balance(
     item_id: UUID,
     request: Request,
     body: OpeningBalanceCreate,
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_rls_session),
     principal: Principal = Depends(get_principal),
 ) -> JSONResponse:
     tenant_id = UUID(principal.tenant_id)
@@ -171,7 +171,7 @@ async def create_opening_balance(
 @router.post("/receipts", status_code=201)
 async def create_receipt_endpoint(
     body: ReceiptCreate,
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_rls_session),
     principal: Principal = Depends(get_principal),
 ) -> JSONResponse:
     tenant_id = UUID(principal.tenant_id)
@@ -204,7 +204,7 @@ async def create_receipt_endpoint(
 async def add_line_endpoint(
     receipt_id: UUID,
     body: ReceiptLineCreate,
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_rls_session),
     principal: Principal = Depends(get_principal),
 ) -> JSONResponse:
     tenant_id = UUID(principal.tenant_id)
@@ -233,7 +233,7 @@ async def add_line_endpoint(
 async def commit_receipt_endpoint(
     receipt_id: UUID,
     request: Request,
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_rls_session),
     principal: Principal = Depends(get_principal),
 ) -> JSONResponse:
     tenant_id = UUID(principal.tenant_id)
@@ -298,7 +298,7 @@ def _compute_stock_status(
 
 @router.get("/items")
 async def list_inventory_items(
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_rls_session),
     principal: Principal = Depends(get_principal),
 ) -> JSONResponse:
     tenant_id = UUID(principal.tenant_id)

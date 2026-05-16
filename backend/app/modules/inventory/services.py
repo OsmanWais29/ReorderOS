@@ -236,6 +236,33 @@ async def record_count_event(
     count_adjust ledger correction.  Both are intentional and correct.
     """
     counted_at = counted_at or datetime.now(UTC)
+    idem_key = f"count:{inventory_item_id}:{counted_at.isoformat()}:{counted_quantity}"
+
+    # ── 0. lock the item row — serialises concurrent counts for the same item ──
+    # Without this lock, two simultaneous counts both read the same on_hand()
+    # value before either writes its adjustment, producing a double correction.
+    lock_res = await session.execute(
+        text("SELECT id FROM inventory_items WHERE tenant_id = :tid AND id = :iid FOR UPDATE"),
+        {"tid": tenant_id, "iid": inventory_item_id},
+    )
+    if lock_res.fetchone() is None:
+        raise ValueError(f"inventory_item {inventory_item_id} not found for tenant {tenant_id}")
+
+    # ── idempotency: skip if this exact count was already recorded ────────────
+    existing = await session.execute(
+        text(
+            "SELECT id FROM inventory_count_events"
+            " WHERE tenant_id = :tid AND idempotency_key = :key"
+        ),
+        {"tid": tenant_id, "key": idem_key},
+    )
+    existing_row = existing.fetchone()
+    if existing_row:
+        return {
+            "id": UUID(str(existing_row[0])),
+            "predicted_on_hand_at_count": None,
+            "counted_quantity": counted_quantity,
+        }
 
     # ── 1. snapshot predicted on_hand ─────────────────────────────────────────
     pred_res = await session.execute(
@@ -251,11 +278,11 @@ async def record_count_event(
             INSERT INTO inventory_count_events
                 (id, tenant_id, inventory_item_id,
                  counted_quantity, predicted_on_hand_at_count,
-                 counted_at, counted_by, notes)
+                 counted_at, counted_by, notes, idempotency_key)
             VALUES
                 (:id, :tid, :iid,
                  :counted, :predicted,
-                 :at, :by, :notes)
+                 :at, :by, :notes, :key)
         """),
         {
             "id": event_id,
@@ -266,6 +293,7 @@ async def record_count_event(
             "at": counted_at,
             "by": counted_by,
             "notes": notes,
+            "key": idem_key,
         },
     )
     await session.flush()

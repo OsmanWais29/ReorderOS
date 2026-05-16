@@ -12,6 +12,7 @@ import json
 import logging
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -216,7 +217,7 @@ async def record_count_event(
     counted_at: datetime | None = None,
     counted_by: UUID | None = None,
     notes: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Record a physical count event.
 
     Steps:
@@ -394,7 +395,7 @@ async def commit_receipt(
     *,
     tenant_id: UUID,
     receipt_id: UUID,
-) -> dict:
+) -> dict[str, Any]:
     """Commit a draft receipt.
 
     Transaction:

@@ -72,6 +72,7 @@ async def create_count_event(
         fp = compute_fingerprint(request.method, request.url.path, raw_body)
         state = await check_and_lock(db, tenant_id=tenant_id, key=idem_key, fingerprint=fp)
         if state.status == "cached":
+            assert state.response_status is not None
             return JSONResponse(state.response_body, status_code=state.response_status)
         # 'in_flight' and 'conflict' raise HTTPException inside check_and_lock.
 
@@ -135,6 +136,7 @@ async def create_opening_balance(
         fp = compute_fingerprint(request.method, request.url.path, raw_body)
         state = await check_and_lock(db, tenant_id=tenant_id, key=idem_key, fingerprint=fp)
         if state.status == "cached":
+            assert state.response_status is not None
             return JSONResponse(state.response_body, status_code=state.response_status)
 
     mv_id = await record_opening_balance(
@@ -186,6 +188,7 @@ async def create_receipt_endpoint(
         {"id": rid},
     )
     r = row.fetchone()
+    assert r is not None
     return JSONResponse(
         {
             "id": str(r[0]),

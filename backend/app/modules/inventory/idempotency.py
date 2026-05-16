@@ -41,7 +41,7 @@ def _canonical(obj: Any) -> Any:
     return obj
 
 
-def compute_fingerprint(method: str, path: str, body: bytes | dict) -> str:
+def compute_fingerprint(method: str, path: str, body: bytes | dict[str, Any]) -> str:
     """Compute a stable fingerprint for a request.
 
     *body* may be raw bytes (from ``await request.body()`` in route handlers)

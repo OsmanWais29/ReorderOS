@@ -132,7 +132,9 @@ async def test_2_2_mode_b_deterministic(admin_conn: asyncpg.Connection) -> None:
     t1 = datetime(2026, 1, 1, 1, 0, 0, tzinfo=UTC)
 
     item = await _mk_item(
-        admin_conn, tid, uom,
+        admin_conn,
+        tid,
+        uom,
         mode="count_anchored",
         last_count_at=t0,
         last_count_qty=100,
@@ -189,7 +191,9 @@ async def test_2_4_mode_b_missing_yield_factor_defaults_1(
     t1 = datetime(2026, 2, 1, 1, 0, 0, tzinfo=UTC)
 
     item = await _mk_item(
-        admin_conn, tid, uom,
+        admin_conn,
+        tid,
+        uom,
         mode="count_anchored",
         last_count_at=t0,
         last_count_qty=100,

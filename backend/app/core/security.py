@@ -230,9 +230,7 @@ async def _fetch_workos_profile(workos_user_id: str) -> dict[str, Any]:
         )
     url = f"https://api.workos.com/user_management/users/{workos_user_id}"
     async with httpx.AsyncClient(timeout=5.0) as client:
-        resp = await client.get(
-            url, headers={"Authorization": f"Bearer {s.workos_secret_key}"}
-        )
+        resp = await client.get(url, headers={"Authorization": f"Bearer {s.workos_secret_key}"})
     if resp.status_code != 200:
         raise HTTPException(status_code=401, detail="Could not retrieve user profile from WorkOS")
     return resp.json()  # type: ignore[no-any-return]

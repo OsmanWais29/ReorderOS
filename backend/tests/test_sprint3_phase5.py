@@ -50,16 +50,17 @@ pytestmark = pytest.mark.integration
 # ---------------------------------------------------------------------------
 # Constants — all UUIDs use hex-valid prefix characters
 # ---------------------------------------------------------------------------
-TENANT_ID    = uuid.UUID("b0000000-0000-0000-0000-000000000001")   # 'b' is hex
-USER_ID      = uuid.UUID("b1000000-0000-0000-0000-000000000001")   # was 'u' (invalid)
-ITEM_A       = uuid.UUID("a0000000-0000-0000-0000-000000000001")   # 'a' is hex
-UOM_GRAM     = uuid.UUID("c0000000-0000-0000-0000-000000000001")   # was 'm' (invalid)
-INGREDIENT_A = uuid.UUID("d0000000-0000-0000-0000-000000000001")   # was 'g' (invalid)
+TENANT_ID = uuid.UUID("b0000000-0000-0000-0000-000000000001")  # 'b' is hex
+USER_ID = uuid.UUID("b1000000-0000-0000-0000-000000000001")  # was 'u' (invalid)
+ITEM_A = uuid.UUID("a0000000-0000-0000-0000-000000000001")  # 'a' is hex
+UOM_GRAM = uuid.UUID("c0000000-0000-0000-0000-000000000001")  # was 'm' (invalid)
+INGREDIENT_A = uuid.UUID("d0000000-0000-0000-0000-000000000001")  # was 'g' (invalid)
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="module")
 def app_instance():
@@ -69,9 +70,7 @@ def app_instance():
 
 @pytest.fixture(scope="module")
 async def client(app_instance):
-    async with AsyncClient(
-        transport=ASGITransport(app=app_instance), base_url="http://test"
-    ) as c:
+    async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://test") as c:
         yield c
 
 
@@ -87,7 +86,7 @@ async def session(app_instance):
     5. Rolls back the savepoint in teardown — all test data vanishes.
     """
     async with engine.begin() as conn:
-        tx = await conn.begin_nested()          # SAVEPOINT
+        tx = await conn.begin_nested()  # SAVEPOINT
         db = make_bound_session(conn)
 
         app_instance.dependency_overrides[get_db_session] = lambda: db
@@ -100,33 +99,45 @@ async def session(app_instance):
         )
 
         # Seed prerequisite FK rows so item inserts succeed.
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             INSERT INTO tenants (id, slug, name)
             VALUES (:id, 'phase5-tenant', 'Phase 5 Test Tenant')
             ON CONFLICT (id) DO NOTHING
-        """), {"id": TENANT_ID})
+        """),
+            {"id": TENANT_ID},
+        )
 
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             INSERT INTO users (id, workos_id, email, email_verified)
             VALUES (:id, 'wos_phase5_test', 'phase5@test.example', true)
             ON CONFLICT (id) DO NOTHING
-        """), {"id": USER_ID})
+        """),
+            {"id": USER_ID},
+        )
 
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             INSERT INTO units_of_measure (id, tenant_id, name, abbreviation, unit_type)
             VALUES (:id, :tid, 'grams-p5', 'g', 'weight')
             ON CONFLICT (id) DO NOTHING
-        """), {"id": UOM_GRAM, "tid": TENANT_ID})
+        """),
+            {"id": UOM_GRAM, "tid": TENANT_ID},
+        )
 
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             INSERT INTO ingredients_master (id, tenant_id, name)
             VALUES (:id, :tid, 'Test Ingredient Phase 5')
             ON CONFLICT (id) DO NOTHING
-        """), {"id": INGREDIENT_A, "tid": TENANT_ID})
+        """),
+            {"id": INGREDIENT_A, "tid": TENANT_ID},
+        )
 
         yield db
 
-        await tx.rollback()                     # undo all test changes
+        await tx.rollback()  # undo all test changes
         app_instance.dependency_overrides.clear()
 
 
@@ -134,9 +145,11 @@ async def session(app_instance):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 async def seed_item_with_stock(session, item_id, mode, opening_qty):
     """Create an inventory item AND seed an opening balance so on_hand() is known."""
-    await session.execute(text("""
+    await session.execute(
+        text("""
         INSERT INTO inventory_items (
             id, tenant_id, ingredient_id, name,
             inventory_mode, storage_unit_id, purchase_unit_id,
@@ -144,13 +157,21 @@ async def seed_item_with_stock(session, item_id, mode, opening_qty):
         ) VALUES (
             :id, :tid, :ing, :name, :mode, :su, :pu, :ru, 1.0
         ) ON CONFLICT (id) DO NOTHING
-    """), {
-        "id": item_id, "tid": TENANT_ID, "ing": INGREDIENT_A,
-        "name": f"Item {str(item_id)[:8]}", "mode": mode,
-        "su": UOM_GRAM, "pu": UOM_GRAM, "ru": UOM_GRAM,
-    })
+    """),
+        {
+            "id": item_id,
+            "tid": TENANT_ID,
+            "ing": INGREDIENT_A,
+            "name": f"Item {str(item_id)[:8]}",
+            "mode": mode,
+            "su": UOM_GRAM,
+            "pu": UOM_GRAM,
+            "ru": UOM_GRAM,
+        },
+    )
     if opening_qty is not None:
-        await session.execute(text("""
+        await session.execute(
+            text("""
             INSERT INTO inventory_movements (
                 tenant_id, inventory_item_id, movement_type, delta,
                 source_type, idempotency_key, recorded_at
@@ -158,10 +179,14 @@ async def seed_item_with_stock(session, item_id, mode, opening_qty):
                 :tid, :iid, 'opening_balance', :qty,
                 'opening', :ikey, '2025-09-01T08:00:00Z'
             ) ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
-        """), {
-            "tid": TENANT_ID, "iid": item_id, "qty": opening_qty,
-            "ikey": f"ob:phase5:{item_id}",
-        })
+        """),
+            {
+                "tid": TENANT_ID,
+                "iid": item_id,
+                "qty": opening_qty,
+                "ikey": f"ob:phase5:{item_id}",
+            },
+        )
     await session.flush()
 
 
@@ -169,10 +194,9 @@ async def seed_item_with_stock(session, item_id, mode, opening_qty):
 # Tests
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
-async def test_5_1_replay_returns_original_and_only_one_adjust(
-    session, client: AsyncClient
-):
+async def test_5_1_replay_returns_original_and_only_one_adjust(session, client: AsyncClient):
     """
     Replay with same key + same body → returns stored response.
     Exactly 1 count event and 1 count_adjust movement exist.
@@ -198,28 +222,34 @@ async def test_5_1_replay_returns_original_and_only_one_adjust(
     key = "replay-key-1"
 
     r1 = await client.post(
-        "/api/v1/inventory/count-events", json=payload,
+        "/api/v1/inventory/count-events",
+        json=payload,
         headers={"Idempotency-Key": key},
     )
     assert r1.status_code == 201, r1.text
     original = r1.json()
 
     r2 = await client.post(
-        "/api/v1/inventory/count-events", json=payload,
+        "/api/v1/inventory/count-events",
+        json=payload,
         headers={"Idempotency-Key": key},
     )
     assert r2.status_code == 201, r2.text
     assert r2.json() == original, "replay did not return identical body"
 
-    cnt = await session.execute(text(
-        "SELECT COUNT(*) FROM inventory_count_events WHERE inventory_item_id = :iid"
-    ), {"iid": ITEM_A})
+    cnt = await session.execute(
+        text("SELECT COUNT(*) FROM inventory_count_events WHERE inventory_item_id = :iid"),
+        {"iid": ITEM_A},
+    )
     assert cnt.scalar() == 1, "expected exactly 1 count event"
 
-    adj = await session.execute(text("""
+    adj = await session.execute(
+        text("""
         SELECT COUNT(*) FROM inventory_movements
         WHERE inventory_item_id = :iid AND movement_type = 'count_adjust'
-    """), {"iid": ITEM_A})
+    """),
+        {"iid": ITEM_A},
+    )
     assert adj.scalar() == 1, "expected exactly 1 count_adjust movement"
 
 
@@ -242,7 +272,8 @@ async def test_5_2_different_body_same_key_409(session, client: AsyncClient):
     }
     key = "conflict-key-1"
     r1 = await client.post(
-        "/api/v1/inventory/count-events", json=payload1,
+        "/api/v1/inventory/count-events",
+        json=payload1,
         headers={"Idempotency-Key": key},
     )
     assert r1.status_code == 201
@@ -253,16 +284,18 @@ async def test_5_2_different_body_same_key_409(session, client: AsyncClient):
         "counted_at": "2025-09-01T10:00:00Z",
     }
     r2 = await client.post(
-        "/api/v1/inventory/count-events", json=payload2,
+        "/api/v1/inventory/count-events",
+        json=payload2,
         headers={"Idempotency-Key": key},
     )
     assert r2.status_code == 409
     detail = r2.json().get("detail", r2.json())
     assert detail.get("error") == "idempotency_key_conflict"
 
-    cnt = await session.execute(text(
-        "SELECT COUNT(*) FROM inventory_count_events WHERE inventory_item_id = :iid"
-    ), {"iid": ITEM_A})
+    cnt = await session.execute(
+        text("SELECT COUNT(*) FROM inventory_count_events WHERE inventory_item_id = :iid"),
+        {"iid": ITEM_A},
+    )
     assert cnt.scalar() == 1, "second request must not create a second event"
 
 
@@ -303,16 +336,20 @@ async def test_5_3_in_flight_detection(session, client: AsyncClient):
     path = "/api/v1/inventory/count-events"
     fingerprint = compute_fingerprint(method, path, payload)
 
-    await session.execute(text("""
+    await session.execute(
+        text("""
         INSERT INTO idempotency_keys
             (tenant_id, key, request_fingerprint, response_status)
         VALUES (:tid, :key, :fp, NULL)
         ON CONFLICT DO NOTHING
-    """), {"tid": TENANT_ID, "key": key, "fp": fingerprint})
+    """),
+        {"tid": TENANT_ID, "key": key, "fp": fingerprint},
+    )
     await session.flush()
 
     r = await client.post(
-        "/api/v1/inventory/count-events", json=payload,
+        "/api/v1/inventory/count-events",
+        json=payload,
         headers={"Idempotency-Key": key},
     )
     assert r.status_code == 409, f"expected 409, got {r.status_code}: {r.text}"
@@ -331,7 +368,8 @@ async def test_5_4_cross_endpoint_idempotency(session, client: AsyncClient):
       Request 2: same key + same body → returns stored response
       Only one opening_balance movement exists
     """
-    await session.execute(text("""
+    await session.execute(
+        text("""
         INSERT INTO inventory_items (
             id, tenant_id, ingredient_id, name,
             inventory_mode, storage_unit_id, purchase_unit_id,
@@ -339,11 +377,17 @@ async def test_5_4_cross_endpoint_idempotency(session, client: AsyncClient):
         ) VALUES (
             :id, :tid, :ing, :name, 'recipe_deducted', :su, :pu, :ru, 1.0
         ) ON CONFLICT (id) DO NOTHING
-    """), {
-        "id": ITEM_A, "tid": TENANT_ID, "ing": INGREDIENT_A,
-        "name": "Item for OB test",
-        "su": UOM_GRAM, "pu": UOM_GRAM, "ru": UOM_GRAM,
-    })
+    """),
+        {
+            "id": ITEM_A,
+            "tid": TENANT_ID,
+            "ing": INGREDIENT_A,
+            "name": "Item for OB test",
+            "su": UOM_GRAM,
+            "pu": UOM_GRAM,
+            "ru": UOM_GRAM,
+        },
+    )
     await session.flush()
 
     key = "ob-idem-key"
@@ -364,10 +408,13 @@ async def test_5_4_cross_endpoint_idempotency(session, client: AsyncClient):
     assert r2.status_code in (200, 201), r2.text
     assert r2.json() == r1.json(), "replay must return identical body"
 
-    cnt = await session.execute(text("""
+    cnt = await session.execute(
+        text("""
         SELECT COUNT(*) FROM inventory_movements
         WHERE inventory_item_id = :iid AND movement_type = 'opening_balance'
-    """), {"iid": ITEM_A})
+    """),
+        {"iid": ITEM_A},
+    )
     assert cnt.scalar() == 1, "replay must not create a second movement"
 
 
@@ -400,19 +447,22 @@ async def test_5_5_canonical_json_key_ordering(session, client: AsyncClient):
     }
 
     r1 = await client.post(
-        "/api/v1/inventory/count-events", json=payload_out_of_order,
+        "/api/v1/inventory/count-events",
+        json=payload_out_of_order,
         headers={"Idempotency-Key": key},
     )
     assert r1.status_code == 201
 
     r2 = await client.post(
-        "/api/v1/inventory/count-events", json=payload_canonical,
+        "/api/v1/inventory/count-events",
+        json=payload_canonical,
         headers={"Idempotency-Key": key},
     )
     assert r2.status_code == 201
     assert r2.json() == r1.json(), "canonical key sort must produce the same fingerprint"
 
-    cnt = await session.execute(text(
-        "SELECT COUNT(*) FROM inventory_count_events WHERE inventory_item_id = :iid"
-    ), {"iid": ITEM_A})
+    cnt = await session.execute(
+        text("SELECT COUNT(*) FROM inventory_count_events WHERE inventory_item_id = :iid"),
+        {"iid": ITEM_A},
+    )
     assert cnt.scalar() == 1, "canonical normalisation must deduplicate the request"

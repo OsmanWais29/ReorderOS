@@ -153,7 +153,9 @@ async def test_3_1_mode_a_count_with_drift_emits_count_adjust(
     await _mv(admin_conn, tid, item, "opening_balance", +100)
 
     await _insert_count_event(
-        admin_conn, tid, item,
+        admin_conn,
+        tid,
+        item,
         counted_quantity=95,
         predicted_on_hand=100,
     )
@@ -193,7 +195,9 @@ async def test_3_2_mode_a_zero_drift_emits_nothing(
     await _mv(admin_conn, tid, item, "opening_balance", +100)
 
     await _insert_count_event(
-        admin_conn, tid, item,
+        admin_conn,
+        tid,
+        item,
         counted_quantity=100,
         predicted_on_hand=100,
     )
@@ -218,7 +222,9 @@ async def test_3_3_mode_b_count_does_not_emit_count_adjust(
 
     t0 = datetime(2026, 3, 1, 0, 0, 0, tzinfo=UTC)
     item = await _mk_item(
-        admin_conn, tid, uom,
+        admin_conn,
+        tid,
+        uom,
         mode="count_anchored",
         last_count_at=t0,
         last_count_qty=100,
@@ -226,7 +232,9 @@ async def test_3_3_mode_b_count_does_not_emit_count_adjust(
 
     counted_at = datetime(2026, 3, 2, 0, 0, 0, tzinfo=UTC)
     await _insert_count_event(
-        admin_conn, tid, item,
+        admin_conn,
+        tid,
+        item,
         counted_quantity=80,
         predicted_on_hand=None,
         counted_at=counted_at,
@@ -261,7 +269,9 @@ async def test_3_4_mode_b_count_reanchors_on_hand(
     t2 = datetime(2026, 4, 2, 0, 0, 0, tzinfo=UTC)  # count time
 
     item = await _mk_item(
-        admin_conn, tid, uom,
+        admin_conn,
+        tid,
+        uom,
         mode="count_anchored",
         last_count_at=t0,
         last_count_qty=200,
@@ -276,7 +286,9 @@ async def test_3_4_mode_b_count_reanchors_on_hand(
 
     # Insert count event — trigger updates anchor to 210 at t2.
     await _insert_count_event(
-        admin_conn, tid, item,
+        admin_conn,
+        tid,
+        item,
         counted_quantity=210,
         predicted_on_hand=None,
         counted_at=t2,

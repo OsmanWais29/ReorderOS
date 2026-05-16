@@ -46,7 +46,9 @@ async def _mk_uom(conn: asyncpg.Connection, tenant_id: str) -> str:
     row = await conn.fetchrow(
         "INSERT INTO units_of_measure (tenant_id, name, abbreviation, unit_type)"
         " VALUES ($1, $2, $3, 'weight') RETURNING id",
-        uuid.UUID(tenant_id), name, name[:3],
+        uuid.UUID(tenant_id),
+        name,
+        name[:3],
     )
     return str(row["id"])
 
@@ -73,8 +75,15 @@ async def _mk_item(
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING id
         """,
-        uuid.UUID(tenant_id), f"item-{uuid.uuid4().hex[:6]}", mode,
-        uuid.UUID(uom_id), factor, last_count_at, last_count_qty, cadence, grace,
+        uuid.UUID(tenant_id),
+        f"item-{uuid.uuid4().hex[:6]}",
+        mode,
+        uuid.UUID(uom_id),
+        factor,
+        last_count_at,
+        last_count_qty,
+        cadence,
+        grace,
     )
     return str(row["id"])
 
@@ -89,7 +98,8 @@ async def _mk_recipe(
     """Returns (recipe_version_id, recipe_ingredient_id)."""
     rv_row = await conn.fetchrow(
         "INSERT INTO recipe_versions (tenant_id, name) VALUES ($1, $2) RETURNING id",
-        uuid.UUID(tenant_id), f"rv-{uuid.uuid4().hex[:6]}",
+        uuid.UUID(tenant_id),
+        f"rv-{uuid.uuid4().hex[:6]}",
     )
     rv_id = str(rv_row["id"])
     ri_row = await conn.fetchrow(
@@ -98,7 +108,10 @@ async def _mk_recipe(
             (tenant_id, recipe_version_id, inventory_item_id, quantity)
         VALUES ($1, $2, $3, $4) RETURNING id
         """,
-        uuid.UUID(tenant_id), uuid.UUID(rv_id), uuid.UUID(inventory_item_id), recipe_qty,
+        uuid.UUID(tenant_id),
+        uuid.UUID(rv_id),
+        uuid.UUID(inventory_item_id),
+        recipe_qty,
     )
     return rv_id, str(ri_row["id"])
 
@@ -113,7 +126,9 @@ async def _mk_sale_line(
     row = await conn.fetchrow(
         "INSERT INTO sale_line_items (tenant_id, quantity, recipe_version_id)"
         " VALUES ($1, $2, $3) RETURNING id",
-        uuid.UUID(tenant_id), qty, uuid.UUID(recipe_version_id),
+        uuid.UUID(tenant_id),
+        qty,
+        uuid.UUID(recipe_version_id),
     )
     return str(row["id"])
 
@@ -121,7 +136,8 @@ async def _mk_sale_line(
 async def _on_hand(conn: asyncpg.Connection, tenant_id: str, item_id: str) -> Decimal | None:
     row = await conn.fetchrow(
         "SELECT on_hand($1, $2) AS qty",
-        uuid.UUID(tenant_id), uuid.UUID(item_id),
+        uuid.UUID(tenant_id),
+        uuid.UUID(item_id),
     )
     return row["qty"]
 
@@ -231,7 +247,8 @@ async def test_4_3_opening_balance_cannot_be_second(
         "SELECT COUNT(*) FROM inventory_movements"
         " WHERE tenant_id = $1 AND inventory_item_id = $2"
         " AND movement_type = 'opening_balance'",
-        uuid.UUID(tid), uuid.UUID(item),
+        uuid.UUID(tid),
+        uuid.UUID(item),
     )
     assert count == 1, f"expected exactly 1 opening_balance, got {count}"
     # on_hand still 100 (the original quantity)
@@ -279,7 +296,8 @@ async def test_4_4_mode_a_sale_depletion(
         "SELECT delta, movement_type FROM inventory_movements"
         " WHERE tenant_id = $1 AND inventory_item_id = $2"
         " AND movement_type = 'sale_depletion'",
-        uuid.UUID(tid), uuid.UUID(item),
+        uuid.UUID(tid),
+        uuid.UUID(item),
     )
     assert mv_row is not None, "sale_depletion movement not created"
     assert mv_row["delta"] == Decimal("-300")
@@ -314,7 +332,8 @@ async def test_4_5_mode_b_sale_signal(
     await admin_conn.execute(
         "INSERT INTO inventory_yield_factors (tenant_id, inventory_item_id, yield_factor)"
         " VALUES ($1, $2, 1.25)",
-        uuid.UUID(tid), uuid.UUID(item),
+        uuid.UUID(tid),
+        uuid.UUID(item),
     )
 
     # Recipe: 200g per unit, qty = 1 → theoretical = 1 * 200 / 1.0 = 200
@@ -333,7 +352,8 @@ async def test_4_5_mode_b_sale_signal(
         "SELECT delta, movement_type FROM inventory_movements"
         " WHERE tenant_id = $1 AND inventory_item_id = $2"
         " AND movement_type = 'sale_signal'",
-        uuid.UUID(tid), uuid.UUID(item),
+        uuid.UUID(tid),
+        uuid.UUID(item),
     )
     assert mv_row is not None, "sale_signal movement not created"
     assert mv_row["delta"] == Decimal("200")
@@ -394,7 +414,8 @@ async def test_4_6_sale_effect_idempotency(
         "SELECT COUNT(*) FROM inventory_movements"
         " WHERE tenant_id = $1 AND inventory_item_id = $2"
         " AND movement_type = 'sale_signal'",
-        uuid.UUID(tid), uuid.UUID(item),
+        uuid.UUID(tid),
+        uuid.UUID(item),
     )
     assert count == 1, f"expected 1 movement, got {count}"
     assert await _on_hand(admin_conn, tid, item) == oh_after_first
@@ -444,7 +465,8 @@ async def test_4_7_mode_a_count_with_drift_creates_alert(
     adj_row = await admin_conn.fetchrow(
         "SELECT delta FROM inventory_movements"
         " WHERE tenant_id = $1 AND inventory_item_id = $2 AND movement_type = 'count_adjust'",
-        uuid.UUID(tid), uuid.UUID(item),
+        uuid.UUID(tid),
+        uuid.UUID(item),
     )
     assert adj_row is not None
     assert adj_row["delta"] == Decimal("-100")
@@ -498,7 +520,8 @@ async def test_4_8_mode_b_count_no_count_adjust(
         "SELECT COUNT(*) FROM inventory_movements"
         " WHERE tenant_id = $1 AND inventory_item_id = $2"
         " AND movement_type = 'count_adjust'",
-        uuid.UUID(tid), uuid.UUID(item),
+        uuid.UUID(tid),
+        uuid.UUID(item),
     )
     assert count == 0
 
@@ -575,7 +598,9 @@ async def test_4_9_receipt_commit_creates_movements(
         "SELECT COUNT(*) FROM inventory_movements"
         " WHERE tenant_id = $1 AND movement_type = 'receive'"
         " AND (inventory_item_id = $2 OR inventory_item_id = $3)",
-        uuid.UUID(tid), uuid.UUID(item_a), uuid.UUID(item_b),
+        uuid.UUID(tid),
+        uuid.UUID(item_a),
+        uuid.UUID(item_b),
     )
     assert n_mv == 2
 
@@ -584,7 +609,9 @@ async def test_4_9_receipt_commit_creates_movements(
         "SELECT COUNT(*) FROM ingredient_cost_snapshots"
         " WHERE tenant_id = $1"
         " AND (inventory_item_id = $2 OR inventory_item_id = $3)",
-        uuid.UUID(tid), uuid.UUID(item_a), uuid.UUID(item_b),
+        uuid.UUID(tid),
+        uuid.UUID(item_a),
+        uuid.UUID(item_b),
     )
     assert n_snap == 2
 
@@ -598,7 +625,8 @@ async def test_4_9_receipt_commit_creates_movements(
 
     # receipt marked committed
     state = await admin_conn.fetchval(
-        "SELECT commit_state FROM receipts WHERE id = $1", rid,
+        "SELECT commit_state FROM receipts WHERE id = $1",
+        rid,
     )
     assert state == "committed"
 
@@ -649,6 +677,7 @@ async def test_4_10_receipt_commit_idempotency(
         "SELECT COUNT(*) FROM inventory_movements"
         " WHERE tenant_id = $1 AND inventory_item_id = $2"
         " AND movement_type = 'receive'",
-        uuid.UUID(tid), uuid.UUID(item),
+        uuid.UUID(tid),
+        uuid.UUID(item),
     )
     assert n_mv == 1, f"expected 1 receive movement, got {n_mv}"

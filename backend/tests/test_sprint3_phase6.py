@@ -61,19 +61,20 @@ pytestmark = pytest.mark.integration
 # Constants — all UUIDs use hex-valid prefix characters only
 # ---------------------------------------------------------------------------
 TENANT_ID = uuid.UUID("aa000000-0000-0000-0000-000000000001")
-USER_ID   = uuid.UUID("ab000000-0000-0000-0000-000000000001")   # was 'u' (invalid)
-ITEM_A    = uuid.UUID("ac000000-0000-0000-0000-000000000001")   # Mode A
-ITEM_B    = uuid.UUID("ac000000-0000-0000-0000-000000000002")   # Mode B (was "b000…1" = TENANT_ID)
-ITEM_C    = uuid.UUID("ac000000-0000-0000-0000-000000000003")   # Mode B no anchor
-UOM_GRAM  = uuid.UUID("ad000000-0000-0000-0000-000000000001")   # was 'm' (invalid)
-ING_A     = uuid.UUID("ae000000-0000-0000-0000-000000000001")   # was 'g' (invalid)
-ING_B     = uuid.UUID("ae000000-0000-0000-0000-000000000002")
-ING_C     = uuid.UUID("ae000000-0000-0000-0000-000000000003")
+USER_ID = uuid.UUID("ab000000-0000-0000-0000-000000000001")  # was 'u' (invalid)
+ITEM_A = uuid.UUID("ac000000-0000-0000-0000-000000000001")  # Mode A
+ITEM_B = uuid.UUID("ac000000-0000-0000-0000-000000000002")  # Mode B (was "b000…1" = TENANT_ID)
+ITEM_C = uuid.UUID("ac000000-0000-0000-0000-000000000003")  # Mode B no anchor
+UOM_GRAM = uuid.UUID("ad000000-0000-0000-0000-000000000001")  # was 'm' (invalid)
+ING_A = uuid.UUID("ae000000-0000-0000-0000-000000000001")  # was 'g' (invalid)
+ING_B = uuid.UUID("ae000000-0000-0000-0000-000000000002")
+ING_C = uuid.UUID("ae000000-0000-0000-0000-000000000003")
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="module")
 def app_instance():
@@ -82,9 +83,7 @@ def app_instance():
 
 @pytest.fixture(scope="module")
 async def client(app_instance):
-    async with AsyncClient(
-        transport=ASGITransport(app=app_instance), base_url="http://test"
-    ) as c:
+    async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://test") as c:
         yield c
 
 
@@ -98,7 +97,7 @@ async def session(app_instance):
     Rolls back on teardown — no data persists between tests.
     """
     async with engine.begin() as conn:
-        tx = await conn.begin_nested()          # SAVEPOINT
+        tx = await conn.begin_nested()  # SAVEPOINT
         db = make_bound_session(conn)
 
         app_instance.dependency_overrides[get_db_session] = lambda: db
@@ -111,38 +110,50 @@ async def session(app_instance):
         )
 
         # ── FK prerequisites ───────────────────────────────────────────────
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             INSERT INTO tenants (id, slug, name)
             VALUES (:id, 'phase6-tenant', 'Phase 6 Tenant')
             ON CONFLICT (id) DO NOTHING
-        """), {"id": TENANT_ID})
+        """),
+            {"id": TENANT_ID},
+        )
 
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             INSERT INTO users (id, workos_id, email, email_verified)
             VALUES (:id, 'wos_phase6_test', 'phase6@test.example', true)
             ON CONFLICT (id) DO NOTHING
-        """), {"id": USER_ID})
+        """),
+            {"id": USER_ID},
+        )
 
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             INSERT INTO units_of_measure (id, tenant_id, name, abbreviation, unit_type)
             VALUES (:id, :tid, 'grams-p6', 'g', 'weight')
             ON CONFLICT (id) DO NOTHING
-        """), {"id": UOM_GRAM, "tid": TENANT_ID})
+        """),
+            {"id": UOM_GRAM, "tid": TENANT_ID},
+        )
 
         for ing_id, ing_name in [
             (ING_A, "Ingredient A (p6)"),
             (ING_B, "Ingredient B (p6)"),
             (ING_C, "Ingredient C (p6)"),
         ]:
-            await conn.execute(text("""
+            await conn.execute(
+                text("""
                 INSERT INTO ingredients_master (id, tenant_id, name)
                 VALUES (:id, :tid, :name)
                 ON CONFLICT (id) DO NOTHING
-            """), {"id": ing_id, "tid": TENANT_ID, "name": ing_name})
+            """),
+                {"id": ing_id, "tid": TENANT_ID, "name": ing_name},
+            )
 
         yield db
 
-        await tx.rollback()                     # undo all test changes
+        await tx.rollback()  # undo all test changes
         app_instance.dependency_overrides.clear()
 
 
@@ -155,7 +166,8 @@ _INGREDIENT_MAP = {ITEM_A: ING_A, ITEM_B: ING_B, ITEM_C: ING_C}
 
 async def seed_item(session, item_id, mode, **kwargs):
     """Create or update an inventory item using our Sprint 3 schema."""
-    await session.execute(text("""
+    await session.execute(
+        text("""
         INSERT INTO inventory_items (
             id, tenant_id, ingredient_id, name,
             inventory_mode, storage_unit_id, purchase_unit_id,
@@ -171,21 +183,23 @@ async def seed_item(session, item_id, mode, **kwargs):
             count_grace_days    = EXCLUDED.count_grace_days,
             last_count_quantity = EXCLUDED.last_count_quantity,
             last_count_at       = EXCLUDED.last_count_at
-    """), {
-        "id":    item_id,
-        "tid":   TENANT_ID,
-        "ing":   _INGREDIENT_MAP.get(item_id, ING_A),
-        "name":  f"Item {str(item_id)[-4:]}",
-        "mode":  mode,
-        "su":    UOM_GRAM,
-        "pu":    UOM_GRAM,
-        "ru":    UOM_GRAM,
-        "par":   kwargs.get("par_level"),
-        "cad":   kwargs.get("count_cadence_days"),
-        "grace": kwargs.get("count_grace_days"),
-        "lcq":   kwargs.get("last_count_quantity"),
-        "lca":   kwargs.get("last_count_at"),
-    })
+    """),
+        {
+            "id": item_id,
+            "tid": TENANT_ID,
+            "ing": _INGREDIENT_MAP.get(item_id, ING_A),
+            "name": f"Item {str(item_id)[-4:]}",
+            "mode": mode,
+            "su": UOM_GRAM,
+            "pu": UOM_GRAM,
+            "ru": UOM_GRAM,
+            "par": kwargs.get("par_level"),
+            "cad": kwargs.get("count_cadence_days"),
+            "grace": kwargs.get("count_grace_days"),
+            "lcq": kwargs.get("last_count_quantity"),
+            "lca": kwargs.get("last_count_at"),
+        },
+    )
     await session.flush()
 
 
@@ -193,34 +207,37 @@ async def add_movement(session, item_id, movement_type, delta, recorded_at):
     """Insert an inventory movement with a unique idempotency key."""
     source_map = {
         "opening_balance": "opening",
-        "receive":         "receipt_line",
-        "sale_depletion":  "sale_line_item",
-        "sale_signal":     "sale_line_item",
-        "waste":           "manual",
-        "count_adjust":    "count_event",
+        "receive": "receipt_line",
+        "sale_depletion": "sale_line_item",
+        "sale_signal": "sale_line_item",
+        "waste": "manual",
+        "count_adjust": "count_event",
     }
-    await session.execute(text("""
+    await session.execute(
+        text("""
         INSERT INTO inventory_movements (
             tenant_id, inventory_item_id, movement_type, delta,
             source_type, idempotency_key, recorded_at
         ) VALUES (
             :tid, :iid, :mtype, :delta, :stype, :ikey, :ts
         )
-    """), {
-        "tid":   TENANT_ID,
-        "iid":   item_id,
-        "mtype": movement_type,
-        "delta": delta,
-        "stype": source_map.get(movement_type, "manual"),
-        "ikey":  str(uuid.uuid4()),     # unique per call; no gen_random_uuid() in raw SQL
-        "ts":    recorded_at,
-    })
+    """),
+        {
+            "tid": TENANT_ID,
+            "iid": item_id,
+            "mtype": movement_type,
+            "delta": delta,
+            "stype": source_map.get(movement_type, "manual"),
+            "ikey": str(uuid.uuid4()),  # unique per call; no gen_random_uuid() in raw SQL
+            "ts": recorded_at,
+        },
+    )
     await session.flush()
 
 
 async def get_item(client, item_id):
     """Fetch a single item from the GET /api/v1/inventory/items response."""
-    r = await client.get("/api/v1/inventory/items")    # correct prefix
+    r = await client.get("/api/v1/inventory/items")  # correct prefix
     assert r.status_code == 200, r.text
     for i in r.json()["items"]:
         if i["id"] == str(item_id):
@@ -232,12 +249,12 @@ async def get_item(client, item_id):
 # Tests
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_6_1_mode_a_ok(session, client):
     """Mode A, on_hand=500, par=100 → stock_status=ok, all flags nominal."""
     await seed_item(session, ITEM_A, "recipe_deducted", par_level=100)
-    await add_movement(session, ITEM_A, "opening_balance", 500,
-                       datetime(2025, 9, 1, tzinfo=UTC))
+    await add_movement(session, ITEM_A, "opening_balance", 500, datetime(2025, 9, 1, tzinfo=UTC))
     item = await get_item(client, ITEM_A)
     assert item["on_hand"] == 500
     assert item["stock_status"] == "ok"
@@ -251,8 +268,7 @@ async def test_6_1_mode_a_ok(session, client):
 async def test_6_2_mode_a_low_stock(session, client):
     """Mode A, on_hand=50 ≤ par=100 → stock_status=low_stock."""
     await seed_item(session, ITEM_A, "recipe_deducted", par_level=100)
-    await add_movement(session, ITEM_A, "opening_balance", 50,
-                       datetime(2025, 9, 1, tzinfo=UTC))
+    await add_movement(session, ITEM_A, "opening_balance", 50, datetime(2025, 9, 1, tzinfo=UTC))
     item = await get_item(client, ITEM_A)
     assert item["on_hand"] == 50
     assert item["stock_status"] == "low_stock"
@@ -268,13 +284,12 @@ async def test_6_3_mode_a_out_of_stock(session, client):
     stock_status = out_of_stock (higher priority than low_stock in the chain).
     """
     await seed_item(session, ITEM_A, "recipe_deducted", par_level=100)
-    await add_movement(session, ITEM_A, "opening_balance", 0,
-                       datetime(2025, 9, 1, tzinfo=UTC))
+    await add_movement(session, ITEM_A, "opening_balance", 0, datetime(2025, 9, 1, tzinfo=UTC))
     item = await get_item(client, ITEM_A)
     assert item["on_hand"] == 0
     assert item["stock_status"] == "out_of_stock"
-    assert item["low_stock"] is True     # independent: 0 ≤ 100
-    assert item["out_of_stock"] is True   # independent: 0 ≤ 0
+    assert item["low_stock"] is True  # independent: 0 ≤ 100
+    assert item["out_of_stock"] is True  # independent: 0 ≤ 0
 
 
 @pytest.mark.asyncio
@@ -283,9 +298,15 @@ async def test_6_4_mode_b_no_anchor(session, client):
     Mode B, no last_count_quantity → on_hand=null, count_required=true.
     All stock flags are null (unknown without a reliable reading).
     """
-    await seed_item(session, ITEM_B, "count_anchored",
-                    count_cadence_days=7, count_grace_days=9,
-                    last_count_quantity=None, last_count_at=None)
+    await seed_item(
+        session,
+        ITEM_B,
+        "count_anchored",
+        count_cadence_days=7,
+        count_grace_days=9,
+        last_count_quantity=None,
+        last_count_at=None,
+    )
     item = await get_item(client, ITEM_B)
     assert item["on_hand"] is None
     assert item["stock_status"] == "count_required"
@@ -302,17 +323,22 @@ async def test_6_5_mode_b_fresh(session, client):
     on_hand = 100 (anchor) + 20 (receive after count) = 120.
     """
     now = datetime.now(UTC)
-    await seed_item(session, ITEM_B, "count_anchored",
-                    count_cadence_days=7, count_grace_days=9,
-                    last_count_quantity=100,
-                    last_count_at=now - timedelta(days=2),
-                    par_level=50)
+    await seed_item(
+        session,
+        ITEM_B,
+        "count_anchored",
+        count_cadence_days=7,
+        count_grace_days=9,
+        last_count_quantity=100,
+        last_count_at=now - timedelta(days=2),
+        par_level=50,
+    )
     await add_movement(session, ITEM_B, "receive", 20, now - timedelta(days=1))
     item = await get_item(client, ITEM_B)
     assert item["on_hand"] == 120
     assert item["stock_status"] == "ok"
     assert item["count_state"] == "fresh"
-    assert item["low_stock"] is False    # 120 > 50
+    assert item["low_stock"] is False  # 120 > 50
     assert item["out_of_stock"] is False
 
 
@@ -324,16 +350,21 @@ async def test_6_6_mode_b_stale(session, client):
     grace=7 satisfies v5 constraint: grace >= cadence.
     """
     now = datetime.now(UTC)
-    await seed_item(session, ITEM_B, "count_anchored",
-                    count_cadence_days=7, count_grace_days=7,
-                    last_count_quantity=70,
-                    last_count_at=now - timedelta(days=10),
-                    par_level=50)
+    await seed_item(
+        session,
+        ITEM_B,
+        "count_anchored",
+        count_cadence_days=7,
+        count_grace_days=7,
+        last_count_quantity=70,
+        last_count_at=now - timedelta(days=10),
+        par_level=50,
+    )
     item = await get_item(client, ITEM_B)
     assert item["on_hand"] == 70
     assert item["count_state"] == "stale"
     assert item["stock_status"] == "count_stale"
-    assert item["low_stock"] is False    # 70 > 50
+    assert item["low_stock"] is False  # 70 > 50
     assert item["out_of_stock"] is False
 
 
@@ -345,17 +376,22 @@ async def test_6_7_mode_b_expired(session, client):
     grace=7 satisfies v5 constraint: grace >= cadence.
     """
     now = datetime.now(UTC)
-    await seed_item(session, ITEM_B, "count_anchored",
-                    count_cadence_days=7, count_grace_days=7,
-                    last_count_quantity=100,
-                    last_count_at=now - timedelta(days=20),
-                    par_level=50)
+    await seed_item(
+        session,
+        ITEM_B,
+        "count_anchored",
+        count_cadence_days=7,
+        count_grace_days=7,
+        last_count_quantity=100,
+        last_count_at=now - timedelta(days=20),
+        par_level=50,
+    )
     await add_movement(session, ITEM_B, "receive", 30, now - timedelta(days=1))
     item = await get_item(client, ITEM_B)
     assert item["on_hand"] == 130
     assert item["count_state"] == "expired"
     assert item["stock_status"] == "count_expired"
-    assert item["low_stock"] is False    # 130 > 50
+    assert item["low_stock"] is False  # 130 > 50
 
 
 @pytest.mark.asyncio
@@ -366,11 +402,16 @@ async def test_6_8_mode_b_low_stock_beats_stale(session, client):
     grace=7 satisfies v5 constraint: grace >= cadence.
     """
     now = datetime.now(UTC)
-    await seed_item(session, ITEM_B, "count_anchored",
-                    count_cadence_days=7, count_grace_days=7,
-                    last_count_quantity=30,
-                    last_count_at=now - timedelta(days=10),
-                    par_level=50)
+    await seed_item(
+        session,
+        ITEM_B,
+        "count_anchored",
+        count_cadence_days=7,
+        count_grace_days=7,
+        last_count_quantity=30,
+        last_count_at=now - timedelta(days=10),
+        par_level=50,
+    )
     item = await get_item(client, ITEM_B)
     assert item["on_hand"] == 30
     assert item["count_state"] == "stale"
@@ -399,12 +440,16 @@ async def test_6_9_cadence_coherence_rejects_mode_b_null_cadence(session, client
     """
     now = datetime.now(UTC)
     with pytest.raises(Exception) as exc_info:
-        await seed_item(session, ITEM_B, "count_anchored",
-                        count_cadence_days=None,   # violates IS NOT NULL
-                        count_grace_days=None,
-                        last_count_quantity=100,
-                        last_count_at=now - timedelta(days=3),
-                        par_level=50)
+        await seed_item(
+            session,
+            ITEM_B,
+            "count_anchored",
+            count_cadence_days=None,  # violates IS NOT NULL
+            count_grace_days=None,
+            last_count_quantity=100,
+            last_count_at=now - timedelta(days=3),
+            par_level=50,
+        )
     error_msg = str(exc_info.value).lower()
     assert "cadence_coherence" in error_msg or "check" in error_msg, (
         f"Expected cadence_coherence CHECK violation, got: {exc_info.value}"
@@ -418,18 +463,26 @@ async def test_6_10_missing_yield_factor_defaults_to_one(session, client):
     on_hand = 100 - (20 x COALESCE(NULL, 1.0)) = 80.
     """
     anchor_at = datetime(2025, 6, 1, 8, 0, tzinfo=UTC)
-    signal_at  = datetime(2025, 6, 2, 12, 0, tzinfo=UTC)
-    await seed_item(session, ITEM_B, "count_anchored",
-                    count_cadence_days=7, count_grace_days=9,
-                    last_count_quantity=100,
-                    last_count_at=anchor_at,
-                    par_level=50)
+    signal_at = datetime(2025, 6, 2, 12, 0, tzinfo=UTC)
+    await seed_item(
+        session,
+        ITEM_B,
+        "count_anchored",
+        count_cadence_days=7,
+        count_grace_days=9,
+        last_count_quantity=100,
+        last_count_at=anchor_at,
+        par_level=50,
+    )
     # Ensure no yield factor row exists for this item in this tenant
-    await session.execute(text("""
+    await session.execute(
+        text("""
         DELETE FROM inventory_yield_factors
         WHERE tenant_id = :tid AND inventory_item_id = :iid
-    """), {"tid": TENANT_ID, "iid": ITEM_B})
+    """),
+        {"tid": TENANT_ID, "iid": ITEM_B},
+    )
     await add_movement(session, ITEM_B, "sale_signal", 20, signal_at)
     await session.flush()
     item = await get_item(client, ITEM_B)
-    assert item["on_hand"] == 80   # 100 - (20 x 1.0) via COALESCE default
+    assert item["on_hand"] == 80  # 100 - (20 x 1.0) via COALESCE default

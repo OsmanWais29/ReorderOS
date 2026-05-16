@@ -48,8 +48,7 @@ async def record_opening_balance(
     # ── idempotency check ────────────────────────────────────────────────────
     existing = await session.execute(
         text(
-            "SELECT id FROM inventory_movements"
-            " WHERE tenant_id = :tid AND idempotency_key = :key"
+            "SELECT id FROM inventory_movements WHERE tenant_id = :tid AND idempotency_key = :key"
         ),
         {"tid": tenant_id, "key": idem_key},
     )
@@ -59,10 +58,7 @@ async def record_opening_balance(
 
     # ── resolve mode ─────────────────────────────────────────────────────────
     item_res = await session.execute(
-        text(
-            "SELECT inventory_mode FROM inventory_items"
-            " WHERE tenant_id = :tid AND id = :iid"
-        ),
+        text("SELECT inventory_mode FROM inventory_items WHERE tenant_id = :tid AND id = :iid"),
         {"tid": tenant_id, "iid": inventory_item_id},
     )
     item_row = item_res.fetchone()
@@ -137,8 +133,7 @@ async def record_sale_inventory_effect(
     # ── idempotency check ─────────────────────────────────────────────────────
     existing = await session.execute(
         text(
-            "SELECT id FROM inventory_movements"
-            " WHERE tenant_id = :tid AND idempotency_key = :key"
+            "SELECT id FROM inventory_movements WHERE tenant_id = :tid AND idempotency_key = :key"
         ),
         {"tid": tenant_id, "key": idem_key},
     )
@@ -173,9 +168,7 @@ async def record_sale_inventory_effect(
         )
 
     theoretical_qty = (
-        Decimal(str(row.sale_qty))
-        * Decimal(str(row.recipe_qty))
-        / Decimal(str(row.factor))
+        Decimal(str(row.sale_qty)) * Decimal(str(row.recipe_qty)) / Decimal(str(row.factor))
     )
 
     if row.mode == "recipe_deducted":
@@ -290,13 +283,15 @@ async def record_count_event(
 
         # Pre-serialize payload in Python so asyncpg doesn't have to infer
         # types for individual JSONB arguments (avoids IndeterminateDatatypeError).
-        payload_str = json.dumps({
-            "inventory_item_id": str(inventory_item_id),
-            "counted_quantity": str(counted_quantity),
-            "predicted_on_hand": str(predicted),
-            "drift": str(drift),
-            "drift_pct": str(drift_pct),
-        })
+        payload_str = json.dumps(
+            {
+                "inventory_item_id": str(inventory_item_id),
+                "counted_quantity": str(counted_quantity),
+                "predicted_on_hand": str(predicted),
+                "drift": str(drift),
+                "drift_pct": str(drift_pct),
+            }
+        )
         await session.execute(
             text("""
                 INSERT INTO monitoring_alerts
@@ -415,10 +410,7 @@ async def commit_receipt(
     """
     # ── 1. lock + state check ─────────────────────────────────────────────────
     receipt_res = await session.execute(
-        text(
-            "SELECT commit_state FROM receipts"
-            " WHERE tenant_id = :tid AND id = :rid FOR UPDATE"
-        ),
+        text("SELECT commit_state FROM receipts WHERE tenant_id = :tid AND id = :rid FOR UPDATE"),
         {"tid": tenant_id, "rid": receipt_id},
     )
     receipt_row = receipt_res.fetchone()

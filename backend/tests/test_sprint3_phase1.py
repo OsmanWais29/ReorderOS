@@ -167,9 +167,7 @@ async def test_1_5_duplicate_opening_balance_raises_23505(
 
     # Second opening_balance must violate the partial unique index (23505).
     with pytest.raises(asyncpg.UniqueViolationError):
-        await _insert_movement(
-            admin_conn, tid, item_id, movement_type="opening_balance", delta=50
-        )
+        await _insert_movement(admin_conn, tid, item_id, movement_type="opening_balance", delta=50)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -191,9 +189,7 @@ async def test_1_6_opening_balance_after_other_movement_raises_23514(
 
     # Now attempt opening_balance — trigger must fire with ERRCODE 23514.
     with pytest.raises(asyncpg.CheckViolationError) as exc_info:
-        await _insert_movement(
-            admin_conn, tid, item_id, movement_type="opening_balance", delta=100
-        )
+        await _insert_movement(admin_conn, tid, item_id, movement_type="opening_balance", delta=100)
     assert exc_info.value.sqlstate == "23514"
 
 

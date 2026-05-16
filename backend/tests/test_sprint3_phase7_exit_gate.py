@@ -54,24 +54,25 @@ UTC = UTC
 # Constants
 # ---------------------------------------------------------------------------
 TENANT_ID = uuid.UUID("aa000000-0000-0000-0000-000000000001")
-USER_ID   = uuid.UUID("ab000000-0000-0000-0000-000000000001")
-ITEM_A    = uuid.UUID("ac000000-0000-0000-0000-000000000001")  # Mode A
-ITEM_B    = uuid.UUID("ac000000-0000-0000-0000-000000000002")  # Mode B
-ITEM_C    = uuid.UUID("ac000000-0000-0000-0000-000000000003")  # Mode A (receipt)
-ITEM_D    = uuid.UUID("ac000000-0000-0000-0000-000000000004")  # Mode A (receipt)
-UOM_GRAM  = uuid.UUID("ad000000-0000-0000-0000-000000000001")
-ING_A     = uuid.UUID("ae000000-0000-0000-0000-000000000001")
-ING_B     = uuid.UUID("ae000000-0000-0000-0000-000000000002")
-ING_C     = uuid.UUID("ae000000-0000-0000-0000-000000000003")
-ING_D     = uuid.UUID("ae000000-0000-0000-0000-000000000004")
+USER_ID = uuid.UUID("ab000000-0000-0000-0000-000000000001")
+ITEM_A = uuid.UUID("ac000000-0000-0000-0000-000000000001")  # Mode A
+ITEM_B = uuid.UUID("ac000000-0000-0000-0000-000000000002")  # Mode B
+ITEM_C = uuid.UUID("ac000000-0000-0000-0000-000000000003")  # Mode A (receipt)
+ITEM_D = uuid.UUID("ac000000-0000-0000-0000-000000000004")  # Mode A (receipt)
+UOM_GRAM = uuid.UUID("ad000000-0000-0000-0000-000000000001")
+ING_A = uuid.UUID("ae000000-0000-0000-0000-000000000001")
+ING_B = uuid.UUID("ae000000-0000-0000-0000-000000000002")
+ING_C = uuid.UUID("ae000000-0000-0000-0000-000000000003")
+ING_D = uuid.UUID("ae000000-0000-0000-0000-000000000004")
 # Sprint 3 uses recipe_versions directly (no menu_items / recipes tables yet).
-RECIPE_A  = uuid.UUID("bb000000-0000-0000-0000-000000000001")
-RECIPE_B  = uuid.UUID("bb000000-0000-0000-0000-000000000002")
+RECIPE_A = uuid.UUID("bb000000-0000-0000-0000-000000000001")
+RECIPE_B = uuid.UUID("bb000000-0000-0000-0000-000000000002")
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="module")
 def app_instance():
@@ -80,9 +81,7 @@ def app_instance():
 
 @pytest.fixture(scope="module")
 async def client(app_instance):
-    async with AsyncClient(
-        transport=ASGITransport(app=app_instance), base_url="http://test"
-    ) as c:
+    async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://test") as c:
         yield c
 
 
@@ -103,33 +102,47 @@ async def session(app_instance):
         )
 
         # FK prerequisites
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             INSERT INTO tenants (id, slug, name)
             VALUES (:id, 'phase7-gate', 'Phase 7 Exit Gate')
             ON CONFLICT (id) DO NOTHING
-        """), {"id": TENANT_ID})
+        """),
+            {"id": TENANT_ID},
+        )
 
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             INSERT INTO users (id, workos_id, email, email_verified)
             VALUES (:id, 'wos_phase7_gate', 'phase7@test.example', true)
             ON CONFLICT (id) DO NOTHING
-        """), {"id": USER_ID})
+        """),
+            {"id": USER_ID},
+        )
 
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             INSERT INTO units_of_measure (id, tenant_id, name, abbreviation, unit_type)
             VALUES (:id, :tid, 'grams-p7g', 'g', 'weight')
             ON CONFLICT (id) DO NOTHING
-        """), {"id": UOM_GRAM, "tid": TENANT_ID})
+        """),
+            {"id": UOM_GRAM, "tid": TENANT_ID},
+        )
 
         for ing_id, ing_name in [
-            (ING_A, "Chicken-P7G"), (ING_B, "Beef-P7G"),
-            (ING_C, "Rice-P7G"),   (ING_D, "Flour-P7G"),
+            (ING_A, "Chicken-P7G"),
+            (ING_B, "Beef-P7G"),
+            (ING_C, "Rice-P7G"),
+            (ING_D, "Flour-P7G"),
         ]:
-            await conn.execute(text("""
+            await conn.execute(
+                text("""
                 INSERT INTO ingredients_master (id, tenant_id, name)
                 VALUES (:id, :tid, :name)
                 ON CONFLICT (id) DO NOTHING
-            """), {"id": ing_id, "tid": TENANT_ID, "name": ing_name})
+            """),
+                {"id": ing_id, "tid": TENANT_ID, "name": ing_name},
+            )
 
         yield db
 
@@ -140,6 +153,7 @@ async def session(app_instance):
 # ---------------------------------------------------------------------------
 # Read-only helpers (ONLY read state, never write)
 # ---------------------------------------------------------------------------
+
 
 async def read_on_hand(session, item_id) -> float | None:
     row = await session.execute(
@@ -152,42 +166,55 @@ async def read_on_hand(session, item_id) -> float | None:
 
 async def count_movements(session, item_id, mtype=None) -> int:
     if mtype:
-        row = await session.execute(text("""
+        row = await session.execute(
+            text("""
             SELECT COUNT(*) FROM inventory_movements
             WHERE tenant_id = :tid AND inventory_item_id = :iid
               AND movement_type = :mtype
-        """), {"tid": TENANT_ID, "iid": item_id, "mtype": mtype})
+        """),
+            {"tid": TENANT_ID, "iid": item_id, "mtype": mtype},
+        )
     else:
-        row = await session.execute(text("""
+        row = await session.execute(
+            text("""
             SELECT COUNT(*) FROM inventory_movements
             WHERE tenant_id = :tid AND inventory_item_id = :iid
-        """), {"tid": TENANT_ID, "iid": item_id})
+        """),
+            {"tid": TENANT_ID, "iid": item_id},
+        )
     return row.scalar()
 
 
 async def get_count_event(session, item_id, nth=1) -> dict:
-    row = await session.execute(text("""
+    row = await session.execute(
+        text("""
         SELECT id, counted_quantity, predicted_on_hand_at_count, counted_at
           FROM inventory_count_events
          WHERE tenant_id = :tid AND inventory_item_id = :iid
          ORDER BY counted_at
          OFFSET :offset LIMIT 1
-    """), {"tid": TENANT_ID, "iid": item_id, "offset": nth - 1})
+    """),
+        {"tid": TENANT_ID, "iid": item_id, "offset": nth - 1},
+    )
     return row.mappings().first()
 
 
 async def get_alert(session, monitor_name) -> dict | None:
-    row = await session.execute(text("""
+    row = await session.execute(
+        text("""
         SELECT severity, alert_count, trigger_payload
           FROM monitoring_alerts
          WHERE tenant_id = :tid AND monitor_name = :mn AND resolved_at IS NULL
-    """), {"tid": TENANT_ID, "mn": monitor_name})
+    """),
+        {"tid": TENANT_ID, "mn": monitor_name},
+    )
     return row.mappings().first()
 
 
 # ---------------------------------------------------------------------------
 # Setup-only helpers (catalog scaffolding, NOT Sprint 3 services)
 # ---------------------------------------------------------------------------
+
 
 async def create_item(session, item_id, ing_id, mode, **kwargs) -> None:
     """Insert an inventory_items row.
@@ -198,12 +225,13 @@ async def create_item(session, item_id, ing_id, mode, **kwargs) -> None:
     if mode == "count_anchored":
         # cadence_coherence CHECK requires both non-NULL with grace >= cadence
         cadence = kwargs.get("count_cadence_days") or 7
-        grace   = max(kwargs.get("count_grace_days") or 7, cadence)
+        grace = max(kwargs.get("count_grace_days") or 7, cadence)
     else:
         cadence = kwargs.get("count_cadence_days")
-        grace   = kwargs.get("count_grace_days")
+        grace = kwargs.get("count_grace_days")
 
-    await session.execute(text("""
+    await session.execute(
+        text("""
         INSERT INTO inventory_items (
             id, tenant_id, ingredient_id, name,
             inventory_mode, storage_unit_id, purchase_unit_id, recipe_unit_id,
@@ -214,20 +242,22 @@ async def create_item(session, item_id, ing_id, mode, **kwargs) -> None:
             :id, :tid, :ing, :name, :mode, :su, :su, :su,
             :str_factor, :par, :cad, :grace, :lcq, :lca
         ) ON CONFLICT (id) DO NOTHING
-    """), {
-        "id":         item_id,
-        "tid":        TENANT_ID,
-        "ing":        ing_id,
-        "name":       kwargs.get("name", f"Item-{str(item_id)[-4:]}"),
-        "mode":       mode,
-        "su":         UOM_GRAM,
-        "str_factor": kwargs.get("storage_to_recipe_factor", 1.0),
-        "par":        kwargs.get("par_level"),
-        "cad":        cadence,
-        "grace":      grace,
-        "lcq":        kwargs.get("last_count_quantity"),
-        "lca":        kwargs.get("last_count_at"),
-    })
+    """),
+        {
+            "id": item_id,
+            "tid": TENANT_ID,
+            "ing": ing_id,
+            "name": kwargs.get("name", f"Item-{str(item_id)[-4:]}"),
+            "mode": mode,
+            "su": UOM_GRAM,
+            "str_factor": kwargs.get("storage_to_recipe_factor", 1.0),
+            "par": kwargs.get("par_level"),
+            "cad": cadence,
+            "grace": grace,
+            "lcq": kwargs.get("last_count_quantity"),
+            "lca": kwargs.get("last_count_at"),
+        },
+    )
     await session.flush()
 
 
@@ -242,24 +272,30 @@ async def create_recipe_for_item(
     Sprint 3 uses recipe_versions / recipe_ingredients directly.
     There are no menu_items or recipes tables in this sprint.
     """
-    await session.execute(text("""
+    await session.execute(
+        text("""
         INSERT INTO recipe_versions (id, tenant_id, name)
         VALUES (:id, :tid, :name) ON CONFLICT (id) DO NOTHING
-    """), {
-        "id":   recipe_version_id,
-        "tid":  TENANT_ID,
-        "name": f"rv-{str(recipe_version_id)[-4:]}",
-    })
-    await session.execute(text("""
+    """),
+        {
+            "id": recipe_version_id,
+            "tid": TENANT_ID,
+            "name": f"rv-{str(recipe_version_id)[-4:]}",
+        },
+    )
+    await session.execute(
+        text("""
         INSERT INTO recipe_ingredients (tenant_id, recipe_version_id, inventory_item_id, quantity)
         VALUES (:tid, :rvid, :iid, :qty)
         ON CONFLICT DO NOTHING
-    """), {
-        "tid":  TENANT_ID,
-        "rvid": recipe_version_id,
-        "iid":  inventory_item_id,
-        "qty":  qty_per_serving,
-    })
+    """),
+        {
+            "tid": TENANT_ID,
+            "rvid": recipe_version_id,
+            "iid": inventory_item_id,
+            "qty": qty_per_serving,
+        },
+    )
     await session.flush()
 
 
@@ -274,15 +310,18 @@ async def create_sale_line(
     Sprint 3 stub has only: (id, tenant_id, quantity, recipe_version_id).
     There are no order_id, menu_item_id, or clover columns in this sprint.
     """
-    await session.execute(text("""
+    await session.execute(
+        text("""
         INSERT INTO sale_line_items (id, tenant_id, recipe_version_id, quantity)
         VALUES (:id, :tid, :rvid, :qty) ON CONFLICT (id) DO NOTHING
-    """), {
-        "id":   sale_line_id,
-        "tid":  TENANT_ID,
-        "rvid": recipe_version_id,
-        "qty":  qty_sold,
-    })
+    """),
+        {
+            "id": sale_line_id,
+            "tid": TENANT_ID,
+            "rvid": recipe_version_id,
+            "qty": qty_sold,
+        },
+    )
     await session.flush()
 
 
@@ -301,11 +340,13 @@ async def create_sale_line(
 #   Total movements: OB + 3 sales + 1 waste + 1 receive + 1 count_adjust = 7
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_scenario_a_mode_a_full_lifecycle(session, client):
     # ── catalog setup ─────────────────────────────────────────────────────────
-    await create_item(session, ITEM_A, ING_A, "recipe_deducted",
-                      par_level=500, storage_to_recipe_factor=1.0)
+    await create_item(
+        session, ITEM_A, ING_A, "recipe_deducted", par_level=500, storage_to_recipe_factor=1.0
+    )
     await create_recipe_for_item(session, RECIPE_A, ITEM_A, qty_per_serving=150)
 
     # Step 1: Opening balance via API
@@ -322,7 +363,8 @@ async def test_scenario_a_mode_a_full_lifecycle(session, client):
         sl_id = uuid.uuid4()
         await create_sale_line(session, sl_id, RECIPE_A, qty_sold=1)
         await record_sale_inventory_effect(
-            session, tenant_id=TENANT_ID,
+            session,
+            tenant_id=TENANT_ID,
             sale_line_item_id=sl_id,
             inventory_item_id=ITEM_A,
         )
@@ -335,11 +377,14 @@ async def test_scenario_a_mode_a_full_lifecycle(session, client):
     # waste_events and its service are Sprint 4 scope. Sprint 3 proves that
     # waste movements are correctly INCLUDED in Mode A on_hand (SUM of all
     # non-signal deltas) and EXCLUDED from Mode B on_hand.
-    await session.execute(text("""
+    await session.execute(
+        text("""
         INSERT INTO inventory_movements (tenant_id, inventory_item_id,
             movement_type, delta, source_type, idempotency_key, recorded_at)
         VALUES (:tid, :iid, 'waste', -80, 'manual', :ikey, now())
-    """), {"tid": TENANT_ID, "iid": ITEM_A, "ikey": str(uuid.uuid4())})
+    """),
+        {"tid": TENANT_ID, "iid": ITEM_A, "ikey": str(uuid.uuid4())},
+    )
     await session.flush()
     assert await read_on_hand(session, ITEM_A) == 1470
 
@@ -349,12 +394,15 @@ async def test_scenario_a_mode_a_full_lifecycle(session, client):
     assert r.status_code == 201, r.text
     rec_id = r.json()["id"]
 
-    r = await client.post(f"/api/v1/inventory/receipts/{rec_id}/lines", json={
-        "inventory_item_id": str(ITEM_A),
-        "received_quantity":  500,          # correct Sprint 3 field name
-        "purchase_unit_id":   str(UOM_GRAM),
-        "unit_cost_cents":    50,
-    })
+    r = await client.post(
+        f"/api/v1/inventory/receipts/{rec_id}/lines",
+        json={
+            "inventory_item_id": str(ITEM_A),
+            "received_quantity": 500,  # correct Sprint 3 field name
+            "purchase_unit_id": str(UOM_GRAM),
+            "unit_cost_cents": 50,
+        },
+    )
     assert r.status_code == 201, r.text
 
     r = await client.post(
@@ -365,11 +413,15 @@ async def test_scenario_a_mode_a_full_lifecycle(session, client):
     assert await read_on_hand(session, ITEM_A) == 1970
 
     # Step 7: Count via API (test does NOT supply predicted)
-    r = await client.post("/api/v1/inventory/count-events", json={
-        "inventory_item_id": str(ITEM_A),
-        "counted_quantity":  1900,
-        "counted_at":        "2025-09-01T20:00:00Z",
-    }, headers={"Idempotency-Key": "a-count"})
+    r = await client.post(
+        "/api/v1/inventory/count-events",
+        json={
+            "inventory_item_id": str(ITEM_A),
+            "counted_quantity": 1900,
+            "counted_at": "2025-09-01T20:00:00Z",
+        },
+        headers={"Idempotency-Key": "a-count"},
+    )
     assert r.status_code == 201, r.text
 
     # Verify all post-count invariants
@@ -381,11 +433,14 @@ async def test_scenario_a_mode_a_full_lifecycle(session, client):
         f"{ce['predicted_on_hand_at_count']}"
     )
 
-    adj = await session.execute(text("""
+    adj = await session.execute(
+        text("""
         SELECT delta FROM inventory_movements
          WHERE tenant_id = :tid AND inventory_item_id = :iid
            AND movement_type = 'count_adjust'
-    """), {"tid": TENANT_ID, "iid": ITEM_A})
+    """),
+        {"tid": TENANT_ID, "iid": ITEM_A},
+    )
     assert float(adj.scalar()) == -70
 
     assert await count_movements(session, ITEM_A) == 7, (
@@ -416,12 +471,20 @@ async def test_scenario_a_mode_a_full_lifecycle(session, client):
 # clock_timestamp() to guarantee it lands AFTER T_wall.
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_scenario_b_mode_b_full_lifecycle(session, client):
     # ── catalog setup ─────────────────────────────────────────────────────────
-    await create_item(session, ITEM_B, ING_B, "count_anchored",
-                      count_cadence_days=7, count_grace_days=7,
-                      par_level=500, storage_to_recipe_factor=1.0)
+    await create_item(
+        session,
+        ITEM_B,
+        ING_B,
+        "count_anchored",
+        count_cadence_days=7,
+        count_grace_days=7,
+        par_level=500,
+        storage_to_recipe_factor=1.0,
+    )
     await create_recipe_for_item(session, RECIPE_B, ITEM_B, qty_per_serving=200)
 
     # Step 1: Opening balance via API — explicit past recorded_at ensures that
@@ -442,26 +505,33 @@ async def test_scenario_b_mode_b_full_lifecycle(session, client):
     assert float(row.scalar()) == 3000
 
     # Step 2: Yield factor (config, not a Sprint 3 write service)
-    await session.execute(text("""
+    await session.execute(
+        text("""
         INSERT INTO inventory_yield_factors (tenant_id, inventory_item_id, yield_factor)
         VALUES (:tid, :iid, 1.15)
         ON CONFLICT (tenant_id, inventory_item_id) DO UPDATE SET yield_factor = 1.15
-    """), {"tid": TENANT_ID, "iid": ITEM_B})
+    """),
+        {"tid": TENANT_ID, "iid": ITEM_B},
+    )
     await session.flush()
 
     # Steps 3-4: Sale signals via service (200 g + 350 g)
     sl1 = uuid.uuid4()
     await create_sale_line(session, sl1, RECIPE_B, qty_sold=1)
     await record_sale_inventory_effect(
-        session, tenant_id=TENANT_ID,
-        sale_line_item_id=sl1, inventory_item_id=ITEM_B,
+        session,
+        tenant_id=TENANT_ID,
+        sale_line_item_id=sl1,
+        inventory_item_id=ITEM_B,
     )
 
     sl2 = uuid.uuid4()
     await create_sale_line(session, sl2, RECIPE_B, qty_sold=Decimal("1.75"))
     await record_sale_inventory_effect(
-        session, tenant_id=TENANT_ID,
-        sale_line_item_id=sl2, inventory_item_id=ITEM_B,
+        session,
+        tenant_id=TENANT_ID,
+        sale_line_item_id=sl2,
+        inventory_item_id=ITEM_B,
     )
     await session.flush()
 
@@ -471,25 +541,31 @@ async def test_scenario_b_mode_b_full_lifecycle(session, client):
     # Step 5: Waste — DIRECT SQL INSERT (same Sprint 3 boundary as Scenario A)
     # Mode B: waste is logged for variance accounting but NOT subtracted by
     # on_hand() — proving the exclusion is the point of this assertion.
-    await session.execute(text("""
+    await session.execute(
+        text("""
         INSERT INTO inventory_movements (tenant_id, inventory_item_id,
             movement_type, delta, source_type, idempotency_key, recorded_at)
         VALUES (:tid, :iid, 'waste', -100, 'manual', :ikey, now())
-    """), {"tid": TENANT_ID, "iid": ITEM_B, "ikey": str(uuid.uuid4())})
+    """),
+        {"tid": TENANT_ID, "iid": ITEM_B, "ikey": str(uuid.uuid4())},
+    )
     await session.flush()
-    assert await read_on_hand(session, ITEM_B) == 2367.5   # waste excluded ✓
+    assert await read_on_hand(session, ITEM_B) == 2367.5  # waste excluded ✓
 
     # Step 6: Receipt via API
     r = await client.post("/api/v1/inventory/receipts", json={})
     assert r.status_code == 201, r.text
     rec_id = r.json()["id"]
 
-    r = await client.post(f"/api/v1/inventory/receipts/{rec_id}/lines", json={
-        "inventory_item_id": str(ITEM_B),
-        "received_quantity":  400,
-        "purchase_unit_id":   str(UOM_GRAM),
-        "unit_cost_cents":    80,
-    })
+    r = await client.post(
+        f"/api/v1/inventory/receipts/{rec_id}/lines",
+        json={
+            "inventory_item_id": str(ITEM_B),
+            "received_quantity": 400,
+            "purchase_unit_id": str(UOM_GRAM),
+            "unit_cost_cents": 80,
+        },
+    )
     assert r.status_code == 201, r.text
 
     r = await client.post(
@@ -503,10 +579,14 @@ async def test_scenario_b_mode_b_full_lifecycle(session, client):
     # counted_at is omitted so the service uses Python datetime.now() (T_wall).
     # All preceding movements were inserted at PostgreSQL DEFAULT NOW() = T_tx.
     # Since T_tx < T_wall, those movements are excluded from post-recount on_hand.
-    r = await client.post("/api/v1/inventory/count-events", json={
-        "inventory_item_id": str(ITEM_B),
-        "counted_quantity":  2700,
-    }, headers={"Idempotency-Key": "b-count"})
+    r = await client.post(
+        "/api/v1/inventory/count-events",
+        json={
+            "inventory_item_id": str(ITEM_B),
+            "counted_quantity": 2700,
+        },
+        headers={"Idempotency-Key": "b-count"},
+    )
     assert r.status_code == 201, r.text
 
     assert await count_movements(session, ITEM_B, "count_adjust") == 0
@@ -519,19 +599,24 @@ async def test_scenario_b_mode_b_full_lifecycle(session, client):
     sl3 = uuid.uuid4()
     await create_sale_line(session, sl3, RECIPE_B, qty_sold=Decimal("0.5"))
     mv_id3 = await record_sale_inventory_effect(
-        session, tenant_id=TENANT_ID,
-        sale_line_item_id=sl3, inventory_item_id=ITEM_B,
+        session,
+        tenant_id=TENANT_ID,
+        sale_line_item_id=sl3,
+        inventory_item_id=ITEM_B,
     )
     assert mv_id3 is not None, "service must return the new movement id"
 
     # Fix the timestamp so the post-recount signal is visible to on_hand().
     # clock_timestamp() advances during the transaction (unlike NOW() which is
     # pinned to transaction start), so this is guaranteed > T_wall.
-    await session.execute(text("""
+    await session.execute(
+        text("""
         UPDATE inventory_movements
            SET recorded_at = clock_timestamp()
          WHERE id = :id
-    """), {"id": mv_id3})
+    """),
+        {"id": mv_id3},
+    )
     await session.flush()
 
     # on_hand = 2700 - 100x1.15 = 2585
@@ -552,6 +637,7 @@ async def test_scenario_b_mode_b_full_lifecycle(session, client):
 #   ITEM_C: OB=1000, receipt +500 → on_hand=1500
 #   ITEM_D: OB=5000, receipt +2000 → on_hand=7000
 # ============================================================================
+
 
 @pytest.mark.asyncio
 async def test_scenario_c_multi_item_receipt(session, client):
@@ -580,15 +666,18 @@ async def test_scenario_c_multi_item_receipt(session, client):
     rec_id = r.json()["id"]
 
     for iid, qty, cost in [
-        (ITEM_C, 500,  50),
+        (ITEM_C, 500, 50),
         (ITEM_D, 2000, 800),
     ]:
-        r = await client.post(f"/api/v1/inventory/receipts/{rec_id}/lines", json={
-            "inventory_item_id": str(iid),
-            "received_quantity":  qty,
-            "purchase_unit_id":   str(UOM_GRAM),
-            "unit_cost_cents":    cost,
-        })
+        r = await client.post(
+            f"/api/v1/inventory/receipts/{rec_id}/lines",
+            json={
+                "inventory_item_id": str(iid),
+                "received_quantity": qty,
+                "purchase_unit_id": str(UOM_GRAM),
+                "unit_cost_cents": cost,
+            },
+        )
         assert r.status_code == 201, r.text
 
     r = await client.post(
@@ -603,19 +692,25 @@ async def test_scenario_c_multi_item_receipt(session, client):
 
     # Verify cost snapshots were created by the service.
     # ingredient_cost_snapshots uses source_receipt_line_id (Sprint 3 schema).
-    snap_count = await session.execute(text("""
+    snap_count = await session.execute(
+        text("""
         SELECT COUNT(ics.id)
           FROM ingredient_cost_snapshots ics
           JOIN receipt_lines rl ON rl.id = ics.source_receipt_line_id
          WHERE ics.tenant_id = :tid AND rl.receipt_id = :rid
-    """), {"tid": TENANT_ID, "rid": uuid.UUID(rec_id)})
+    """),
+        {"tid": TENANT_ID, "rid": uuid.UUID(rec_id)},
+    )
     assert snap_count.scalar() == 2, "commit must create 1 cost snapshot per line"
 
     # Verify emits_movement_id was back-linked on every receipt line
-    line_count = await session.execute(text("""
+    line_count = await session.execute(
+        text("""
         SELECT COUNT(*) FROM receipt_lines
          WHERE receipt_id = :rid AND emits_movement_id IS NOT NULL
-    """), {"rid": uuid.UUID(rec_id)})
+    """),
+        {"rid": uuid.UUID(rec_id)},
+    )
     assert line_count.scalar() == 2, "commit must set emits_movement_id on all lines"
 
     # Verify commit_state transitioned
@@ -635,6 +730,7 @@ async def test_scenario_c_multi_item_receipt(session, client):
 #   - After two requests, only 1 count_adjust exists
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_scenario_d_idempotency_workflow(session, client):
     await create_item(session, ITEM_A, ING_A, "recipe_deducted")
@@ -648,19 +744,21 @@ async def test_scenario_d_idempotency_workflow(session, client):
 
     payload = {
         "inventory_item_id": str(ITEM_A),
-        "counted_quantity":  950,
-        "counted_at":        "2025-09-01T12:00:00Z",
+        "counted_quantity": 950,
+        "counted_at": "2025-09-01T12:00:00Z",
     }
     key = "d-count"
 
-    r1 = await client.post("/api/v1/inventory/count-events", json=payload,
-                           headers={"Idempotency-Key": key})
+    r1 = await client.post(
+        "/api/v1/inventory/count-events", json=payload, headers={"Idempotency-Key": key}
+    )
     assert r1.status_code == 201
     original = r1.json()
 
     # Replay: same key + same body → identical 201 response
-    r2 = await client.post("/api/v1/inventory/count-events", json=payload,
-                           headers={"Idempotency-Key": key})
+    r2 = await client.post(
+        "/api/v1/inventory/count-events", json=payload, headers={"Idempotency-Key": key}
+    )
     assert r2.status_code == 201
     assert r2.json() == original, "replay must return identical response body"
 
@@ -689,6 +787,7 @@ async def test_scenario_d_idempotency_workflow(session, client):
 #   ITEM_D: Mode B, no anchor              → count_required
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_scenario_e_stock_warnings(session, client):
     now = datetime.now(UTC)
@@ -704,8 +803,12 @@ async def test_scenario_e_stock_warnings(session, client):
     # ITEM_B: Mode B, count is stale (10 days old, cadence=7, grace=7)
     # on_hand = 100 (anchor), par=500 → low_stock
     await create_item(
-        session, ITEM_B, ING_B, "count_anchored",
-        count_cadence_days=7, count_grace_days=7,
+        session,
+        ITEM_B,
+        ING_B,
+        "count_anchored",
+        count_cadence_days=7,
+        count_grace_days=7,
         last_count_quantity=100,
         last_count_at=now - timedelta(days=10),
         par_level=500,
@@ -721,8 +824,12 @@ async def test_scenario_e_stock_warnings(session, client):
 
     # ITEM_D: Mode B, no anchor → count_required
     await create_item(
-        session, ITEM_D, ING_D, "count_anchored",
-        count_cadence_days=7, count_grace_days=7,
+        session,
+        ITEM_D,
+        ING_D,
+        "count_anchored",
+        count_cadence_days=7,
+        count_grace_days=7,
     )
     await session.flush()
 
@@ -732,21 +839,21 @@ async def test_scenario_e_stock_warnings(session, client):
 
     # ITEM_A — healthy
     a = items[str(ITEM_A)]
-    assert a["stock_status"] == "ok",            f"ITEM_A: {a['stock_status']}"
+    assert a["stock_status"] == "ok", f"ITEM_A: {a['stock_status']}"
     assert a["low_stock"] is False
     assert a["out_of_stock"] is False
     assert a["count_required"] is False
 
     # ITEM_B — stale count but low_stock wins (higher priority)
     b = items[str(ITEM_B)]
-    assert b["stock_status"] == "low_stock",     f"ITEM_B: {b['stock_status']}"
+    assert b["stock_status"] == "low_stock", f"ITEM_B: {b['stock_status']}"
     assert b["count_state"] == "stale"
     assert b["low_stock"] is True
     assert b["out_of_stock"] is False
 
     # ITEM_C — out of stock (and low_stock — both True; out_of_stock wins)
     c = items[str(ITEM_C)]
-    assert c["stock_status"] == "out_of_stock",  f"ITEM_C: {c['stock_status']}"
+    assert c["stock_status"] == "out_of_stock", f"ITEM_C: {c['stock_status']}"
     assert c["low_stock"] is True
     assert c["out_of_stock"] is True
 
@@ -768,6 +875,7 @@ async def test_scenario_e_stock_warnings(session, client):
 # by record_count_event() as a side effect of the count API calls.
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_scenario_f_monitoring_from_count_events(session, client):
     await create_item(session, ITEM_A, ING_A, "recipe_deducted")
@@ -778,11 +886,15 @@ async def test_scenario_f_monitoring_from_count_events(session, client):
     )
 
     # Count 1: drift = (1000-943)/943 ≈ 6.04 % → warn
-    r = await client.post("/api/v1/inventory/count-events", json={
-        "inventory_item_id": str(ITEM_A),
-        "counted_quantity":  943,
-        "counted_at":        "2025-09-02T10:00:00Z",
-    }, headers={"Idempotency-Key": "f-c1"})
+    r = await client.post(
+        "/api/v1/inventory/count-events",
+        json={
+            "inventory_item_id": str(ITEM_A),
+            "counted_quantity": 943,
+            "counted_at": "2025-09-02T10:00:00Z",
+        },
+        headers={"Idempotency-Key": "f-c1"},
+    )
     assert r.status_code == 201, r.text
 
     # Verify the service captured predicted BEFORE the count_adjust fired
@@ -791,16 +903,20 @@ async def test_scenario_f_monitoring_from_count_events(session, client):
     assert await read_on_hand(session, ITEM_A) == 943
 
     alert = await get_alert(session, "integrity_drift_high")
-    assert alert is not None,              "first count event must create an alert"
-    assert alert["severity"] == "warn",    f"6 % drift → warn; got {alert['severity']}"
+    assert alert is not None, "first count event must create an alert"
+    assert alert["severity"] == "warn", f"6 % drift → warn; got {alert['severity']}"
     assert alert["alert_count"] == 1
 
     # Count 2: drift = (943-754)/754 ≈ 25.07 % → critical + UPSERT → count=2
-    r = await client.post("/api/v1/inventory/count-events", json={
-        "inventory_item_id": str(ITEM_A),
-        "counted_quantity":  754,
-        "counted_at":        "2025-09-02T14:00:00Z",
-    }, headers={"Idempotency-Key": "f-c2"})
+    r = await client.post(
+        "/api/v1/inventory/count-events",
+        json={
+            "inventory_item_id": str(ITEM_A),
+            "counted_quantity": 754,
+            "counted_at": "2025-09-02T14:00:00Z",
+        },
+        headers={"Idempotency-Key": "f-c2"},
+    )
     assert r.status_code == 201, r.text
 
     ce2 = await get_count_event(session, ITEM_A, nth=2)
@@ -808,8 +924,6 @@ async def test_scenario_f_monitoring_from_count_events(session, client):
     assert float(ce2["predicted_on_hand_at_count"]) == 943
 
     alert = await get_alert(session, "integrity_drift_high")
-    assert alert["severity"]    == "critical",  f"25 % drift → critical; got {alert['severity']}"
-    assert alert["alert_count"] == 2, (
-        f"UPSERT must increment to 2; got {alert['alert_count']}"
-    )
+    assert alert["severity"] == "critical", f"25 % drift → critical; got {alert['severity']}"
+    assert alert["alert_count"] == 2, f"UPSERT must increment to 2; got {alert['alert_count']}"
     assert await read_on_hand(session, ITEM_A) == 754

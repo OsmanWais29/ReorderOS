@@ -70,8 +70,7 @@ async def create_count_event(
     if idem_key:
         raw_body = await _get_body(request)
         fp = compute_fingerprint(request.method, request.url.path, raw_body)
-        state = await check_and_lock(db, tenant_id=tenant_id, key=idem_key,
-                                     fingerprint=fp)
+        state = await check_and_lock(db, tenant_id=tenant_id, key=idem_key, fingerprint=fp)
         if state.status == "cached":
             return JSONResponse(state.response_body, status_code=state.response_status)
         # 'in_flight' and 'conflict' raise HTTPException inside check_and_lock.
@@ -107,8 +106,9 @@ async def create_count_event(
     }
 
     if idem_key:
-        await store_response(db, tenant_id=tenant_id, key=idem_key,
-                             response_status=201, response_body=response_data)
+        await store_response(
+            db, tenant_id=tenant_id, key=idem_key, response_status=201, response_body=response_data
+        )
         await db.commit()
 
     return JSONResponse(response_data, status_code=201)
@@ -133,8 +133,7 @@ async def create_opening_balance(
     if idem_key:
         raw_body = await _get_body(request)
         fp = compute_fingerprint(request.method, request.url.path, raw_body)
-        state = await check_and_lock(db, tenant_id=tenant_id, key=idem_key,
-                                     fingerprint=fp)
+        state = await check_and_lock(db, tenant_id=tenant_id, key=idem_key, fingerprint=fp)
         if state.status == "cached":
             return JSONResponse(state.response_body, status_code=state.response_status)
 
@@ -154,8 +153,9 @@ async def create_opening_balance(
     }
 
     if idem_key:
-        await store_response(db, tenant_id=tenant_id, key=idem_key,
-                             response_status=201, response_body=response_data)
+        await store_response(
+            db, tenant_id=tenant_id, key=idem_key, response_status=201, response_body=response_data
+        )
         await db.commit()
 
     return JSONResponse(response_data, status_code=201)
@@ -186,12 +186,15 @@ async def create_receipt_endpoint(
         {"id": rid},
     )
     r = row.fetchone()
-    return JSONResponse({
-        "id": str(r[0]),
-        "commit_state": r[1],
-        "received_at": r[2].isoformat(),
-        "notes": r[3],
-    }, status_code=201)
+    return JSONResponse(
+        {
+            "id": str(r[0]),
+            "commit_state": r[1],
+            "received_at": r[2].isoformat(),
+            "notes": r[3],
+        },
+        status_code=201,
+    )
 
 
 @router.post("/receipts/{receipt_id}/lines", status_code=201)
@@ -212,12 +215,15 @@ async def add_line_endpoint(
         unit_cost_cents=body.unit_cost_cents,
     )
     await db.commit()
-    return JSONResponse({
-        "id": str(line_id),
-        "inventory_item_id": str(body.inventory_item_id),
-        "received_quantity": str(body.received_quantity),
-        "unit_cost_cents": body.unit_cost_cents,
-    }, status_code=201)
+    return JSONResponse(
+        {
+            "id": str(line_id),
+            "inventory_item_id": str(body.inventory_item_id),
+            "received_quantity": str(body.received_quantity),
+            "unit_cost_cents": body.unit_cost_cents,
+        },
+        status_code=201,
+    )
 
 
 @router.post("/receipts/{receipt_id}/commit", status_code=200)
@@ -230,11 +236,13 @@ async def commit_receipt_endpoint(
     tenant_id = UUID(principal.tenant_id)
     result = await commit_receipt(db, tenant_id=tenant_id, receipt_id=receipt_id)
     await db.commit()
-    return JSONResponse({
-        "receipt_id": str(result["receipt_id"]),
-        "status": result["status"],
-        "movement_ids": [str(m) for m in result.get("movement_ids", [])],
-    })
+    return JSONResponse(
+        {
+            "receipt_id": str(result["receipt_id"]),
+            "status": result["status"],
+            "movement_ids": [str(m) for m in result.get("movement_ids", [])],
+        }
+    )
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -316,20 +324,27 @@ async def list_inventory_items(
 
     result = []
     for row in items_raw:
-        (item_id, name, mode, par_level, cadence_days,
-         grace_days, last_count_at, last_count_qty, on_hand) = row
+        (
+            item_id,
+            name,
+            mode,
+            par_level,
+            cadence_days,
+            grace_days,
+            last_count_at,
+            last_count_qty,
+            on_hand,
+        ) = row
 
         # count_state — computed live, not read from confidence_state column
-        count_state = _compute_count_state(
-            mode, last_count_at, cadence_days, grace_days, now
-        )
+        count_state = _compute_count_state(mode, last_count_at, cadence_days, grace_days, now)
 
         # count_required: Mode B with no anchor
-        count_required = (mode == "count_anchored" and last_count_qty is None)
+        count_required = mode == "count_anchored" and last_count_qty is None
 
         # low_stock / out_of_stock — null when no reliable on_hand
         if on_hand is not None:
-            low_stock: bool | None = (par_level is not None and on_hand <= par_level)
+            low_stock: bool | None = par_level is not None and on_hand <= par_level
             out_of_stock: bool | None = on_hand <= 0
         else:
             low_stock = None
@@ -342,18 +357,20 @@ async def list_inventory_items(
             count_state=count_state,
         )
 
-        result.append({
-            "id": str(item_id),
-            "name": name,
-            "inventory_mode": mode,
-            "on_hand": float(on_hand) if on_hand is not None else None,
-            "stock_status": stock_status,
-            "count_required": count_required,
-            "count_state": count_state,
-            "low_stock": low_stock,
-            "out_of_stock": out_of_stock,
-            "par_level": float(par_level) if par_level is not None else None,
-            "last_count_at": last_count_at.isoformat() if last_count_at else None,
-        })
+        result.append(
+            {
+                "id": str(item_id),
+                "name": name,
+                "inventory_mode": mode,
+                "on_hand": float(on_hand) if on_hand is not None else None,
+                "stock_status": stock_status,
+                "count_required": count_required,
+                "count_state": count_state,
+                "low_stock": low_stock,
+                "out_of_stock": out_of_stock,
+                "par_level": float(par_level) if par_level is not None else None,
+                "last_count_at": last_count_at.isoformat() if last_count_at else None,
+            }
+        )
 
     return JSONResponse({"items": result, "total": len(result)})

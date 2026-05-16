@@ -48,13 +48,13 @@ def compute_fingerprint(method: str, path: str, body: bytes | dict) -> str:
     or a plain dict (for direct calls in tests / services).
     """
     if isinstance(body, dict):
-        canonical_str = json.dumps(_canonical(body), separators=(",", ":"),
-                                   ensure_ascii=False)
+        canonical_str = json.dumps(_canonical(body), separators=(",", ":"), ensure_ascii=False)
     else:
         try:
             parsed = json.loads(body) if body else {}
-            canonical_str = json.dumps(_canonical(parsed), separators=(",", ":"),
-                                       ensure_ascii=False)
+            canonical_str = json.dumps(
+                _canonical(parsed), separators=(",", ":"), ensure_ascii=False
+            )
         except Exception:
             canonical_str = body.decode("utf-8", errors="replace")
     raw = f"{method}\n{path}\n{canonical_str}"
@@ -122,8 +122,10 @@ async def check_and_lock(
     if stored_fp != fingerprint:
         raise HTTPException(
             status_code=409,
-            detail={"error": "idempotency_key_conflict",
-                    "message": "Idempotency-Key already used with a different request body"},
+            detail={
+                "error": "idempotency_key_conflict",
+                "message": "Idempotency-Key already used with a different request body",
+            },
         )
     if resp_status is None:
         raise HTTPException(

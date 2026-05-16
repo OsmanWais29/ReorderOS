@@ -83,7 +83,6 @@ def smoke_test(token: str) -> None:
     print(f"Target: {BASE_URL}\n")
 
     with httpx.Client(timeout=10) as c:
-
         print("── Sprint 1: health endpoints ───────────────────────────────")
         for path, method, exp in [
             ("/health/live", "GET", 200),
@@ -154,7 +153,9 @@ def smoke_test(token: str) -> None:
                 role_hint = "owner → 200" if r.status_code == 200 else "manager/staff → 403"
                 passed += ok(
                     f"GET /api/v1/invitations ({role_hint})",
-                    r.status_code, r.status_code, _parse(r)
+                    r.status_code,
+                    r.status_code,
+                    _parse(r),
                 )
             else:
                 ok("GET /api/v1/invitations", r.status_code, 200, _parse(r))

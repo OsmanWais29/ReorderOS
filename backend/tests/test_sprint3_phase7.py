@@ -45,10 +45,10 @@ UTC_TZ = UTC
 
 # ── constants for savepoint-based tests (service + HTTP) ─────────────────────
 T7_TENANT_ID = uuid.UUID("e7000000-0000-0000-0000-000000000001")
-T7_USER_ID   = uuid.UUID("e7000000-0000-0000-0000-000000000002")
-T7_UOM_ID    = uuid.UUID("e7000000-0000-0000-0000-000000000003")
-T7_ING_A     = uuid.UUID("e7000000-0000-0000-0000-000000000004")
-T7_ING_B     = uuid.UUID("e7000000-0000-0000-0000-000000000005")
+T7_USER_ID = uuid.UUID("e7000000-0000-0000-0000-000000000002")
+T7_UOM_ID = uuid.UUID("e7000000-0000-0000-0000-000000000003")
+T7_ING_A = uuid.UUID("e7000000-0000-0000-0000-000000000004")
+T7_ING_B = uuid.UUID("e7000000-0000-0000-0000-000000000005")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -63,9 +63,7 @@ def app_instance():
 
 @pytest.fixture(scope="module")
 async def client(app_instance):
-    async with AsyncClient(
-        transport=ASGITransport(app=app_instance), base_url="http://test"
-    ) as c:
+    async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://test") as c:
         yield c
 
 
@@ -83,7 +81,7 @@ async def session(app_instance):
     Asyncpg tests (7.1-7.14) do not request this fixture.
     """
     async with engine.begin() as conn:
-        tx = await conn.begin_nested()      # SAVEPOINT
+        tx = await conn.begin_nested()  # SAVEPOINT
         db = make_bound_session(conn)
 
         app_instance.dependency_overrides[get_db_session] = lambda: db
@@ -95,33 +93,45 @@ async def session(app_instance):
             role="manager",
         )
 
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             INSERT INTO tenants (id, slug, name)
             VALUES (:id, 'phase7-tenant', 'Phase 7 Tenant')
             ON CONFLICT (id) DO NOTHING
-        """), {"id": T7_TENANT_ID})
+        """),
+            {"id": T7_TENANT_ID},
+        )
 
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             INSERT INTO users (id, workos_id, email, email_verified)
             VALUES (:id, 'wos_phase7_test', 'phase7@test.example', true)
             ON CONFLICT (id) DO NOTHING
-        """), {"id": T7_USER_ID})
+        """),
+            {"id": T7_USER_ID},
+        )
 
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             INSERT INTO units_of_measure (id, tenant_id, name, abbreviation, unit_type)
             VALUES (:id, :tid, 'grams-p7', 'g', 'weight')
             ON CONFLICT (id) DO NOTHING
-        """), {"id": T7_UOM_ID, "tid": T7_TENANT_ID})
+        """),
+            {"id": T7_UOM_ID, "tid": T7_TENANT_ID},
+        )
 
         for ing_id, ing_name in [
             (T7_ING_A, "Ingredient A (p7)"),
             (T7_ING_B, "Ingredient B (p7)"),
         ]:
-            await conn.execute(text("""
+            await conn.execute(
+                text("""
                 INSERT INTO ingredients_master (id, tenant_id, name)
                 VALUES (:id, :tid, :name)
                 ON CONFLICT (id) DO NOTHING
-            """), {"id": ing_id, "tid": T7_TENANT_ID, "name": ing_name})
+            """),
+                {"id": ing_id, "tid": T7_TENANT_ID, "name": ing_name},
+            )
 
         yield db
 
@@ -139,7 +149,9 @@ async def _mk_uom(conn: asyncpg.Connection, tenant_id: str) -> str:
     row = await conn.fetchrow(
         "INSERT INTO units_of_measure (tenant_id, name, abbreviation, unit_type)"
         " VALUES ($1, $2, $3, 'weight') RETURNING id",
-        uuid.UUID(tenant_id), name, name[:3],
+        uuid.UUID(tenant_id),
+        name,
+        name[:3],
     )
     return str(row["id"])
 
@@ -155,7 +167,7 @@ async def _mk_item(
     last_count_qty: float | None = None,
 ) -> str:
     cadence = 7 if mode == "count_anchored" else None
-    grace   = 7 if mode == "count_anchored" else None
+    grace = 7 if mode == "count_anchored" else None
     row = await conn.fetchrow(
         """
         INSERT INTO inventory_items
@@ -166,8 +178,15 @@ async def _mk_item(
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING id
         """,
-        uuid.UUID(tenant_id), f"i7-{uuid.uuid4().hex[:6]}", mode,
-        uuid.UUID(uom_id), factor, last_count_at, last_count_qty, cadence, grace,
+        uuid.UUID(tenant_id),
+        f"i7-{uuid.uuid4().hex[:6]}",
+        mode,
+        uuid.UUID(uom_id),
+        factor,
+        last_count_at,
+        last_count_qty,
+        cadence,
+        grace,
     )
     return str(row["id"])
 
@@ -186,16 +205,19 @@ async def _mv(
             (tenant_id, inventory_item_id, movement_type, delta, recorded_at)
         VALUES ($1, $2, $3, $4, COALESCE($5, NOW()))
         """,
-        uuid.UUID(tenant_id), uuid.UUID(item_id), movement_type, delta, recorded_at,
+        uuid.UUID(tenant_id),
+        uuid.UUID(item_id),
+        movement_type,
+        delta,
+        recorded_at,
     )
 
 
-async def _on_hand(
-    conn: asyncpg.Connection, tenant_id: str, item_id: str
-) -> Decimal | None:
+async def _on_hand(conn: asyncpg.Connection, tenant_id: str, item_id: str) -> Decimal | None:
     row = await conn.fetchrow(
         "SELECT on_hand($1, $2) AS qty",
-        uuid.UUID(tenant_id), uuid.UUID(item_id),
+        uuid.UUID(tenant_id),
+        uuid.UUID(item_id),
     )
     return row["qty"]
 
@@ -206,7 +228,9 @@ async def _count_mvt(
     row = await conn.fetchrow(
         "SELECT COUNT(*) AS n FROM inventory_movements"
         " WHERE tenant_id = $1 AND inventory_item_id = $2 AND movement_type = $3",
-        uuid.UUID(tenant_id), uuid.UUID(item_id), movement_type,
+        uuid.UUID(tenant_id),
+        uuid.UUID(item_id),
+        movement_type,
     )
     return row["n"]
 
@@ -227,8 +251,11 @@ async def _insert_count_event(
              predicted_on_hand_at_count, counted_at)
         VALUES ($1, $2, $3, $4, COALESCE($5, NOW()))
         """,
-        uuid.UUID(tenant_id), uuid.UUID(item_id),
-        counted_quantity, predicted_on_hand, counted_at,
+        uuid.UUID(tenant_id),
+        uuid.UUID(item_id),
+        counted_quantity,
+        predicted_on_hand,
+        counted_at,
     )
 
 
@@ -252,8 +279,9 @@ async def _seed_item(
 ) -> None:
     if mode == "count_anchored":
         cadence = cadence if cadence is not None else 7
-        grace   = grace   if grace   is not None else 7
-    await session.execute(text("""
+        grace = grace if grace is not None else 7
+    await session.execute(
+        text("""
         INSERT INTO inventory_items (
             id, tenant_id, ingredient_id, name,
             inventory_mode, storage_unit_id, purchase_unit_id, recipe_unit_id,
@@ -269,20 +297,22 @@ async def _seed_item(
             count_grace_days    = EXCLUDED.count_grace_days,
             last_count_at       = EXCLUDED.last_count_at,
             last_count_quantity = EXCLUDED.last_count_quantity
-    """), {
-        "id":    item_id,
-        "tid":   T7_TENANT_ID,
-        "ing":   ing_id or T7_ING_A,
-        "name":  f"p7-{str(item_id)[-4:]}",
-        "mode":  mode,
-        "su":    T7_UOM_ID,
-        "factor": factor,
-        "par":   par,
-        "cad":   cadence,
-        "grace": grace,
-        "lca":   lca,
-        "lcq":   lcq,
-    })
+    """),
+        {
+            "id": item_id,
+            "tid": T7_TENANT_ID,
+            "ing": ing_id or T7_ING_A,
+            "name": f"p7-{str(item_id)[-4:]}",
+            "mode": mode,
+            "su": T7_UOM_ID,
+            "factor": factor,
+            "par": par,
+            "cad": cadence,
+            "grace": grace,
+            "lca": lca,
+            "lcq": lcq,
+        },
+    )
     await session.flush()
 
 
@@ -295,28 +325,31 @@ async def _seed_movement(
 ) -> None:
     source_map = {
         "opening_balance": "opening",
-        "receive":         "receipt_line",
-        "sale_depletion":  "sale_line_item",
-        "sale_signal":     "sale_line_item",
-        "waste":           "manual",
-        "count_adjust":    "count_event",
+        "receive": "receipt_line",
+        "sale_depletion": "sale_line_item",
+        "sale_signal": "sale_line_item",
+        "waste": "manual",
+        "count_adjust": "count_event",
     }
-    await session.execute(text("""
+    await session.execute(
+        text("""
         INSERT INTO inventory_movements
             (tenant_id, inventory_item_id, movement_type, delta,
              source_type, idempotency_key, recorded_at)
         VALUES (
             :tid, :iid, :mtype, :delta, :stype, :ikey, COALESCE(:at, NOW())
         )
-    """), {
-        "tid":   T7_TENANT_ID,
-        "iid":   item_id,
-        "mtype": movement_type,
-        "delta": delta,
-        "stype": source_map.get(movement_type, "manual"),
-        "ikey":  f"t7:{movement_type}:{uuid.uuid4().hex}",
-        "at":    recorded_at,
-    })
+    """),
+        {
+            "tid": T7_TENANT_ID,
+            "iid": item_id,
+            "mtype": movement_type,
+            "delta": delta,
+            "stype": source_map.get(movement_type, "manual"),
+            "ikey": f"t7:{movement_type}:{uuid.uuid4().hex}",
+            "at": recorded_at,
+        },
+    )
     await session.flush()
 
 
@@ -327,13 +360,19 @@ async def _seed_recipe(
     recipe_qty: float,
 ) -> uuid.UUID:
     rv_id = uuid.uuid4()
-    await session.execute(text("""
+    await session.execute(
+        text("""
         INSERT INTO recipe_versions (id, tenant_id, name) VALUES (:id, :tid, :name)
-    """), {"id": rv_id, "tid": tenant_id, "name": f"rv7-{rv_id.hex[:6]}"})
-    await session.execute(text("""
+    """),
+        {"id": rv_id, "tid": tenant_id, "name": f"rv7-{rv_id.hex[:6]}"},
+    )
+    await session.execute(
+        text("""
         INSERT INTO recipe_ingredients (tenant_id, recipe_version_id, inventory_item_id, quantity)
         VALUES (:tid, :rvid, :iid, :qty)
-    """), {"tid": tenant_id, "rvid": rv_id, "iid": item_id, "qty": recipe_qty})
+    """),
+        {"tid": tenant_id, "rvid": rv_id, "iid": item_id, "qty": recipe_qty},
+    )
     await session.flush()
     return rv_id
 
@@ -345,10 +384,13 @@ async def _seed_sale_line(
     sale_qty: float,
 ) -> uuid.UUID:
     slid = uuid.uuid4()
-    await session.execute(text("""
+    await session.execute(
+        text("""
         INSERT INTO sale_line_items (id, tenant_id, recipe_version_id, quantity)
         VALUES (:id, :tid, :rvid, :qty)
-    """), {"id": slid, "tid": tenant_id, "rvid": recipe_version_id, "qty": sale_qty})
+    """),
+        {"id": slid, "tid": tenant_id, "rvid": recipe_version_id, "qty": sale_qty},
+    )
     await session.flush()
     return slid
 
@@ -490,7 +532,9 @@ async def test_7_7_mode_b_on_hand_equals_125(admin_conn: asyncpg.Connection) -> 
     t1 = datetime(2026, 1, 1, 1, 0, 0, tzinfo=UTC_TZ)
 
     item = await _mk_item(
-        admin_conn, tid, uom,
+        admin_conn,
+        tid,
+        uom,
         mode="count_anchored",
         last_count_at=t0,
         last_count_qty=100,
@@ -498,11 +542,12 @@ async def test_7_7_mode_b_on_hand_equals_125(admin_conn: asyncpg.Connection) -> 
     await admin_conn.execute(
         "INSERT INTO inventory_yield_factors (tenant_id, inventory_item_id, yield_factor)"
         " VALUES ($1, $2, 1.25)",
-        uuid.UUID(tid), uuid.UUID(item),
+        uuid.UUID(tid),
+        uuid.UUID(item),
     )
-    await _mv(admin_conn, tid, item, "receive",      +50, t1)
-    await _mv(admin_conn, tid, item, "sale_signal",  +20, t1)
-    await _mv(admin_conn, tid, item, "waste",         -5, t1)  # excluded from on_hand
+    await _mv(admin_conn, tid, item, "receive", +50, t1)
+    await _mv(admin_conn, tid, item, "sale_signal", +20, t1)
+    await _mv(admin_conn, tid, item, "waste", -5, t1)  # excluded from on_hand
 
     result = await _on_hand(admin_conn, tid, item)
     assert result == Decimal("125"), f"expected 125, got {result}"
@@ -533,7 +578,9 @@ async def test_7_9_mode_b_missing_yield_factor_defaults_to_1(
     t1 = datetime(2026, 2, 1, 1, 0, 0, tzinfo=UTC_TZ)
 
     item = await _mk_item(
-        admin_conn, tid, uom,
+        admin_conn,
+        tid,
+        uom,
         mode="count_anchored",
         last_count_at=t0,
         last_count_qty=100,
@@ -562,7 +609,9 @@ async def test_7_10_mode_a_drift_emits_count_adjust(
     await _mv(admin_conn, tid, item, "opening_balance", +100)
 
     await _insert_count_event(
-        admin_conn, tid, item,
+        admin_conn,
+        tid,
+        item,
         counted_quantity=95,
         predicted_on_hand=100,
     )
@@ -573,7 +622,8 @@ async def test_7_10_mode_a_drift_emits_count_adjust(
     row = await admin_conn.fetchrow(
         "SELECT delta FROM inventory_movements"
         " WHERE tenant_id=$1 AND inventory_item_id=$2 AND movement_type='count_adjust'",
-        uuid.UUID(tid), uuid.UUID(item),
+        uuid.UUID(tid),
+        uuid.UUID(item),
     )
     assert row["delta"] == Decimal("-5"), f"expected delta=-5, got {row['delta']}"
     assert await _on_hand(admin_conn, tid, item) == Decimal("95")
@@ -590,9 +640,7 @@ async def test_7_11_mode_a_zero_drift_emits_nothing(
     item = await _mk_item(admin_conn, tid, uom, mode="recipe_deducted")
 
     await _mv(admin_conn, tid, item, "opening_balance", +100)
-    await _insert_count_event(
-        admin_conn, tid, item, counted_quantity=100, predicted_on_hand=100
-    )
+    await _insert_count_event(admin_conn, tid, item, counted_quantity=100, predicted_on_hand=100)
 
     n = await _count_mvt(admin_conn, tid, item, "count_adjust")
     assert n == 0, f"expected 0 count_adjust rows, got {n}"
@@ -610,13 +658,17 @@ async def test_7_12_mode_b_count_does_not_emit_count_adjust(
 
     t0 = datetime(2026, 3, 1, tzinfo=UTC_TZ)
     item = await _mk_item(
-        admin_conn, tid, uom,
+        admin_conn,
+        tid,
+        uom,
         mode="count_anchored",
         last_count_at=t0,
         last_count_qty=100,
     )
     await _insert_count_event(
-        admin_conn, tid, item,
+        admin_conn,
+        tid,
+        item,
         counted_quantity=80,
         predicted_on_hand=None,
         counted_at=datetime(2026, 3, 2, tzinfo=UTC_TZ),
@@ -638,13 +690,17 @@ async def test_7_13_mode_b_count_updates_anchor(
     t0 = datetime(2026, 4, 1, tzinfo=UTC_TZ)
     t2 = datetime(2026, 4, 2, tzinfo=UTC_TZ)
     item = await _mk_item(
-        admin_conn, tid, uom,
+        admin_conn,
+        tid,
+        uom,
         mode="count_anchored",
         last_count_at=t0,
         last_count_qty=200,
     )
     await _insert_count_event(
-        admin_conn, tid, item,
+        admin_conn,
+        tid,
+        item,
         counted_quantity=210,
         predicted_on_hand=None,
         counted_at=t2,
@@ -708,7 +764,7 @@ async def test_7_15_mode_a_sale_emits_sale_depletion(session) -> None:
     await _seed_movement(session, item_id, "opening_balance", 100)
 
     rv_id = await _seed_recipe(session, T7_TENANT_ID, item_id, recipe_qty=4.0)
-    slid  = await _seed_sale_line(session, T7_TENANT_ID, rv_id, sale_qty=5.0)
+    slid = await _seed_sale_line(session, T7_TENANT_ID, rv_id, sale_qty=5.0)
 
     mv_id = await record_sale_inventory_effect(
         session,
@@ -739,7 +795,7 @@ async def test_7_16_mode_b_sale_emits_sale_signal(session) -> None:
     await _seed_item(session, item_id, "count_anchored", lca=t0, lcq=200)
 
     rv_id = await _seed_recipe(session, T7_TENANT_ID, item_id, recipe_qty=2.0)
-    slid  = await _seed_sale_line(session, T7_TENANT_ID, rv_id, sale_qty=3.0)
+    slid = await _seed_sale_line(session, T7_TENANT_ID, rv_id, sale_qty=3.0)
 
     mv_id = await record_sale_inventory_effect(
         session,
@@ -766,19 +822,23 @@ async def test_7_17_sale_is_idempotent(session) -> None:
     await _seed_movement(session, item_id, "opening_balance", 100)
 
     rv_id = await _seed_recipe(session, T7_TENANT_ID, item_id, recipe_qty=1.0)
-    slid  = await _seed_sale_line(session, T7_TENANT_ID, rv_id, sale_qty=10.0)
+    slid = await _seed_sale_line(session, T7_TENANT_ID, rv_id, sale_qty=10.0)
 
-    first  = await record_sale_inventory_effect(
-        session, tenant_id=T7_TENANT_ID,
-        sale_line_item_id=slid, inventory_item_id=item_id,
+    first = await record_sale_inventory_effect(
+        session,
+        tenant_id=T7_TENANT_ID,
+        sale_line_item_id=slid,
+        inventory_item_id=item_id,
     )
     second = await record_sale_inventory_effect(
-        session, tenant_id=T7_TENANT_ID,
-        sale_line_item_id=slid, inventory_item_id=item_id,
+        session,
+        tenant_id=T7_TENANT_ID,
+        sale_line_item_id=slid,
+        inventory_item_id=item_id,
     )
 
-    assert first  is not None, "first call must return a movement id"
-    assert second is None,     "second call must return None (idempotent replay)"
+    assert first is not None, "first call must return a movement id"
+    assert second is None, "second call must return None (idempotent replay)"
 
     cnt = await session.execute(
         text("SELECT COUNT(*) FROM inventory_movements WHERE id = :id"),
@@ -816,8 +876,8 @@ async def test_7_18_receipt_commit_creates_receive_movement(session) -> None:
         {"id": result["movement_ids"][0]},
     )
     r = mv_row.fetchone()
-    assert r[0] == "receive",        f"expected receive, got {r[0]}"
-    assert r[1] == Decimal("50"),    f"expected delta=50, got {r[1]}"
+    assert r[0] == "receive", f"expected receive, got {r[0]}"
+    assert r[1] == Decimal("50"), f"expected delta=50, got {r[1]}"
 
 
 @pytest.mark.asyncio
@@ -887,9 +947,7 @@ async def test_7_20_receipt_commit_is_idempotent(session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_7_21_idempotent_replay_returns_same_response(
-    session, client: AsyncClient
-) -> None:
+async def test_7_21_idempotent_replay_returns_same_response(session, client: AsyncClient) -> None:
     """Same Idempotency-Key + same body → second request returns the cached 201.
 
     Exactly 1 count event and 1 count_adjust exist after two identical requests.
@@ -906,14 +964,16 @@ async def test_7_21_idempotent_replay_returns_same_response(
     key = f"idem-replay-{uuid.uuid4().hex[:8]}"
 
     r1 = await client.post(
-        "/api/v1/inventory/count-events", json=payload,
+        "/api/v1/inventory/count-events",
+        json=payload,
         headers={"Idempotency-Key": key},
     )
     assert r1.status_code == 201, r1.text
     original = r1.json()
 
     r2 = await client.post(
-        "/api/v1/inventory/count-events", json=payload,
+        "/api/v1/inventory/count-events",
+        json=payload,
         headers={"Idempotency-Key": key},
     )
     assert r2.status_code == 201, r2.text
@@ -936,9 +996,7 @@ async def test_7_21_idempotent_replay_returns_same_response(
 
 
 @pytest.mark.asyncio
-async def test_7_22_different_body_same_key_returns_409(
-    session, client: AsyncClient
-) -> None:
+async def test_7_22_different_body_same_key_returns_409(session, client: AsyncClient) -> None:
     """Same Idempotency-Key + different body → 409 idempotency_key_conflict."""
     item_id = uuid.uuid4()
     await _seed_item(session, item_id, "recipe_deducted")
@@ -965,9 +1023,7 @@ async def test_7_22_different_body_same_key_returns_409(
 
 
 @pytest.mark.asyncio
-async def test_7_23_in_flight_key_returns_409(
-    session, client: AsyncClient
-) -> None:
+async def test_7_23_in_flight_key_returns_409(session, client: AsyncClient) -> None:
     """Pre-seeded key with response_status=NULL → 409 request_in_flight."""
     from app.modules.inventory.idempotency import compute_fingerprint
 
@@ -975,7 +1031,7 @@ async def test_7_23_in_flight_key_returns_409(
     await _seed_item(session, item_id, "recipe_deducted")
     await _seed_movement(session, item_id, "opening_balance", 100)
 
-    key     = f"in-flight-{uuid.uuid4().hex[:8]}"
+    key = f"in-flight-{uuid.uuid4().hex[:8]}"
     payload = {
         "inventory_item_id": str(item_id),
         "counted_quantity": 90,
@@ -993,7 +1049,8 @@ async def test_7_23_in_flight_key_returns_409(
     await session.flush()
 
     r = await client.post(
-        "/api/v1/inventory/count-events", json=payload,
+        "/api/v1/inventory/count-events",
+        json=payload,
         headers={"Idempotency-Key": key},
     )
     assert r.status_code == 409
@@ -1096,8 +1153,8 @@ async def test_7_26_monitoring_upsert_increments_alert_count(session) -> None:
         {"tid": T7_TENANT_ID},
     )
     r = row.fetchone()
-    assert r[0] == 1,  f"expected exactly 1 monitoring_alerts row (UPSERT), got {r[0]}"
-    assert r[1] == 2,  f"expected alert_count=2 after two drifts, got {r[1]}"
+    assert r[0] == 1, f"expected exactly 1 monitoring_alerts row (UPSERT), got {r[0]}"
+    assert r[1] == 2, f"expected alert_count=2 after two drifts, got {r[1]}"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1108,12 +1165,12 @@ async def test_7_26_monitoring_upsert_increments_alert_count(session) -> None:
 @pytest.mark.asyncio
 async def test_7_27_stock_flags_are_correct(session, client: AsyncClient) -> None:
     """GET /inventory/items returns correct stock_status, low_stock, out_of_stock."""
-    item_ok  = uuid.uuid4()
+    item_ok = uuid.uuid4()
     item_low = uuid.uuid4()
 
     # ok: on_hand=500, par=100
-    await _seed_item(session, item_ok,  "recipe_deducted", par=100.0)
-    await _seed_movement(session, item_ok,  "opening_balance", 500)
+    await _seed_item(session, item_ok, "recipe_deducted", par=100.0)
+    await _seed_movement(session, item_ok, "opening_balance", 500)
 
     # low_stock: on_hand=50, par=100
     await _seed_item(session, item_low, "recipe_deducted", par=100.0, ing_id=T7_ING_B)
@@ -1124,42 +1181,44 @@ async def test_7_27_stock_flags_are_correct(session, client: AsyncClient) -> Non
     await _seed_item(session, item_oos2, "recipe_deducted", par=100.0)
     await _seed_movement(session, item_oos2, "opening_balance", 0)
 
-    i_ok  = await _get_item_http(client, item_ok)
+    i_ok = await _get_item_http(client, item_ok)
     i_low = await _get_item_http(client, item_low)
     i_oos = await _get_item_http(client, item_oos2)
 
-    assert i_ok["stock_status"]  == "ok",           f"got {i_ok['stock_status']}"
-    assert i_ok["low_stock"]     is False
-    assert i_ok["out_of_stock"]  is False
+    assert i_ok["stock_status"] == "ok", f"got {i_ok['stock_status']}"
+    assert i_ok["low_stock"] is False
+    assert i_ok["out_of_stock"] is False
     assert i_ok["count_required"] is False
 
-    assert i_low["stock_status"] == "low_stock",    f"got {i_low['stock_status']}"
-    assert i_low["low_stock"]    is True
+    assert i_low["stock_status"] == "low_stock", f"got {i_low['stock_status']}"
+    assert i_low["low_stock"] is True
     assert i_low["out_of_stock"] is False
 
     assert i_oos["stock_status"] == "out_of_stock", f"got {i_oos['stock_status']}"
     assert i_oos["out_of_stock"] is True
-    assert i_oos["low_stock"]    is True   # 0 ≤ 100 → also low_stock, but oos wins
+    assert i_oos["low_stock"] is True  # 0 ≤ 100 → also low_stock, but oos wins
 
 
 @pytest.mark.asyncio
-async def test_7_28_mode_b_null_anchor_reports_count_required(
-    session, client: AsyncClient
-) -> None:
+async def test_7_28_mode_b_null_anchor_reports_count_required(session, client: AsyncClient) -> None:
     """Mode B item with no last_count_quantity → count_required=True, on_hand=None."""
     item_id = uuid.uuid4()
     await _seed_item(
-        session, item_id, "count_anchored",
-        cadence=7, grace=7,
-        lca=None, lcq=None,
+        session,
+        item_id,
+        "count_anchored",
+        cadence=7,
+        grace=7,
+        lca=None,
+        lcq=None,
     )
 
     i = await _get_item_http(client, item_id)
     assert i["count_required"] is True
-    assert i["on_hand"]         is None
-    assert i["stock_status"]   == "count_required"
-    assert i["low_stock"]       is None
-    assert i["out_of_stock"]    is None
+    assert i["on_hand"] is None
+    assert i["stock_status"] == "count_required"
+    assert i["low_stock"] is None
+    assert i["out_of_stock"] is None
 
 
 @pytest.mark.asyncio
@@ -1181,18 +1240,28 @@ async def test_7_29_stock_status_priority_chain(session, client: AsyncClient) ->
 
     # count_expired — Mode B, anchor exists but age > cadence+grace
     p_expired = uuid.uuid4()
-    old_count = now - timedelta(days=20)   # cadence=7, grace=7 → expired after 14 days
+    old_count = now - timedelta(days=20)  # cadence=7, grace=7 → expired after 14 days
     await _seed_item(
-        session, p_expired, "count_anchored",
-        cadence=7, grace=7, lca=old_count, lcq=200,
+        session,
+        p_expired,
+        "count_anchored",
+        cadence=7,
+        grace=7,
+        lca=old_count,
+        lcq=200,
     )
 
     # count_stale — Mode B, anchor in stale window (cadence < age ≤ cadence+grace)
     p_stale = uuid.uuid4()
     stale_count = now - timedelta(days=10)  # 7 < 10 ≤ 14 → stale
     await _seed_item(
-        session, p_stale, "count_anchored",
-        cadence=7, grace=7, lca=stale_count, lcq=200,
+        session,
+        p_stale,
+        "count_anchored",
+        cadence=7,
+        grace=7,
+        lca=stale_count,
+        lcq=200,
     )
 
     # ok — Mode A, healthy stock
@@ -1200,14 +1269,14 @@ async def test_7_29_stock_status_priority_chain(session, client: AsyncClient) ->
     await _seed_item(session, p_ok, "recipe_deducted")
     await _seed_movement(session, p_ok, "opening_balance", 500)
 
-    i_cr  = await _get_item_http(client, p_count_req)
+    i_cr = await _get_item_http(client, p_count_req)
     i_oos = await _get_item_http(client, p_oos)
     i_exp = await _get_item_http(client, p_expired)
-    i_st  = await _get_item_http(client, p_stale)
-    i_ok  = await _get_item_http(client, p_ok)
+    i_st = await _get_item_http(client, p_stale)
+    i_ok = await _get_item_http(client, p_ok)
 
-    assert i_cr["stock_status"]  == "count_required", f"got {i_cr['stock_status']}"
-    assert i_oos["stock_status"] == "out_of_stock",   f"got {i_oos['stock_status']}"
-    assert i_exp["stock_status"] == "count_expired",  f"got {i_exp['stock_status']}"
-    assert i_st["stock_status"]  == "count_stale",    f"got {i_st['stock_status']}"
-    assert i_ok["stock_status"]  == "ok",             f"got {i_ok['stock_status']}"
+    assert i_cr["stock_status"] == "count_required", f"got {i_cr['stock_status']}"
+    assert i_oos["stock_status"] == "out_of_stock", f"got {i_oos['stock_status']}"
+    assert i_exp["stock_status"] == "count_expired", f"got {i_exp['stock_status']}"
+    assert i_st["stock_status"] == "count_stale", f"got {i_st['stock_status']}"
+    assert i_ok["stock_status"] == "ok", f"got {i_ok['stock_status']}"

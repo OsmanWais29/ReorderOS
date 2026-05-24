@@ -45,7 +45,13 @@ def upgrade() -> None:  # noqa: PLR0915
         END;
         $$
     """)
-    op.execute("GRANT CONNECT ON DATABASE reorderos TO service_worker")
+    op.execute("""
+        DO $$
+        BEGIN
+            EXECUTE 'GRANT CONNECT ON DATABASE ' || quote_ident(current_database()) || ' TO service_worker';
+        END;
+        $$
+    """)
     op.execute("GRANT USAGE ON SCHEMA public TO service_worker")
 
     # ═════════════════════════════════════════════════════════════════════════
@@ -595,5 +601,11 @@ def downgrade() -> None:
     op.execute("DROP TABLE IF EXISTS tenant_pos_connections CASCADE")
     # Phase 0
     op.execute("REVOKE USAGE ON SCHEMA public FROM service_worker")
-    op.execute("REVOKE CONNECT ON DATABASE reorderos FROM service_worker")
+    op.execute("""
+        DO $$
+        BEGIN
+            EXECUTE 'REVOKE CONNECT ON DATABASE ' || quote_ident(current_database()) || ' FROM service_worker';
+        END;
+        $$
+    """)
     op.execute("DROP ROLE IF EXISTS service_worker")

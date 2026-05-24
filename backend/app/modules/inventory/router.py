@@ -315,7 +315,43 @@ async def list_inventory_items(
                 ii.count_grace_days,
                 ii.last_count_at,
                 ii.last_count_quantity,
-                on_hand(ii.tenant_id, ii.id) AS on_hand
+                CASE
+                    WHEN ii.inventory_mode = 'recipe_deducted'
+                        THEN (
+                            SELECT COALESCE(SUM(m.delta), 0)
+                              FROM inventory_movements m
+                             WHERE m.tenant_id         = ii.tenant_id
+                               AND m.inventory_item_id = ii.id
+                               AND m.movement_type NOT IN ('sale_signal','sale_signal_reversal')
+                        )
+                    WHEN ii.inventory_mode = 'count_anchored'
+                         AND ii.last_count_quantity IS NOT NULL
+                        THEN ii.last_count_quantity
+                             + COALESCE((
+                                   SELECT SUM(m.delta)
+                                     FROM inventory_movements m
+                                    WHERE m.tenant_id         = ii.tenant_id
+                                      AND m.inventory_item_id = ii.id
+                                      AND m.recorded_at       > ii.last_count_at
+                                      AND m.movement_type IN
+                                          ('receive','transfer_in','count_adjust','opening_balance')
+                               ), 0)
+                             - (COALESCE((
+                                   SELECT SUM(ABS(m.delta))
+                                     FROM inventory_movements m
+                                    WHERE m.tenant_id         = ii.tenant_id
+                                      AND m.inventory_item_id = ii.id
+                                      AND m.recorded_at       > ii.last_count_at
+                                      AND m.movement_type     = 'sale_signal'
+                               ), 0)
+                               * COALESCE((
+                                   SELECT yf.yield_factor
+                                     FROM inventory_yield_factors yf
+                                    WHERE yf.tenant_id         = ii.tenant_id
+                                      AND yf.inventory_item_id = ii.id
+                               ), 1.0))
+                    ELSE NULL
+                END AS on_hand
             FROM inventory_items ii
             WHERE ii.tenant_id = :tid
               AND ii.active = true

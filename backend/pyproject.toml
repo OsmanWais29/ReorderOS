@@ -19,6 +19,7 @@ dependencies = [
     "boto3>=1.35",
     "PyJWT[cryptography]>=2.9",
     "cryptography>=42",
+    "uuid6>=2024.1.12",
     "email-validator>=2.0",
 ]
 
@@ -92,6 +93,7 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
 markers = [
     "integration: requires a live Postgres",
+    "slow: performance benchmarks, excluded from CI gate (run with -m slow)",
 ]
 
 [tool.coverage.run]

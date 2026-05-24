@@ -22,6 +22,77 @@ log = logging.getLogger(__name__)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# on_hand() — Python implementation (replaces retired on_hand() SQL function)
+#
+# Mode A (recipe_deducted):
+#   SUM of all movement deltas except sale_signal / sale_signal_reversal.
+# Mode B (count_anchored):
+#   last_count_quantity
+#   + receipts/adjusts strictly AFTER last_count_at
+#   - SUM(ABS(sale_signals since last_count_at)) × yield_factor
+#   Returns None when last_count_quantity is NULL (count not yet done).
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+async def on_hand(
+    session: AsyncSession,
+    *,
+    tenant_id: UUID,
+    inventory_item_id: UUID,
+) -> Decimal | None:
+    result = await session.execute(
+        text("""
+            WITH item AS (
+                SELECT inventory_mode, last_count_at, last_count_quantity
+                  FROM inventory_items
+                 WHERE tenant_id = :tid AND id = :iid
+            ),
+            ledger_sum AS (
+                SELECT COALESCE(SUM(delta), 0) AS qty
+                  FROM inventory_movements
+                 WHERE tenant_id         = :tid
+                   AND inventory_item_id = :iid
+                   AND movement_type NOT IN ('sale_signal','sale_signal_reversal')
+            ),
+            receipts_since AS (
+                SELECT COALESCE(SUM(m.delta), 0) AS qty
+                  FROM inventory_movements m, item
+                 WHERE m.tenant_id         = :tid
+                   AND m.inventory_item_id = :iid
+                   AND m.recorded_at       > item.last_count_at
+                   AND m.movement_type IN ('receive','transfer_in','count_adjust','opening_balance')
+            ),
+            signals_since AS (
+                SELECT COALESCE(SUM(ABS(m.delta)), 0) AS qty
+                  FROM inventory_movements m, item
+                 WHERE m.tenant_id         = :tid
+                   AND m.inventory_item_id = :iid
+                   AND m.recorded_at       > item.last_count_at
+                   AND m.movement_type     = 'sale_signal'
+            )
+            SELECT CASE
+                WHEN item.inventory_mode = 'recipe_deducted'
+                    THEN ledger_sum.qty
+                WHEN item.inventory_mode = 'count_anchored'
+                     AND item.last_count_quantity IS NOT NULL
+                    THEN item.last_count_quantity
+                         + receipts_since.qty
+                         - (signals_since.qty
+                            * COALESCE(
+                                (SELECT yield_factor FROM inventory_yield_factors
+                                  WHERE tenant_id         = :tid
+                                    AND inventory_item_id = :iid),
+                                1.0))
+                ELSE NULL
+            END AS qty
+            FROM item, ledger_sum, receipts_since, signals_since
+        """),
+        {"tid": tenant_id, "iid": inventory_item_id},
+    )
+    return result.scalar_one_or_none()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # 4A — record_opening_balance
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -221,34 +292,35 @@ async def record_count_event(
     """Record a physical count event.
 
     Steps:
-      1. Call on_hand() BEFORE inserting — result is written as
-         predicted_on_hand_at_count.  Skipping this causes the trigger's
-         COALESCE to make drift = 0, silently masking real drift.
-      2. INSERT into inventory_count_events.  The trigger fires:
-           Mode A → emits count_adjust if drift is non-trivial.
-           Mode B → updates last_count_at / last_count_quantity.
-      3. Compute reporting drift and UPSERT monitoring_alerts.
+      1. Lock item row and read inventory_mode.
+      2. Call Python on_hand() BEFORE inserting to capture predicted stock.
+      3. INSERT into inventory_count_events.
+      4. Mode-specific correction (was trigger fn_count_event_emits_adjust):
+           Mode B → UPDATE inventory_items to re-anchor last_count_at/quantity.
+           Mode A → INSERT count_adjust movement if drift is non-trivial.
+      5. UPSERT monitoring_alerts when drift >= 5%.
 
     Drift sign convention (for reporting):
-        drift     = predicted - counted   (positive = we overpredicted / a loss)
-        drift_pct = drift / counted       (if counted > 0, else null)
-    Note: the trigger uses the opposite sign (counted - predicted) for the
-    count_adjust ledger correction.  Both are intentional and correct.
+        alert_drift = predicted - counted  (positive = we overpredicted / a loss)
+        count_adjust delta = counted - predicted  (corrects the ledger upward or downward)
     """
     counted_at = counted_at or datetime.now(UTC)
     idem_key = f"count:{inventory_item_id}:{counted_at.isoformat()}:{counted_quantity}"
 
-    # ── 0. lock the item row — serialises concurrent counts for the same item ──
-    # Without this lock, two simultaneous counts both read the same on_hand()
-    # value before either writes its adjustment, producing a double correction.
+    # ── 1. lock item row + read mode — serialises concurrent counts ───────────
     lock_res = await session.execute(
-        text("SELECT id FROM inventory_items WHERE tenant_id = :tid AND id = :iid FOR UPDATE"),
+        text(
+            "SELECT id, inventory_mode FROM inventory_items"
+            " WHERE tenant_id = :tid AND id = :iid FOR UPDATE"
+        ),
         {"tid": tenant_id, "iid": inventory_item_id},
     )
-    if lock_res.fetchone() is None:
+    lock_row = lock_res.fetchone()
+    if lock_row is None:
         raise ValueError(f"inventory_item {inventory_item_id} not found for tenant {tenant_id}")
+    item_mode: str = lock_row[1]
 
-    # ── idempotency: skip if this exact count was already recorded ────────────
+    # ── idempotency ────────────────────────────────────────────────────────────
     existing = await session.execute(
         text(
             "SELECT id FROM inventory_count_events"
@@ -264,14 +336,12 @@ async def record_count_event(
             "counted_quantity": counted_quantity,
         }
 
-    # ── 1. snapshot predicted on_hand ─────────────────────────────────────────
-    pred_res = await session.execute(
-        text("SELECT on_hand(:tid, :iid)"),
-        {"tid": tenant_id, "iid": inventory_item_id},
+    # ── 2. snapshot predicted on_hand via Python service ──────────────────────
+    predicted: Decimal | None = await on_hand(
+        session, tenant_id=tenant_id, inventory_item_id=inventory_item_id
     )
-    predicted: Decimal | None = pred_res.scalar_one_or_none()
 
-    # ── 2. insert count event (trigger fires here) ────────────────────────────
+    # ── 3. insert count event ─────────────────────────────────────────────────
     event_id = uuid4()
     await session.execute(
         text("""
@@ -298,10 +368,51 @@ async def record_count_event(
     )
     await session.flush()
 
-    # ── 3. monitoring alert (only when drift ≥ 5 %) ───────────────────────────
+    # ── 4. mode-specific correction (was trigger fn_count_event_emits_adjust) ─
+    if item_mode == "count_anchored":
+        # Mode B: re-anchor to the physical count; no ledger row needed.
+        await session.execute(
+            text("""
+                UPDATE inventory_items
+                   SET last_count_at       = :at,
+                       last_count_quantity = :qty
+                 WHERE tenant_id = :tid AND id = :iid
+            """),
+            {"at": counted_at, "qty": counted_quantity, "tid": tenant_id, "iid": inventory_item_id},
+        )
+    else:
+        # Mode A: emit count_adjust if drift is non-trivial.
+        # delta sign: counted - predicted  (negative = stock loss vs. ledger)
+        count_adjust_delta = counted_quantity - (
+            predicted if predicted is not None else counted_quantity
+        )
+        if abs(count_adjust_delta) >= Decimal("0.0001"):
+            await session.execute(
+                text("""
+                    INSERT INTO inventory_movements
+                        (tenant_id, inventory_item_id, movement_type, delta,
+                         source_type, source_id, idempotency_key, recorded_at, notes)
+                    VALUES
+                        (:tid, :iid, 'count_adjust', :delta,
+                         'count_event', :event_id,
+                         :idem_key, :at, :notes)
+                """),
+                {
+                    "tid": tenant_id,
+                    "iid": inventory_item_id,
+                    "delta": count_adjust_delta,
+                    "event_id": event_id,
+                    "idem_key": f"count_adjust:{event_id}",
+                    "at": counted_at,
+                    "notes": f"System count correction from {event_id}",
+                },
+            )
+    await session.flush()
+
+    # ── 5. monitoring alert (only when drift >= 5%) ───────────────────────────
     if predicted is not None and counted_quantity > 0:
-        drift = predicted - counted_quantity
-        drift_pct = drift / counted_quantity
+        alert_drift = predicted - counted_quantity
+        drift_pct = alert_drift / counted_quantity
 
         if abs(drift_pct) > Decimal("0.20"):
             severity = "critical"
@@ -310,14 +421,12 @@ async def record_count_event(
         else:
             severity = "info"
 
-        # Pre-serialize payload in Python so asyncpg doesn't have to infer
-        # types for individual JSONB arguments (avoids IndeterminateDatatypeError).
         payload_str = json.dumps(
             {
                 "inventory_item_id": str(inventory_item_id),
                 "counted_quantity": str(counted_quantity),
                 "predicted_on_hand": str(predicted),
-                "drift": str(drift),
+                "drift": str(alert_drift),
                 "drift_pct": str(drift_pct),
             }
         )
@@ -326,10 +435,8 @@ async def record_count_event(
                 INSERT INTO monitoring_alerts
                     (id, tenant_id, monitor_name, severity, trigger_payload)
                 VALUES (
-                    gen_random_uuid(),
-                    :tid,
-                    'integrity_drift_high',
-                    :severity,
+                    gen_random_uuid(), :tid,
+                    'integrity_drift_high', :severity,
                     CAST(:payload AS jsonb)
                 )
                 ON CONFLICT (tenant_id, monitor_name) WHERE resolved_at IS NULL

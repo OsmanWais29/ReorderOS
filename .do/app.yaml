@@ -65,6 +65,36 @@ services:
       - key: WORKOS_SECRET_KEY
         scope: RUN_TIME
         type: SECRET
+      # Sprint 4: Clover POS integration.
+      # CLOVER_APP_ID is a non-sensitive public identifier (safe in YAML).
+      # All secrets are set in the DO console only — never committed to git.
+      - key: CLOVER_APP_ID
+        scope: RUN_TIME
+        value: "DJFFAT14DS7QM"
+      - key: CLOVER_APP_SECRET
+        scope: RUN_TIME
+        type: SECRET
+      - key: CLOVER_ENVIRONMENT
+        scope: RUN_TIME
+        value: sandbox
+      - key: CLOVER_API_BASE_URL
+        scope: RUN_TIME
+        value: https://apisandbox.dev.clover.com
+      - key: CLOVER_OAUTH_BASE_URL
+        scope: RUN_TIME
+        value: https://sandbox.dev.clover.com
+      - key: CLOVER_OAUTH_CALLBACK_URL
+        scope: RUN_TIME
+        value: https://reorderos-api-7d4et.ondigitalocean.app/api/v1/pos/clover/callback
+      - key: CLOVER_WEBHOOK_AUTH_CODE
+        scope: RUN_TIME
+        type: SECRET
+      - key: TOKEN_ENCRYPTION_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: SERVICE_DATABASE_URL
+        scope: RUN_TIME
+        type: SECRET
       # Sprint 6: Spaces (S3-compatible) used by receipts photo uploads.
       - key: DO_SPACES_ENDPOINT
         scope: RUN_TIME

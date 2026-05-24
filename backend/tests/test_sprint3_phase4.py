@@ -123,10 +123,34 @@ async def _mk_sale_line(
     *,
     qty: float,
 ) -> str:
+    # Sprint 4: sale_line_items requires order_id (FK to orders), which in turn
+    # requires pos_event_inbox_id. Create minimal prereqs as superuser.
+    import time as _time
+
+    inbox_id = uuid.uuid4()
+    await conn.execute(
+        "INSERT INTO pos_event_inbox"
+        " (inbox_id, tenant_id, vendor, vendor_event_id, vendor_object_type,"
+        "  vendor_event_type, vendor_ts, raw_payload, signature_verified, source)"
+        " VALUES ($1,$2,'clover','O:s3stub','O','UPDATE',$3,'{}',false,'webhook')",
+        inbox_id, uuid.UUID(tenant_id), int(_time.time() * 1000),
+    )
+    order_id = uuid.uuid4()
+    await conn.execute(
+        "INSERT INTO orders"
+        " (id, tenant_id, pos_event_inbox_id, clover_order_id,"
+        "  total_amount_cents, state, payment_state, processed_at)"
+        " VALUES ($1,$2,$3,'s3_order',0,'locked','OPEN',now())",
+        order_id, uuid.UUID(tenant_id), inbox_id,
+    )
     row = await conn.fetchrow(
-        "INSERT INTO sale_line_items (tenant_id, quantity, recipe_version_id)"
-        " VALUES ($1, $2, $3) RETURNING id",
-        uuid.UUID(tenant_id),
+        "INSERT INTO sale_line_items"
+        " (id, tenant_id, order_id, clover_line_item_id, name_at_sale,"
+        "  quantity, price_cents_at_sale, net_revenue_cents, recipe_version_id)"
+        " VALUES (gen_random_uuid(),$1,$2,$3,'Sprint 3 Item',$4,0,0,$5)"
+        " RETURNING id",
+        uuid.UUID(tenant_id), order_id,
+        f"cli_{uuid.uuid4().hex[:8]}",
         qty,
         uuid.UUID(recipe_version_id),
     )
@@ -135,7 +159,42 @@ async def _mk_sale_line(
 
 async def _on_hand(conn: asyncpg.Connection, tenant_id: str, item_id: str) -> Decimal | None:
     row = await conn.fetchrow(
-        "SELECT on_hand($1, $2) AS qty",
+        """
+        WITH item AS (
+            SELECT inventory_mode, last_count_at, last_count_quantity
+              FROM inventory_items WHERE tenant_id=$1 AND id=$2
+        ),
+        ledger_sum AS (
+            SELECT COALESCE(SUM(delta),0) AS qty FROM inventory_movements
+             WHERE tenant_id=$1 AND inventory_item_id=$2
+               AND movement_type NOT IN ('sale_signal','sale_signal_reversal')
+        ),
+        receipts_since AS (
+            SELECT COALESCE(SUM(m.delta),0) AS qty
+              FROM inventory_movements m, item
+             WHERE m.tenant_id=$1 AND m.inventory_item_id=$2
+               AND m.recorded_at > item.last_count_at
+               AND m.movement_type IN ('receive','transfer_in','count_adjust','opening_balance')
+        ),
+        signals_since AS (
+            SELECT COALESCE(SUM(ABS(m.delta)),0) AS qty
+              FROM inventory_movements m, item
+             WHERE m.tenant_id=$1 AND m.inventory_item_id=$2
+               AND m.recorded_at > item.last_count_at
+               AND m.movement_type = 'sale_signal'
+        )
+        SELECT CASE
+            WHEN item.inventory_mode = 'recipe_deducted' THEN ledger_sum.qty
+            WHEN item.inventory_mode = 'count_anchored'
+                 AND item.last_count_quantity IS NOT NULL
+                THEN item.last_count_quantity + receipts_since.qty
+                     - (signals_since.qty * COALESCE(
+                           (SELECT yield_factor FROM inventory_yield_factors
+                             WHERE tenant_id=$1 AND inventory_item_id=$2), 1.0))
+            ELSE NULL
+        END AS qty
+        FROM item, ledger_sum, receipts_since, signals_since
+        """,
         uuid.UUID(tenant_id),
         uuid.UUID(item_id),
     )

@@ -39,9 +39,11 @@ DB_URL_SYNC = (
 @pytest.fixture(autouse=True)
 def reset_sa_engine() -> Any:
     from app.core.database import dispose_engine_sync
+    from app.core.service_db import dispose_service_engine_sync
 
     yield
     dispose_engine_sync()
+    dispose_service_engine_sync()
 
 
 # ── App client ────────────────────────────────────────────────────────────────
@@ -171,6 +173,24 @@ async def app_conn() -> AsyncIterator[Any]:
         yield conn
     finally:
         await conn.execute("RESET ROLE")
+        await conn.close()
+
+
+@pytest.fixture
+async def service_conn() -> AsyncIterator[Any]:
+    """Direct asyncpg connection as service_worker (subject to RLS, cross-tenant).
+
+    service_worker has LOGIN so this connects directly via its own credentials.
+    It has SELECT + UPDATE on tenant_pos_connections and pos_event_inbox, and
+    USING(true) RLS on those tables — no SET LOCAL app.tenant_id required.
+    """
+    svc_url = DB_URL_SYNC.replace(
+        "reorderos:reorderos@", "service_worker:service_worker@"
+    )
+    conn = await asyncpg.connect(svc_url)
+    try:
+        yield conn
+    finally:
         await conn.close()
 
 

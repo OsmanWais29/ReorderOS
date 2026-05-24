@@ -157,7 +157,42 @@ async def session(app_instance):
 
 async def read_on_hand(session, item_id) -> float | None:
     row = await session.execute(
-        text("SELECT on_hand(:tid, :iid)"),
+        text("""
+            WITH item AS (
+                SELECT inventory_mode, last_count_at, last_count_quantity
+                  FROM inventory_items WHERE tenant_id=:tid AND id=:iid
+            ),
+            ledger_sum AS (
+                SELECT COALESCE(SUM(delta),0) AS qty FROM inventory_movements
+                 WHERE tenant_id=:tid AND inventory_item_id=:iid
+                   AND movement_type NOT IN ('sale_signal','sale_signal_reversal')
+            ),
+            receipts_since AS (
+                SELECT COALESCE(SUM(m.delta),0) AS qty
+                  FROM inventory_movements m, item
+                 WHERE m.tenant_id=:tid AND m.inventory_item_id=:iid
+                   AND m.recorded_at > item.last_count_at
+                   AND m.movement_type IN ('receive','transfer_in','count_adjust','opening_balance')
+            ),
+            signals_since AS (
+                SELECT COALESCE(SUM(ABS(m.delta)),0) AS qty
+                  FROM inventory_movements m, item
+                 WHERE m.tenant_id=:tid AND m.inventory_item_id=:iid
+                   AND m.recorded_at > item.last_count_at
+                   AND m.movement_type = 'sale_signal'
+            )
+            SELECT CASE
+                WHEN item.inventory_mode = 'recipe_deducted' THEN ledger_sum.qty
+                WHEN item.inventory_mode = 'count_anchored'
+                     AND item.last_count_quantity IS NOT NULL
+                    THEN item.last_count_quantity + receipts_since.qty
+                         - (signals_since.qty * COALESCE(
+                               (SELECT yield_factor FROM inventory_yield_factors
+                                 WHERE tenant_id=:tid AND inventory_item_id=:iid), 1.0))
+                ELSE NULL
+            END AS qty
+            FROM item, ledger_sum, receipts_since, signals_since
+        """),
         {"tid": TENANT_ID, "iid": item_id},
     )
     val = row.scalar()
@@ -305,21 +340,63 @@ async def create_sale_line(
     recipe_version_id: uuid.UUID,
     qty_sold,
 ) -> None:
-    """Insert a sale_line_item using the Sprint 3 minimal schema.
+    """Insert a sale_line_item — updated for Sprint 4 schema.
 
-    Sprint 3 stub has only: (id, tenant_id, quantity, recipe_version_id).
-    There are no order_id, menu_item_id, or clover columns in this sprint.
+    Sprint 4 requires order_id (FK to orders) and Clover identifiers.
+    Create minimal inbox + order prereqs via superuser session before inserting.
+    ON CONFLICT (id) DO NOTHING preserved so repeated calls are idempotent.
     """
+    import time as _time
+
+    inbox_id = uuid.uuid4()
     await session.execute(
         text("""
-        INSERT INTO sale_line_items (id, tenant_id, recipe_version_id, quantity)
-        VALUES (:id, :tid, :rvid, :qty) ON CONFLICT (id) DO NOTHING
-    """),
+            INSERT INTO pos_event_inbox
+            (inbox_id, tenant_id, vendor, vendor_event_id, vendor_object_type,
+             vendor_event_type, vendor_ts, raw_payload, signature_verified, source)
+            VALUES (:iid, :tid, 'clover', :evid, 'O', 'UPDATE',
+                    :ts, '{}', false, 'webhook')
+            ON CONFLICT DO NOTHING
+        """),
+        {
+            "iid": inbox_id,
+            "tid": TENANT_ID,
+            "evid": f"O:s3eg_{sale_line_id.hex[:8]}",
+            "ts": int(_time.time() * 1000),
+        },
+    )
+    order_id = uuid.uuid4()
+    await session.execute(
+        text("""
+            INSERT INTO orders
+            (id, tenant_id, pos_event_inbox_id, clover_order_id,
+             total_amount_cents, state, payment_state, processed_at)
+            VALUES (:oid, :tid, :iid, :coid, 0, 'locked', 'OPEN', now())
+            ON CONFLICT DO NOTHING
+        """),
+        {
+            "oid": order_id,
+            "tid": TENANT_ID,
+            "iid": inbox_id,
+            "coid": f"s3eg_{sale_line_id.hex[:8]}",
+        },
+    )
+    await session.execute(
+        text("""
+            INSERT INTO sale_line_items
+            (id, tenant_id, order_id, clover_line_item_id, name_at_sale,
+             quantity, price_cents_at_sale, net_revenue_cents, recipe_version_id)
+            VALUES (:id, :tid, :oid, :cli, 'Sprint 3 Item',
+                    :qty, 0, 0, :rvid)
+            ON CONFLICT (id) DO NOTHING
+        """),
         {
             "id": sale_line_id,
             "tid": TENANT_ID,
-            "rvid": recipe_version_id,
+            "oid": order_id,
+            "cli": f"cli_{sale_line_id.hex[:8]}",
             "qty": qty_sold,
+            "rvid": recipe_version_id,
         },
     )
     await session.flush()

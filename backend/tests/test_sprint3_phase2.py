@@ -87,7 +87,42 @@ async def _mv(
 
 async def _on_hand(conn: asyncpg.Connection, tenant_id: str, item_id: str) -> Decimal | None:
     row = await conn.fetchrow(
-        "SELECT on_hand($1, $2) AS qty",
+        """
+        WITH item AS (
+            SELECT inventory_mode, last_count_at, last_count_quantity
+              FROM inventory_items WHERE tenant_id=$1 AND id=$2
+        ),
+        ledger_sum AS (
+            SELECT COALESCE(SUM(delta),0) AS qty FROM inventory_movements
+             WHERE tenant_id=$1 AND inventory_item_id=$2
+               AND movement_type NOT IN ('sale_signal','sale_signal_reversal')
+        ),
+        receipts_since AS (
+            SELECT COALESCE(SUM(m.delta),0) AS qty
+              FROM inventory_movements m, item
+             WHERE m.tenant_id=$1 AND m.inventory_item_id=$2
+               AND m.recorded_at > item.last_count_at
+               AND m.movement_type IN ('receive','transfer_in','count_adjust','opening_balance')
+        ),
+        signals_since AS (
+            SELECT COALESCE(SUM(ABS(m.delta)),0) AS qty
+              FROM inventory_movements m, item
+             WHERE m.tenant_id=$1 AND m.inventory_item_id=$2
+               AND m.recorded_at > item.last_count_at
+               AND m.movement_type = 'sale_signal'
+        )
+        SELECT CASE
+            WHEN item.inventory_mode = 'recipe_deducted' THEN ledger_sum.qty
+            WHEN item.inventory_mode = 'count_anchored'
+                 AND item.last_count_quantity IS NOT NULL
+                THEN item.last_count_quantity + receipts_since.qty
+                     - (signals_since.qty * COALESCE(
+                           (SELECT yield_factor FROM inventory_yield_factors
+                             WHERE tenant_id=$1 AND inventory_item_id=$2), 1.0))
+            ELSE NULL
+        END AS qty
+        FROM item, ledger_sum, receipts_since, signals_since
+        """,
         uuid.UUID(tenant_id),
         uuid.UUID(item_id),
     )

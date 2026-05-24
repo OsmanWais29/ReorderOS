@@ -16,5 +16,27 @@ services:
       timeout: 3s
       retries: 20
 
+  # Sprint 4: inbox worker — claims pos_event_inbox rows, calls Clover API,
+  # writes to orders + sale_line_items.
+  inbox-worker:
+    build: .
+    command: ["python", "-m", "app.workers.inbox_worker"]
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Sprint 4: reconciliation worker — polls Clover order history every 15 min,
+  # backfills missed webhooks, refreshes expiring tokens.
+  reconciliation-worker:
+    build: .
+    command: ["python", "-m", "app.workers.reconciliation_worker"]
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   reorderos-pg:

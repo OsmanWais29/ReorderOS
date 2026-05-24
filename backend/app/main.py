@@ -57,6 +57,13 @@ def create_app() -> FastAPI:
 
     app.include_router(inventory_router, prefix="/api/v1")
 
+    # Sprint 4: Clover POS OAuth + Webhook
+    from app.modules.pos.router import router as pos_router
+    from app.modules.pos.webhook import router as webhook_router
+
+    app.include_router(pos_router, prefix="/api/v1")
+    app.include_router(webhook_router, prefix="/api/v1")
+
     return app
 
 

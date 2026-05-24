@@ -53,6 +53,33 @@ class Settings(BaseSettings):
     # does not include an email claim (standard for User Management tokens).
     workos_secret_key: str | None = Field(default=None, alias="WORKOS_SECRET_KEY")
 
+    # ── Service worker DB (service_worker role — used by webhook + inbox worker) ─
+    service_database_url: str | None = Field(default=None, alias="SERVICE_DATABASE_URL")
+
+    # ── Clover POS ───────────────────────────────────────────────────────────────
+    clover_app_id: str | None = Field(default=None, alias="CLOVER_APP_ID")
+    clover_app_secret: str | None = Field(default=None, alias="CLOVER_APP_SECRET")
+    clover_environment: str = Field(default="sandbox", alias="CLOVER_ENVIRONMENT")
+    clover_api_base_url: str = Field(
+        default="https://apisandbox.dev.clover.com", alias="CLOVER_API_BASE_URL"
+    )
+    clover_oauth_base_url: str = Field(
+        default="https://sandbox.dev.clover.com", alias="CLOVER_OAUTH_BASE_URL"
+    )
+    clover_oauth_callback_url: str = Field(
+        default="http://localhost:8000/api/v1/pos/clover/callback",
+        alias="CLOVER_OAUTH_CALLBACK_URL",
+    )
+    clover_webhook_auth_code: str | None = Field(
+        default=None, alias="CLOVER_WEBHOOK_AUTH_CODE"
+    )
+
+    # ── Token encryption (Fernet; supports key rotation via _previous) ───────────
+    token_encryption_key: str | None = Field(default=None, alias="TOKEN_ENCRYPTION_KEY")
+    token_encryption_key_previous: str | None = Field(
+        default=None, alias="TOKEN_ENCRYPTION_KEY_PREVIOUS"
+    )
+
     # ── Object storage (DigitalOcean Spaces; lazy-init in app.core.storage) ──
     spaces_endpoint: str | None = Field(default=None, alias="DO_SPACES_ENDPOINT")
     spaces_region: str | None = Field(default=None, alias="DO_SPACES_REGION")
@@ -89,3 +116,9 @@ def get_settings() -> Settings:
         return Settings()
     except ValidationError as exc:  # pragma: no cover - defensive
         raise RuntimeError(f"Invalid configuration: {exc}") from exc
+
+
+# Module-level alias used by tests and modules that import settings directly.
+# Always goes through the cache — call get_settings.cache_clear() in tests
+# that monkeypatch env vars before importing this symbol.
+settings = get_settings()

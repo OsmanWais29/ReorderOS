@@ -20,7 +20,6 @@ from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
-    AsyncConnection,
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
@@ -43,12 +42,13 @@ def get_service_engine() -> AsyncEngine:
 
         # Normalize protocol same as main engine
         if url.startswith("postgresql://"):
-            url = "postgresql+asyncpg://" + url[len("postgresql://"):]
+            url = "postgresql+asyncpg://" + url[len("postgresql://") :]
         elif url.startswith("postgres://"):
-            url = "postgresql+asyncpg://" + url[len("postgres://"):]
+            url = "postgresql+asyncpg://" + url[len("postgres://") :]
 
         if "sslmode" in url:
             from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
             parsed = urlparse(url)
             params = {k: v for k, v in parse_qs(parsed.query).items() if k != "sslmode"}
             url = urlunparse(parsed._replace(query=urlencode(params, doseq=True)))
@@ -56,6 +56,7 @@ def get_service_engine() -> AsyncEngine:
         connect_args: dict[str, Any] = {}
         if settings.is_production:
             import ssl as _ssl
+
             ctx = _ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = _ssl.CERT_NONE

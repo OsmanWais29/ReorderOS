@@ -12,7 +12,7 @@ setting up a session fixture.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
 from sqlalchemy import text
@@ -26,21 +26,20 @@ class OAuthStateManager:
     async def generate(self, tenant_id: str, user_id: str) -> str:
         """Insert a new CSRF state token. Returns the token string."""
         state = str(uuid.uuid4())
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
-        async with get_sessionmaker()() as session:
-            async with session.begin():
-                await session.execute(
-                    text("""
+        expires_at = datetime.now(UTC) + timedelta(minutes=10)
+        async with get_sessionmaker()() as session, session.begin():
+            await session.execute(
+                text("""
                         INSERT INTO oauth_states (state, tenant_id, user_id, expires_at)
                         VALUES (:state, :tenant_id, :user_id, :expires_at)
                     """),
-                    {
-                        "state": state,
-                        "tenant_id": tenant_id,
-                        "user_id": user_id,
-                        "expires_at": expires_at,
-                    },
-                )
+                {
+                    "state": state,
+                    "tenant_id": tenant_id,
+                    "user_id": user_id,
+                    "expires_at": expires_at,
+                },
+            )
         return state
 
     async def validate_and_consume(self, state_token: str) -> tuple[str, str]:
@@ -49,17 +48,16 @@ class OAuthStateManager:
         Raises HTTP 400 if the token is missing, already consumed, or expired.
         DELETE...RETURNING is atomic — no race condition between check and delete.
         """
-        async with get_sessionmaker()() as session:
-            async with session.begin():
-                result = await session.execute(
-                    text("""
+        async with get_sessionmaker()() as session, session.begin():
+            result = await session.execute(
+                text("""
                         DELETE FROM oauth_states
                         WHERE state = :state AND expires_at > now()
                         RETURNING tenant_id, user_id
                     """),
-                    {"state": state_token},
-                )
-                row = result.fetchone()
+                {"state": state_token},
+            )
+            row = result.fetchone()
         if row is None:
             raise HTTPException(status_code=400, detail="Invalid or expired state token")
         return str(row.tenant_id), str(row.user_id)

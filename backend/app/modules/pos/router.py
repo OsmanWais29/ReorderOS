@@ -10,7 +10,7 @@ via the CSRF state token, which was created by an authenticated /connect call.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -31,7 +31,7 @@ _state_mgr = OAuthStateManager()
 
 def _from_unix_ms(ms: int) -> datetime:
     """Convert Clover's millisecond Unix timestamp to UTC datetime."""
-    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+    return datetime.fromtimestamp(ms / 1000, tz=UTC)
 
 
 # ── Auth dependencies — exported so tests can override them ──────────────────
@@ -242,9 +242,7 @@ async def status(
         "merchant_id": row.merchant_id,
         "initial_sync_completed": row.initial_sync_completed_at is not None,
         "last_reconciliation_at": (
-            row.last_reconciliation_at.isoformat()
-            if row.last_reconciliation_at
-            else None
+            row.last_reconciliation_at.isoformat() if row.last_reconciliation_at else None
         ),
         "refresh_failure_count": row.refresh_failure_count,
     }

@@ -22,16 +22,16 @@ Design rules:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import text
+from uuid6 import uuid7
 
 from app.core.encryption import TokenEncryption
 from app.core.logging import get_logger
 from app.core.service_db import get_service_sessionmaker
 from app.modules.pos.clover_client import CloverClient
-from uuid6 import uuid7
 
 log = get_logger(__name__)
 
@@ -51,7 +51,8 @@ class ReconciliationService:
         """Reconcile every active connection; isolate failures per-connection."""
         sm = get_service_sessionmaker()
         async with sm() as session:
-            result = await session.execute(text("""
+            result = await session.execute(
+                text("""
                 SELECT connection_id
                 FROM tenant_pos_connections
                 WHERE state = 'active'
@@ -60,13 +61,14 @@ class ReconciliationService:
                              '-infinity'::timestamptz) ASC,
                     created_at ASC
                 FOR UPDATE SKIP LOCKED
-            """))
+            """)
+            )
             ids = [str(r[0]) for r in result.fetchall()]
 
         for cid in ids:
             try:
                 await self.reconcile_connection(cid)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 log.error(
                     "reconciliation.run_all_error",
                     connection_id=cid,
@@ -93,7 +95,7 @@ class ReconciliationService:
 
         try:
             access_token = enc.decrypt(conn["access_token_enc"])
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.error(
                 "reconciliation.decrypt_failed",
                 connection_id=connection_id,
@@ -107,9 +109,7 @@ class ReconciliationService:
 
         if is_initial:
             start_ms = int(
-                (datetime.now(timezone.utc)
-                 - timedelta(days=self.INITIAL_LOOKBACK_DAYS)
-                 ).timestamp() * 1000
+                (datetime.now(UTC) - timedelta(days=self.INITIAL_LOOKBACK_DAYS)).timestamp() * 1000
             )
         else:
             # Overlap: start 5 min before the stored cursor to catch orders
@@ -175,7 +175,7 @@ class ReconciliationService:
                 offset += self.BATCH_SIZE
                 page_num += 1
 
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.error(
                 "reconciliation.api_error",
                 connection_id=connection_id,

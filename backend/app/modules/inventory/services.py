@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 # Mode B (count_anchored):
 #   last_count_quantity
 #   + receipts/adjusts strictly AFTER last_count_at
-#   - SUM(ABS(sale_signals since last_count_at)) × yield_factor
+#   - SUM(ABS(sale_signals since last_count_at)) x yield_factor
 #   Returns None when last_count_quantity is NULL (count not yet done).
 # ═════════════════════════════════════════════════════════════════════════════
 

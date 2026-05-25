@@ -132,19 +132,13 @@ class CloverClient:
                 )
 
             if resp.status_code == 401:
-                raise TokenExpiredError(
-                    f"401 listing orders for merchant {self.merchant_id}"
-                )
+                raise TokenExpiredError(f"401 listing orders for merchant {self.merchant_id}")
             if resp.status_code == 429:
                 if attempt < max_retries - 1:
-                    retry_after = max(
-                        0, int(resp.headers.get("Retry-After", "1"))
-                    )
+                    retry_after = max(0, int(resp.headers.get("Retry-After", "1")))
                     await asyncio.sleep(retry_after)
                     continue
-                raise RateLimitedError(
-                    f"429 listing orders for merchant {self.merchant_id}"
-                )
+                raise RateLimitedError(f"429 listing orders for merchant {self.merchant_id}")
 
             resp.raise_for_status()
             data: dict[str, Any] = resp.json()

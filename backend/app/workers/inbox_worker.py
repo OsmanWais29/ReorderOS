@@ -46,10 +46,8 @@ async def _main() -> None:
                     break
                 try:
                     await worker.process_event(event)
-                except Exception as exc:  # noqa: BLE001
-                    await worker.mark_failed(
-                        event, f"Unhandled: {type(exc).__name__}: {exc!s}"
-                    )
+                except Exception as exc:
+                    await worker.mark_failed(event, f"Unhandled: {type(exc).__name__}: {exc!s}")
 
     await _run_until_stop()
     log.info("inbox_worker.stopped")

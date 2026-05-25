@@ -13,7 +13,7 @@ prev_refresh_token_enc is stored on every refresh as a safety net.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 from sqlalchemy import text
@@ -35,7 +35,7 @@ def _api_base(environment: str) -> str:
 
 
 def _from_unix_ms(ms: int) -> datetime:
-    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+    return datetime.fromtimestamp(ms / 1000, tz=UTC)
 
 
 async def refresh_expiring_tokens() -> None:
@@ -53,33 +53,35 @@ async def refresh_expiring_tokens() -> None:
     enc = TokenEncryption()
     sm = get_service_sessionmaker()
 
-    async with sm() as session:
-        async with session.begin():
-            result = await session.execute(text("""
+    async with sm() as session, session.begin():
+        result = await session.execute(
+            text("""
                 SELECT connection_id, tenant_id, environment,
                        refresh_token_enc, refresh_failure_count
                 FROM tenant_pos_connections
                 WHERE state = 'active'
                   AND access_token_expires_at < now() + interval '10 minutes'
                 FOR UPDATE SKIP LOCKED
-            """))
-            connections = result.mappings().all()
+            """)
+        )
+        connections = result.mappings().all()
 
-            for conn in connections:
-                try:
-                    old_refresh = enc.decrypt(conn["refresh_token_enc"])
-                    async with httpx.AsyncClient(timeout=10) as client:
-                        resp = await client.post(
-                            f"{_api_base(conn['environment'])}/oauth/v2/refresh",
-                            json={
-                                "client_id": settings.clover_app_id,
-                                "refresh_token": old_refresh,
-                            },
-                        )
-                    resp.raise_for_status()
-                    tokens = resp.json()
+        for conn in connections:
+            try:
+                old_refresh = enc.decrypt(conn["refresh_token_enc"])
+                async with httpx.AsyncClient(timeout=10) as client:
+                    resp = await client.post(
+                        f"{_api_base(conn['environment'])}/oauth/v2/refresh",
+                        json={
+                            "client_id": settings.clover_app_id,
+                            "refresh_token": old_refresh,
+                        },
+                    )
+                resp.raise_for_status()
+                tokens = resp.json()
 
-                    await session.execute(text("""
+                await session.execute(
+                    text("""
                         UPDATE tenant_pos_connections
                         SET prev_refresh_token_enc    = refresh_token_enc,
                             access_token_enc          = :at_enc,
@@ -91,30 +93,35 @@ async def refresh_expiring_tokens() -> None:
                             state_reason              = NULL,
                             updated_at                = now()
                         WHERE connection_id = :cid
-                    """), {
+                    """),
+                    {
                         "at_enc": enc.encrypt(tokens["access_token"]),
                         "at_exp": _from_unix_ms(tokens["access_token_expiration"]),
                         "rt_enc": enc.encrypt(tokens["refresh_token"]),
                         "rt_exp": _from_unix_ms(tokens["refresh_token_expiration"]),
                         "cid": str(conn["connection_id"]),
-                    })
+                    },
+                )
 
-                except Exception as exc:
-                    new_count = conn["refresh_failure_count"] + 1
-                    new_state = "error" if new_count >= 3 else "active"
-                    await session.execute(text("""
+            except Exception as exc:
+                new_count = conn["refresh_failure_count"] + 1
+                new_state = "error" if new_count >= 3 else "active"
+                await session.execute(
+                    text("""
                         UPDATE tenant_pos_connections
                         SET refresh_failure_count = :cnt,
                             state                 = :st,
                             state_reason          = :err,
                             updated_at            = now()
                         WHERE connection_id = :cid
-                    """), {
+                    """),
+                    {
                         "cnt": new_count,
                         "st": new_state,
                         "err": str(exc)[:500],
                         "cid": str(conn["connection_id"]),
-                    })
+                    },
+                )
 
     # Cleanup expired OAuth states — separate transaction, best-effort
     async with sm() as session:

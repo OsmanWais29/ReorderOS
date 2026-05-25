@@ -86,10 +86,12 @@ async def handle_clover_webhook(request: Request) -> Response:
 
             # Resolve merchant → tenant via SECURITY DEFINER function.
             # No SET LOCAL required — runs as function owner (superuser).
-            tenant_id = (await session.execute(
-                text("SELECT lookup_tenant_by_merchant('clover', :m)"),
-                {"m": merchant_id},
-            )).scalar_one_or_none()
+            tenant_id = (
+                await session.execute(
+                    text("SELECT lookup_tenant_by_merchant('clover', :m)"),
+                    {"m": merchant_id},
+                )
+            ).scalar_one_or_none()
 
             if tenant_id is None:
                 log.warning("webhook.unknown_merchant", merchant_id=merchant_id)
@@ -97,15 +99,17 @@ async def handle_clover_webhook(request: Request) -> Response:
 
             # Fetch connection_id for the FK (nullable — not all events will
             # have a valid connection if it was recently revoked).
-            conn_row = (await session.execute(
-                text("""
+            conn_row = (
+                await session.execute(
+                    text("""
                     SELECT connection_id FROM tenant_pos_connections
                     WHERE vendor = 'clover' AND merchant_id = :m
                       AND state IN ('active', 'error')
                     LIMIT 1
                 """),
-                {"m": merchant_id},
-            )).fetchone()
+                    {"m": merchant_id},
+                )
+            ).fetchone()
             connection_id = str(conn_row.connection_id) if conn_row else None
 
             for event in events:
@@ -125,7 +129,8 @@ async def handle_clover_webhook(request: Request) -> Response:
 
                 # Defensive: type and ts may be wrong types from future Clover versions.
                 event_type = event.get("type") or "UPDATE"
-                if not isinstance(event_type, str) or event_type not in ("CREATE", "UPDATE", "DELETE"):
+                valid_types = ("CREATE", "UPDATE", "DELETE")
+                if not isinstance(event_type, str) or event_type not in valid_types:
                     event_type = "UPDATE"
                 try:
                     event_ts = int(event.get("ts") or 0)

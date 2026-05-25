@@ -10,6 +10,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import signal
 
 from app.core.logging import configure_logging, get_logger
@@ -43,13 +44,11 @@ async def _main() -> None:
             await refresh_expiring_tokens()
             await service.run_all()
             log.info("reconciliation_worker.tick_done")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.error("reconciliation_worker.tick_error", error=str(exc)[:500])
 
-        try:
+        with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stop_event.wait(), timeout=INTERVAL_SECONDS)
-        except asyncio.TimeoutError:
-            pass
 
     log.info("reconciliation_worker.stopped")
 

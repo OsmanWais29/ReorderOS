@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import text
+from uuid6 import uuid7
 
 from app.core.encryption import TokenEncryption
 from app.core.logging import get_logger
@@ -29,7 +30,6 @@ from app.modules.pos.clover_client import (
     RateLimitedError,
     TokenExpiredError,
 )
-from uuid6 import uuid7
 
 log = get_logger(__name__)
 
@@ -45,13 +45,13 @@ _PAYMENT_STATE_PRIORITY = {
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _from_ms(ms: int | None) -> datetime | None:
     if not ms:
         return None
-    return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
+    return datetime.fromtimestamp(ms / 1000.0, tz=UTC)
 
 
 def _safe_int(v: Any) -> int:
@@ -88,10 +88,8 @@ class InboxWorker:
             for event in events:
                 try:
                     await self.process_event(event)
-                except Exception as exc:  # noqa: BLE001
-                    await self.mark_failed(
-                        event, f"Unhandled: {type(exc).__name__}: {exc!s}"
-                    )
+                except Exception as exc:
+                    await self.mark_failed(event, f"Unhandled: {type(exc).__name__}: {exc!s}")
 
     # ── Claim ─────────────────────────────────────────────────────────────────
 
@@ -184,7 +182,7 @@ class InboxWorker:
             except RateLimitedError as exc:
                 await self.mark_failed(event, str(exc))
                 return
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 await self.mark_failed(event, f"{type(exc).__name__}: {exc!s}")
                 return
 
@@ -215,33 +213,26 @@ class InboxWorker:
         # ── 4. Upsert order + line items under T1 RLS context ─────────────
         try:
             sm3 = get_service_sessionmaker()
-            async with sm3() as session:
-                async with session.begin():
-                    await session.execute(
-                        text("SELECT set_config('app.tenant_id', :tid, true)"),
-                        {"tid": tenant_id},
-                    )
-                    order_row_id = await self._upsert_order(
-                        session, tenant_id, inbox_id, order_data
-                    )
-                    line_items = (
-                        order_data.get("lineItems") or {}
-                    ).get("elements") or []
-                    for li in line_items:
-                        if not isinstance(li, dict):
-                            continue
-                        li_id = li.get("id") or ""
-                        if not li_id:
-                            log.warning(
-                                "worker.skip_line_item_missing_id",
-                                order_id=order_id,
-                                tenant_id=tenant_id,
-                            )
-                            continue
-                        await self._insert_line_item(
-                            session, tenant_id, order_row_id, li
+            async with sm3() as session, session.begin():
+                await session.execute(
+                    text("SELECT set_config('app.tenant_id', :tid, true)"),
+                    {"tid": tenant_id},
+                )
+                order_row_id = await self._upsert_order(session, tenant_id, inbox_id, order_data)
+                line_items = (order_data.get("lineItems") or {}).get("elements") or []
+                for li in line_items:
+                    if not isinstance(li, dict):
+                        continue
+                    li_id = li.get("id") or ""
+                    if not li_id:
+                        log.warning(
+                            "worker.skip_line_item_missing_id",
+                            order_id=order_id,
+                            tenant_id=tenant_id,
                         )
-        except Exception as exc:  # noqa: BLE001
+                        continue
+                    await self._insert_line_item(session, tenant_id, order_row_id, li)
+        except Exception as exc:
             await self.mark_failed(event, f"{type(exc).__name__}: {exc!s}")
             return
 
@@ -271,7 +262,9 @@ class InboxWorker:
         created_ms = order_data.get("clientCreatedTime") or order_data.get("createdTime")
         modified_ms = order_data.get("modifiedTime")
         opened_at = _from_ms(_safe_int(created_ms) if created_ms else None)
-        closed_at = _from_ms(_safe_int(modified_ms) if modified_ms else None) if state == "locked" else None
+        closed_at = (
+            _from_ms(_safe_int(modified_ms) if modified_ms else None) if state == "locked" else None
+        )
 
         device_id: str | None = (order_data.get("device") or {}).get("id")
         employee_id: str | None = (order_data.get("employee") or {}).get("id")
@@ -371,11 +364,7 @@ class InboxWorker:
 
         # 3. Payments array
         payments = (order_data.get("payments") or {}).get("elements") or []
-        results = {
-            p.get("result")
-            for p in payments
-            if isinstance(p, dict) and p.get("result")
-        }
+        results = {p.get("result") for p in payments if isinstance(p, dict) and p.get("result")}
         has_paid = bool(results & {"SUCCESS", "AUTH"})
         has_refund = bool(results & {"REFUNDED", "REFUND"})
         if has_paid and has_refund:
@@ -515,9 +504,7 @@ class InboxWorker:
             error=error[:200],
         )
 
-    async def _dead_letter(
-        self, event: Any, error: str, retry_count: int
-    ) -> None:
+    async def _dead_letter(self, event: Any, error: str, retry_count: int) -> None:
         tenant_id = str(event["tenant_id"])
         sm = get_service_sessionmaker()
         async with sm() as session:
@@ -560,11 +547,13 @@ class InboxWorker:
                 """),
                 {
                     "tid": tenant_id,
-                    "payload": json.dumps({
-                        "inbox_id": str(event["inbox_id"]),
-                        "vendor_event_id": str(event.get("vendor_event_id") or ""),
-                        "error": error[:500],
-                    }),
+                    "payload": json.dumps(
+                        {
+                            "inbox_id": str(event["inbox_id"]),
+                            "vendor_event_id": str(event.get("vendor_event_id") or ""),
+                            "error": error[:500],
+                        }
+                    ),
                 },
             )
             await session.commit()

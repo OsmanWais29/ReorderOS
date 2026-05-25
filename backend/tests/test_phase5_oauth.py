@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -17,7 +17,6 @@ from fastapi.testclient import TestClient
 from uuid6 import uuid7
 
 from app.core.config import settings
-from app.core.encryption import TokenEncryption
 from app.main import app
 from app.modules.pos.state_manager import OAuthStateManager
 from app.modules.pos.token_refresh import refresh_expiring_tokens
@@ -29,7 +28,6 @@ from tests.helpers.phase5 import (
     seed_tenant_and_user,
     seed_tenant_user_and_connection,
 )
-
 
 # ── Sync TestClient fixture (shadows the async one from conftest for this file) ─
 
@@ -77,7 +75,8 @@ async def test_state_expired_rejected(admin_conn):
     token = await state_mgr.generate(seed["tenant_id"], seed["user_id"])
     await admin_conn.execute(
         "UPDATE oauth_states SET expires_at = $1 WHERE state = $2",
-        datetime.now(timezone.utc) - timedelta(minutes=1), token,
+        datetime.now(UTC) - timedelta(minutes=1),
+        token,
     )
 
     with pytest.raises(Exception):
@@ -136,7 +135,8 @@ async def test_connect_owner_redirects_with_state(client, admin_conn):
 
     state_param = location.split("state=")[1].split("&")[0]
     count = await admin_conn.fetchval(
-        "SELECT count(*) FROM oauth_states WHERE state = $1", state_param,
+        "SELECT count(*) FROM oauth_states WHERE state = $1",
+        state_param,
     )
     assert count == 1
 
@@ -150,11 +150,16 @@ async def test_callback_success(admin_conn, client):
     """Full callback: state validated, code exchanged, tokens stored encrypted."""
     seed = await seed_tenant_and_user(admin_conn)
     state_token = str(uuid.uuid4())
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO oauth_states (state, tenant_id, user_id, expires_at)
         VALUES ($1, $2, $3, $4)
-    """, state_token, seed["tenant_id"], seed["user_id"],
-         datetime.now(timezone.utc) + timedelta(minutes=10))
+    """,
+        state_token,
+        seed["tenant_id"],
+        seed["user_id"],
+        datetime.now(UTC) + timedelta(minutes=10),
+    )
 
     clover_response = make_clover_token_response("callback_access", "callback_refresh")
     respx.post(f"{settings.clover_api_base_url}/oauth/v2/token").mock(
@@ -183,7 +188,8 @@ async def test_callback_success(admin_conn, client):
     assert enc.decrypt(row["refresh_token_enc"]) == "callback_refresh"
 
     count = await admin_conn.fetchval(
-        "SELECT count(*) FROM oauth_states WHERE state = $1", state_token,
+        "SELECT count(*) FROM oauth_states WHERE state = $1",
+        state_token,
     )
     assert count == 0
 
@@ -206,11 +212,16 @@ async def test_callback_invalid_state(client):
 async def test_callback_expired_state(admin_conn, client):
     seed = await seed_tenant_and_user(admin_conn)
     state_token = str(uuid.uuid4())
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO oauth_states (state, tenant_id, user_id, expires_at)
         VALUES ($1, $2, $3, $4)
-    """, state_token, seed["tenant_id"], seed["user_id"],
-         datetime.now(timezone.utc) - timedelta(minutes=1))
+    """,
+        state_token,
+        seed["tenant_id"],
+        seed["user_id"],
+        datetime.now(UTC) - timedelta(minutes=1),
+    )
 
     response = client.get(
         f"/api/v1/pos/clover/callback?code=x&state={state_token}&merchant_id=x",
@@ -225,11 +236,16 @@ async def test_callback_expired_state(admin_conn, client):
 async def test_callback_client_id_mismatch(admin_conn, client):
     seed = await seed_tenant_and_user(admin_conn)
     state_token = str(uuid.uuid4())
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO oauth_states (state, tenant_id, user_id, expires_at)
         VALUES ($1, $2, $3, $4)
-    """, state_token, seed["tenant_id"], seed["user_id"],
-         datetime.now(timezone.utc) + timedelta(minutes=10))
+    """,
+        state_token,
+        seed["tenant_id"],
+        seed["user_id"],
+        datetime.now(UTC) + timedelta(minutes=10),
+    )
 
     response = client.get(
         f"/api/v1/pos/clover/callback"
@@ -255,16 +271,21 @@ async def test_callback_reconnect_updates_existing(admin_conn, client):
     seed = await seed_tenant_user_and_connection(admin_conn, merchant_id=old_mid)
 
     state_token = str(uuid.uuid4())
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO oauth_states (state, tenant_id, user_id, expires_at)
         VALUES ($1, $2, $3, $4)
-    """, state_token, seed["tenant_id"], seed["user_id"],
-         datetime.now(timezone.utc) + timedelta(minutes=10))
+    """,
+        state_token,
+        seed["tenant_id"],
+        seed["user_id"],
+        datetime.now(UTC) + timedelta(minutes=10),
+    )
 
     respx.post(f"{settings.clover_api_base_url}/oauth/v2/token").mock(
-        return_value=httpx.Response(200, json=make_clover_token_response(
-            "reconnect_access", "reconnect_refresh"
-        ))
+        return_value=httpx.Response(
+            200, json=make_clover_token_response("reconnect_access", "reconnect_refresh")
+        )
     )
 
     response = client.get(
@@ -339,9 +360,9 @@ async def test_token_refresh_success(admin_conn):
     )
 
     respx.post(f"{settings.clover_api_base_url}/oauth/v2/refresh").mock(
-        return_value=httpx.Response(200, json=make_clover_token_response(
-            "refreshed_access", "refreshed_refresh"
-        ))
+        return_value=httpx.Response(
+            200, json=make_clover_token_response("refreshed_access", "refreshed_refresh")
+        )
     )
 
     await refresh_expiring_tokens()
@@ -409,8 +430,7 @@ async def test_token_refresh_failure_increments(admin_conn):
     await refresh_expiring_tokens()
 
     row = await admin_conn.fetchrow(
-        "SELECT state, refresh_failure_count "
-        "FROM tenant_pos_connections WHERE connection_id = $1",
+        "SELECT state, refresh_failure_count FROM tenant_pos_connections WHERE connection_id = $1",
         seed["connection_id"],
     )
     assert row["state"] == "active"
@@ -442,8 +462,8 @@ async def test_token_refresh_skips_healthy_tokens(admin_conn):
     await refresh_expiring_tokens()
 
     row = await admin_conn.fetchval(
-        "SELECT access_token_enc FROM tenant_pos_connections "
-        "WHERE connection_id = $1", seed["connection_id"],
+        "SELECT access_token_enc FROM tenant_pos_connections WHERE connection_id = $1",
+        seed["connection_id"],
     )
     assert enc.decrypt(row) == "original_access"
 
@@ -458,25 +478,43 @@ async def test_token_refresh_cleans_expired_states(admin_conn):
 
     expired_state = str(uuid.uuid4())
     valid_state = str(uuid.uuid4())
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO oauth_states (state, tenant_id, user_id, expires_at)
         VALUES ($1, $2, $3, $4)
-    """, expired_state, seed["tenant_id"], seed["user_id"],
-         datetime.now(timezone.utc) - timedelta(minutes=5))
-    await admin_conn.execute("""
+    """,
+        expired_state,
+        seed["tenant_id"],
+        seed["user_id"],
+        datetime.now(UTC) - timedelta(minutes=5),
+    )
+    await admin_conn.execute(
+        """
         INSERT INTO oauth_states (state, tenant_id, user_id, expires_at)
         VALUES ($1, $2, $3, $4)
-    """, valid_state, seed["tenant_id"], seed["user_id"],
-         datetime.now(timezone.utc) + timedelta(minutes=5))
+    """,
+        valid_state,
+        seed["tenant_id"],
+        seed["user_id"],
+        datetime.now(UTC) + timedelta(minutes=5),
+    )
 
     await refresh_expiring_tokens()
 
-    assert await admin_conn.fetchval(
-        "SELECT count(*) FROM oauth_states WHERE state = $1", expired_state,
-    ) == 0
-    assert await admin_conn.fetchval(
-        "SELECT count(*) FROM oauth_states WHERE state = $1", valid_state,
-    ) == 1
+    assert (
+        await admin_conn.fetchval(
+            "SELECT count(*) FROM oauth_states WHERE state = $1",
+            expired_state,
+        )
+        == 0
+    )
+    assert (
+        await admin_conn.fetchval(
+            "SELECT count(*) FROM oauth_states WHERE state = $1",
+            valid_state,
+        )
+        == 1
+    )
 
 
 # ── Test 18: State Replay Fails ───────────────────────────────────────────────
@@ -488,11 +526,16 @@ async def test_callback_state_replay_fails(admin_conn, client):
     """Second use of same state token returns 400 (state already consumed)."""
     seed = await seed_tenant_and_user(admin_conn)
     state_token = str(uuid.uuid4())
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO oauth_states (state, tenant_id, user_id, expires_at)
         VALUES ($1, $2, $3, $4)
-    """, state_token, seed["tenant_id"], seed["user_id"],
-         datetime.now(timezone.utc) + timedelta(minutes=10))
+    """,
+        state_token,
+        seed["tenant_id"],
+        seed["user_id"],
+        datetime.now(UTC) + timedelta(minutes=10),
+    )
 
     respx.post(f"{settings.clover_api_base_url}/oauth/v2/token").mock(
         return_value=httpx.Response(200, json=make_clover_token_response())
@@ -500,15 +543,13 @@ async def test_callback_state_replay_fails(admin_conn, client):
 
     replay_mid = f"replay_{uuid.uuid4().hex[:8]}"
     resp1 = client.get(
-        f"/api/v1/pos/clover/callback"
-        f"?code=code1&state={state_token}&merchant_id={replay_mid}",
+        f"/api/v1/pos/clover/callback?code=code1&state={state_token}&merchant_id={replay_mid}",
         follow_redirects=False,
     )
     assert resp1.status_code in (302, 307)
 
     resp2 = client.get(
-        f"/api/v1/pos/clover/callback"
-        f"?code=code2&state={state_token}&merchant_id={replay_mid}",
+        f"/api/v1/pos/clover/callback?code=code2&state={state_token}&merchant_id={replay_mid}",
     )
     assert resp2.status_code == 400
 
@@ -522,11 +563,16 @@ async def test_callback_uses_uuidv7_for_connection(admin_conn, client):
     """The connection_id written to tenant_pos_connections must be a UUIDv7."""
     seed = await seed_tenant_and_user(admin_conn)
     state_token = str(uuid.uuid4())
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO oauth_states (state, tenant_id, user_id, expires_at)
         VALUES ($1, $2, $3, $4)
-    """, state_token, seed["tenant_id"], seed["user_id"],
-         datetime.now(timezone.utc) + timedelta(minutes=10))
+    """,
+        state_token,
+        seed["tenant_id"],
+        seed["user_id"],
+        datetime.now(UTC) + timedelta(minutes=10),
+    )
 
     respx.post(f"{settings.clover_api_base_url}/oauth/v2/token").mock(
         return_value=httpx.Response(200, json=make_clover_token_response())
@@ -534,14 +580,13 @@ async def test_callback_uses_uuidv7_for_connection(admin_conn, client):
 
     v7_mid = f"v7m_{uuid.uuid4().hex[:8]}"
     client.get(
-        f"/api/v1/pos/clover/callback"
-        f"?code=v7test&state={state_token}&merchant_id={v7_mid}",
+        f"/api/v1/pos/clover/callback?code=v7test&state={state_token}&merchant_id={v7_mid}",
         follow_redirects=False,
     )
 
     cid = await admin_conn.fetchval(
-        "SELECT connection_id::text FROM tenant_pos_connections "
-        "WHERE tenant_id = $1", seed["tenant_id"],
+        "SELECT connection_id::text FROM tenant_pos_connections WHERE tenant_id = $1",
+        seed["tenant_id"],
     )
     assert cid is not None
     assert cid[14] == "7"
@@ -558,16 +603,21 @@ async def test_full_phase5_lifecycle(admin_conn, service_conn, app_conn, client)
     mid = f"lifecycle_{uuid.uuid4().hex[:8]}"
 
     state_token = str(uuid.uuid4())
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO oauth_states (state, tenant_id, user_id, expires_at)
         VALUES ($1, $2, $3, $4)
-    """, state_token, seed["tenant_id"], seed["user_id"],
-         datetime.now(timezone.utc) + timedelta(minutes=10))
+    """,
+        state_token,
+        seed["tenant_id"],
+        seed["user_id"],
+        datetime.now(UTC) + timedelta(minutes=10),
+    )
 
     respx.post(f"{settings.clover_api_base_url}/oauth/v2/token").mock(
-        return_value=httpx.Response(200, json=make_clover_token_response(
-            "lifecycle_access", "lifecycle_refresh"
-        ))
+        return_value=httpx.Response(
+            200, json=make_clover_token_response("lifecycle_access", "lifecycle_refresh")
+        )
     )
 
     resp = client.get(
@@ -581,42 +631,53 @@ async def test_full_phase5_lifecycle(admin_conn, service_conn, app_conn, client)
     conn_row = await admin_conn.fetchrow(
         "SELECT connection_id, state, access_token_enc "
         "FROM tenant_pos_connections WHERE tenant_id = $1 AND merchant_id = $2",
-        seed["tenant_id"], mid,
+        seed["tenant_id"],
+        mid,
     )
     assert conn_row["state"] == "active"
     assert enc.decrypt(conn_row["access_token_enc"]) == "lifecycle_access"
 
     resolved = await service_conn.fetchval(
-        "SELECT lookup_tenant_by_merchant('clover', $1)", mid,
+        "SELECT lookup_tenant_by_merchant('clover', $1)",
+        mid,
     )
     assert str(resolved) == seed["tenant_id"]
 
     inbox_id = str(uuid7())
-    await service_conn.execute("""
+    await service_conn.execute(
+        """
         INSERT INTO pos_event_inbox (
             inbox_id, tenant_id, connection_id, vendor,
             vendor_event_id, vendor_object_type, vendor_event_type,
             vendor_ts, raw_payload, signature_verified, source
         ) VALUES ($1,$2,$3,'clover',$4,'O','UPDATE',$5,'{}',true,'webhook')
-    """, inbox_id, seed["tenant_id"],
-         str(conn_row["connection_id"]),
-         f"order_{uuid.uuid4().hex[:8]}", int(time.time() * 1000))
+    """,
+        inbox_id,
+        seed["tenant_id"],
+        str(conn_row["connection_id"]),
+        f"order_{uuid.uuid4().hex[:8]}",
+        int(time.time() * 1000),
+    )
 
     order_id = str(uuid7())
     async with service_conn.transaction():
+        await service_conn.execute(f"SET LOCAL app.tenant_id = '{seed['tenant_id']}'")
         await service_conn.execute(
-            f"SET LOCAL app.tenant_id = '{seed['tenant_id']}'"
-        )
-        await service_conn.execute("""
+            """
             INSERT INTO orders (
                 id, tenant_id, pos_event_inbox_id, clover_order_id,
                 total_amount_cents, state, payment_state, processed_at
             ) VALUES ($1,$2,$3,$4,4200,'locked','PAID',now())
-        """, order_id, seed["tenant_id"], inbox_id,
-             f"CO-{uuid.uuid4().hex[:8]}")
+        """,
+            order_id,
+            seed["tenant_id"],
+            inbox_id,
+            f"CO-{uuid.uuid4().hex[:8]}",
+        )
 
     order = await admin_conn.fetchrow(
-        "SELECT tenant_id, state FROM orders WHERE id = $1", order_id,
+        "SELECT tenant_id, state FROM orders WHERE id = $1",
+        order_id,
     )
     assert str(order["tenant_id"]) == seed["tenant_id"]
     assert order["state"] == "locked"
@@ -626,9 +687,13 @@ async def test_full_phase5_lifecycle(admin_conn, service_conn, app_conn, client)
         rows = await app_conn.fetch("SELECT id FROM orders")
         assert any(str(r["id"]) == order_id for r in rows)
 
-    assert await admin_conn.fetchval(
-        "SELECT count(*) FROM oauth_states WHERE state = $1", state_token,
-    ) == 0
+    assert (
+        await admin_conn.fetchval(
+            "SELECT count(*) FROM oauth_states WHERE state = $1",
+            state_token,
+        )
+        == 0
+    )
 
 
 # ── Test 21: Connect — Staff (non-owner, non-manager) Gets 403 ───────────────

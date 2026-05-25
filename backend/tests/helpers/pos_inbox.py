@@ -24,7 +24,7 @@ def make_inbox_row(overrides: dict | None = None) -> dict:
     now_ms = int(time.time() * 1000)
     defaults: dict[str, Any] = {
         "inbox_id": str(uuid7()),
-        "tenant_id": None,           # must be set by test
+        "tenant_id": None,  # must be set by test
         "connection_id": None,
         "vendor": "clover",
         "vendor_event_id": f"order_{uuid.uuid4().hex[:8]}",
@@ -51,18 +51,25 @@ async def insert_inbox(conn: Any, row: dict) -> None:
     retry_count to 0. Tests that need specific states do UPDATE afterwards.
     This keeps the helper clean and makes test intent explicit.
     """
-    await conn.execute("""
+    await conn.execute(
+        """
         INSERT INTO pos_event_inbox (
             inbox_id, tenant_id, connection_id, vendor,
             vendor_event_id, vendor_object_type, vendor_event_type,
             vendor_ts, raw_payload, signature_verified, source
         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11)
     """,
-        row["inbox_id"], row["tenant_id"], row.get("connection_id"),
-        row["vendor"], row["vendor_event_id"],
-        row["vendor_object_type"], row["vendor_event_type"],
-        row["vendor_ts"], row["raw_payload"],
-        row["signature_verified"], row["source"],
+        row["inbox_id"],
+        row["tenant_id"],
+        row.get("connection_id"),
+        row["vendor"],
+        row["vendor_event_id"],
+        row["vendor_object_type"],
+        row["vendor_event_type"],
+        row["vendor_ts"],
+        row["raw_payload"],
+        row["signature_verified"],
+        row["source"],
     )
 
 
@@ -75,7 +82,8 @@ async def reconciliation_upsert(conn: Any, row: dict) -> None:
     requeues 'processed'/'dead_letter' → 'pending'. Leaves 'pending',
     'processing', 'failed' states unchanged.
     """
-    await conn.execute("""
+    await conn.execute(
+        """
         INSERT INTO pos_event_inbox (
             inbox_id, tenant_id, connection_id, vendor,
             vendor_event_id, vendor_object_type, vendor_event_type,
@@ -100,11 +108,11 @@ async def reconciliation_upsert(conn: Any, row: dict) -> None:
                 ELSE pos_event_inbox.next_attempt_at
             END
     """,
-        str(uuid7()),                                               # $1 inbox_id (ignored on conflict)
-        row["tenant_id"],                                           # $2
-        row.get("connection_id"),                                   # $3
-        row["vendor_event_id"],                                     # $4
-        row["vendor_ts"],                                           # $5
-        row.get("raw_payload", json.dumps({"source": "reconciliation"})),   # $6
-        row.get("fetched_payload", json.dumps({"reconciled": True})),       # $7
+        str(uuid7()),  # $1 inbox_id (ignored on conflict)
+        row["tenant_id"],  # $2
+        row.get("connection_id"),  # $3
+        row["vendor_event_id"],  # $4
+        row["vendor_ts"],  # $5
+        row.get("raw_payload", json.dumps({"source": "reconciliation"})),  # $6
+        row.get("fetched_payload", json.dumps({"reconciled": True})),  # $7
     )

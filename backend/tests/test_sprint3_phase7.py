@@ -452,9 +452,12 @@ async def _seed_sale_line(
             VALUES (:id, :tid, :oid, :cli, 'Sprint 3 Item', :qty, 0, 0, :rvid)
         """),
         {
-            "id": slid, "tid": tenant_id, "oid": order_id,
+            "id": slid,
+            "tid": tenant_id,
+            "oid": order_id,
             "cli": f"cli_{uuid.uuid4().hex[:8]}",
-            "qty": sale_qty, "rvid": recipe_version_id,
+            "qty": sale_qty,
+            "rvid": recipe_version_id,
         },
     )
     await session.flush()

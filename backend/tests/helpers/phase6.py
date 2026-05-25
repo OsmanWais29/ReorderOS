@@ -58,17 +58,24 @@ async def seed_webhook_prereqs(admin_conn: Any) -> dict:
 
     await admin_conn.execute(
         "INSERT INTO tenants (id, name, slug) VALUES ($1, $2, $3)",
-        tid, f"WebhookTest_{tid[:8]}", f"wh-{tid[:8]}",
+        tid,
+        f"WebhookTest_{tid[:8]}",
+        f"wh-{tid[:8]}",
     )
     await admin_conn.execute(
         "INSERT INTO users (id, workos_id, email, email_verified) VALUES ($1, $2, $3, true)",
-        uid, f"workos_{uid[:8]}", f"wh-{uid[:8]}@test.com",
+        uid,
+        f"workos_{uid[:8]}",
+        f"wh-{uid[:8]}@test.com",
     )
     await admin_conn.execute(
         "INSERT INTO user_tenants (id, user_id, tenant_id, role, active) VALUES ($1, $2, $3, 'owner', true)",
-        ut_id, uid, tid,
+        ut_id,
+        uid,
+        tid,
     )
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO tenant_pos_connections (
             connection_id, tenant_id, vendor, merchant_id, environment,
             access_token_enc, access_token_expires_at,
@@ -76,6 +83,12 @@ async def seed_webhook_prereqs(admin_conn: Any) -> dict:
         ) VALUES ($1,$2,'clover',$3,'sandbox',
                   $4, now()+interval'1 hour',
                   $5, now()+interval'30 days', 'active')
-    """, cid, tid, mid, enc.encrypt("wh_access"), enc.encrypt("wh_refresh"))
+    """,
+        cid,
+        tid,
+        mid,
+        enc.encrypt("wh_access"),
+        enc.encrypt("wh_refresh"),
+    )
 
     return {"tenant_id": tid, "merchant_id": mid, "connection_id": cid}

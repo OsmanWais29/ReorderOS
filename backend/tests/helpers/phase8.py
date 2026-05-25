@@ -27,12 +27,16 @@ def make_clover_order_list_item(
         "total": total,
         "modifiedTime": modified_time if modified_time is not None else now_ms,
         "createdTime": now_ms - 60000,
-        "lineItems": {"elements": [{
-            "id": f"li_{uuid.uuid4().hex[:8]}",
-            "name": "Recon Item",
-            "price": 1500,
-            "unitQty": 1,
-        }]},
+        "lineItems": {
+            "elements": [
+                {
+                    "id": f"li_{uuid.uuid4().hex[:8]}",
+                    "name": "Recon Item",
+                    "price": 1500,
+                    "unitQty": 1,
+                }
+            ]
+        },
     }
 
 
@@ -46,21 +50,31 @@ async def seed_reconciliation_prereqs(
     ut_id = str(uuid7())
     mid = kwargs.get("merchant_id", f"recon_merch_{uuid.uuid4().hex[:8]}")
     cid = str(uuid7())
-    cursor = kwargs.get("last_reconciliation_cursor", None)
+    cursor = kwargs.get("last_reconciliation_cursor")
 
     await admin_conn.execute(
         "INSERT INTO tenants (id, name, slug) VALUES ($1, $2, $3)",
-        tid, f"ReconTest_{tid[:8]}", f"recon-{tid[:8]}",
+        tid,
+        f"ReconTest_{tid[:8]}",
+        f"recon-{tid[:8]}",
     )
     await admin_conn.execute(
         "INSERT INTO users (id, workos_id, email) VALUES ($1, $2, $3)",
-        uid, f"workos_{uid[:8]}", f"recon-{uid[:8]}@test.com",
+        uid,
+        f"workos_{uid[:8]}",
+        f"recon-{uid[:8]}@test.com",
     )
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO user_tenants (id, user_id, tenant_id, role, active)
         VALUES ($1, $2, $3, 'owner', true)
-    """, ut_id, uid, tid)
-    await admin_conn.execute("""
+    """,
+        ut_id,
+        uid,
+        tid,
+    )
+    await admin_conn.execute(
+        """
         INSERT INTO tenant_pos_connections (
             connection_id, tenant_id, vendor, merchant_id, environment,
             access_token_enc, access_token_expires_at,
@@ -70,9 +84,14 @@ async def seed_reconciliation_prereqs(
                   $4, now()+interval'1 hour',
                   $5, now()+interval'30 days',
                   'active', $6)
-    """, cid, tid, mid,
-        enc.encrypt("recon_access"), enc.encrypt("recon_refresh"),
-        cursor)
+    """,
+        cid,
+        tid,
+        mid,
+        enc.encrypt("recon_access"),
+        enc.encrypt("recon_refresh"),
+        cursor,
+    )
 
     return {
         "tenant_id": tid,

@@ -17,9 +17,7 @@ async def test_service_worker_role_exists(admin_conn):
     migration would fail immediately with 'role does not exist'.
     This test catches a missing Phase 0 before Phase 1 crashes.
     """
-    row = await admin_conn.fetchval(
-        "SELECT 1 FROM pg_roles WHERE rolname = 'service_worker'"
-    )
+    row = await admin_conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname = 'service_worker'")
     assert row == 1, "service_worker role does not exist in pg_roles"
 
 
@@ -41,8 +39,7 @@ async def test_service_worker_has_login(admin_conn):
         "SELECT rolcanlogin FROM pg_roles WHERE rolname = 'service_worker'"
     )
     assert can_login is True, (
-        "service_worker has NOLOGIN — the worker process cannot connect "
-        "via SERVICE_DATABASE_URL"
+        "service_worker has NOLOGIN — the worker process cannot connect via SERVICE_DATABASE_URL"
     )
 
 

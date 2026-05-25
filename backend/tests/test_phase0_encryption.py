@@ -8,7 +8,6 @@ from __future__ import annotations
 import pytest
 from cryptography.fernet import Fernet
 
-
 # ── Test 1: Round-trip ────────────────────────────────────────────────────────
 
 
@@ -38,9 +37,7 @@ def test_encrypt_decrypt_roundtrip():
 
     # Round-trip must recover the original value exactly
     decrypted = enc.decrypt(ciphertext)
-    assert decrypted == plaintext, (
-        f"Round-trip failed: expected '{plaintext}', got '{decrypted}'"
-    )
+    assert decrypted == plaintext, f"Round-trip failed: expected '{plaintext}', got '{decrypted}'"
 
 
 # ── Test 2: Garbage rejection ─────────────────────────────────────────────────

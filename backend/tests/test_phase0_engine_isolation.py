@@ -57,8 +57,7 @@ async def test_engines_connect_as_different_roles():
         svc_user = (await svc_conn.execute(text("SELECT current_user"))).scalar()
 
     assert app_user != svc_user, (
-        f"Both engines connected as the same user '{app_user}' — "
-        "service_worker isolation is broken"
+        f"Both engines connected as the same user '{app_user}' — service_worker isolation is broken"
     )
     assert svc_user == "service_worker", (
         f"Service engine connected as '{svc_user}' instead of 'service_worker'"

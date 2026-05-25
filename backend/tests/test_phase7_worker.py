@@ -15,21 +15,17 @@ import asyncio
 import json
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import asyncpg  # noqa: F401 — used by admin_conn fixture
 import httpx
 import pytest
 import respx
 from uuid6 import UUID as UUID6
-from uuid6 import uuid7
 
 from app.core.config import get_settings
-from app.modules.pos.clover_client import CloverClient
 from app.modules.pos.worker import InboxWorker
-
 from tests.helpers.phase7 import (
-    enc,
     make_clover_order,
     make_line_item,
     seed_inbox_event,
@@ -88,13 +84,17 @@ async def test_claim_picks_up_pending(admin_conn):
 async def test_claim_reclaims_stale(admin_conn):
     seed = await seed_worker_prereqs(admin_conn)
 
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         UPDATE pos_event_inbox
         SET state = 'processing',
             claim_expires_at = $1,
             processing_started_at = now()
         WHERE inbox_id = $2
-    """, datetime.now(timezone.utc) - timedelta(minutes=10), seed["inbox_id"])
+    """,
+        datetime.now(UTC) - timedelta(minutes=10),
+        seed["inbox_id"],
+    )
 
     worker = InboxWorker()
     claimed = await worker.claim_batch(batch_size=10)
@@ -112,12 +112,16 @@ async def test_claim_reclaims_stale(admin_conn):
 async def test_claim_skips_future_retry(admin_conn):
     seed = await seed_worker_prereqs(admin_conn)
 
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         UPDATE pos_event_inbox
         SET state = 'pending',
             next_attempt_at = $1
         WHERE inbox_id = $2
-    """, datetime.now(timezone.utc) + timedelta(hours=1), seed["inbox_id"])
+    """,
+        datetime.now(UTC) + timedelta(hours=1),
+        seed["inbox_id"],
+    )
 
     worker = InboxWorker()
     claimed = await worker.claim_batch(batch_size=10)
@@ -203,9 +207,7 @@ async def test_non_completed_order_skipped(admin_conn):
         order_id=seed["vendor_event_id"],
         state="open",
     )
-    respx.get(url__regex=".*/orders/.*").mock(
-        return_value=httpx.Response(200, json=clover_order)
-    )
+    respx.get(url__regex=".*/orders/.*").mock(return_value=httpx.Response(200, json=clover_order))
 
     worker = InboxWorker()
     claimed = await worker.claim_batch(batch_size=1)
@@ -238,11 +240,15 @@ async def test_fetched_payload_skips_api(admin_conn):
         state="locked",
         total=9900,
     )
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         UPDATE pos_event_inbox
         SET fetched_payload = $1::jsonb, fetched_at = now()
         WHERE inbox_id = $2
-    """, json.dumps(pre_fetched), seed["inbox_id"])
+    """,
+        json.dumps(pre_fetched),
+        seed["inbox_id"],
+    )
 
     # No respx mock — any real HTTP call would fail with a connection error
     worker = InboxWorker()
@@ -278,7 +284,8 @@ async def test_replay_no_duplicate(admin_conn):
     await worker.process_event(claimed1[0])
 
     evt2 = await seed_inbox_event(
-        admin_conn, seed,
+        admin_conn,
+        seed,
         vendor_event_id=order_id,
         vendor_event_type="UPDATE",
         vendor_ts=int(time.time() * 1000) + 5000,
@@ -290,7 +297,8 @@ async def test_replay_no_duplicate(admin_conn):
 
     order_count = await admin_conn.fetchval(
         "SELECT COUNT(*) FROM orders WHERE tenant_id = $1 AND clover_order_id = $2",
-        seed["tenant_id"], order_id,
+        seed["tenant_id"],
+        order_id,
     )
     assert order_count == 1
 
@@ -310,13 +318,11 @@ async def test_missing_line_item_id_skipped(admin_conn):
         state="locked",
         line_items=[
             make_line_item(name="Good Item"),
-            {"name": "Bad Item", "price": 500, "unitQty": 1},   # no "id" key
-            make_line_item(item_id="", name="Empty ID"),          # empty string
+            {"name": "Bad Item", "price": 500, "unitQty": 1},  # no "id" key
+            make_line_item(item_id="", name="Empty ID"),  # empty string
         ],
     )
-    respx.get(url__regex=".*/orders/.*").mock(
-        return_value=httpx.Response(200, json=clover_order)
-    )
+    respx.get(url__regex=".*/orders/.*").mock(return_value=httpx.Response(200, json=clover_order))
 
     worker = InboxWorker()
     claimed = await worker.claim_batch(batch_size=1)
@@ -342,17 +348,15 @@ async def test_missing_line_item_id_skipped(admin_conn):
 async def test_network_error_marks_failed(admin_conn):
     seed = await seed_worker_prereqs(admin_conn)
 
-    respx.get(url__regex=".*/orders/.*").mock(
-        side_effect=httpx.ConnectError("Connection refused")
-    )
+    respx.get(url__regex=".*/orders/.*").mock(side_effect=httpx.ConnectError("Connection refused"))
 
     worker = InboxWorker()
     claimed = await worker.claim_batch(batch_size=1)
     await worker.process_event(claimed[0])
 
     row = await admin_conn.fetchrow(
-        "SELECT state, retry_count, last_error FROM pos_event_inbox "
-        "WHERE inbox_id = $1", seed["inbox_id"],
+        "SELECT state, retry_count, last_error FROM pos_event_inbox WHERE inbox_id = $1",
+        seed["inbox_id"],
     )
     assert row["state"] == "failed"
     assert row["retry_count"] == 1
@@ -369,9 +373,7 @@ async def test_network_error_marks_failed(admin_conn):
 async def test_timeout_marks_failed(admin_conn):
     seed = await seed_worker_prereqs(admin_conn)
 
-    respx.get(url__regex=".*/orders/.*").mock(
-        side_effect=httpx.ReadTimeout("Read timed out")
-    )
+    respx.get(url__regex=".*/orders/.*").mock(side_effect=httpx.ReadTimeout("Read timed out"))
 
     worker = InboxWorker()
     claimed = await worker.claim_batch(batch_size=1)
@@ -420,9 +422,7 @@ async def test_http_500_marks_failed(admin_conn):
 async def test_order_not_found_processed(admin_conn):
     seed = await seed_worker_prereqs(admin_conn)
 
-    respx.get(url__regex=".*/orders/.*").mock(
-        return_value=httpx.Response(404)
-    )
+    respx.get(url__regex=".*/orders/.*").mock(return_value=httpx.Response(404))
 
     worker = InboxWorker()
     claimed = await worker.claim_batch(batch_size=1)
@@ -477,14 +477,15 @@ async def test_rate_limited_marks_failed(admin_conn):
 async def test_five_retries_dead_letter(admin_conn):
     seed = await seed_worker_prereqs(admin_conn)
 
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         UPDATE pos_event_inbox SET retry_count = 4
         WHERE inbox_id = $1
-    """, seed["inbox_id"])
-
-    respx.get(url__regex=".*/orders/.*").mock(
-        return_value=httpx.Response(500, text="Server Error")
+    """,
+        seed["inbox_id"],
     )
+
+    respx.get(url__regex=".*/orders/.*").mock(return_value=httpx.Response(500, text="Server Error"))
 
     worker = InboxWorker()
     claimed = await worker.claim_batch(batch_size=1)
@@ -521,31 +522,32 @@ async def test_five_retries_dead_letter(admin_conn):
 async def test_exponential_backoff(admin_conn):
     seed = await seed_worker_prereqs(admin_conn)
 
-    respx.get(url__regex=".*/orders/.*").mock(
-        return_value=httpx.Response(500, text="Error")
-    )
+    respx.get(url__regex=".*/orders/.*").mock(return_value=httpx.Response(500, text="Error"))
 
     worker = InboxWorker()
 
     for expected_count in range(1, 5):
-        await admin_conn.execute("""
+        await admin_conn.execute(
+            """
             UPDATE pos_event_inbox
             SET state = 'pending', next_attempt_at = NULL
             WHERE inbox_id = $1
-        """, seed["inbox_id"])
+        """,
+            seed["inbox_id"],
+        )
 
         claimed = await worker.claim_batch(batch_size=1)
         if claimed:
             await worker.process_event(claimed[0])
 
         row = await admin_conn.fetchrow(
-            "SELECT retry_count, next_attempt_at FROM pos_event_inbox "
-            "WHERE inbox_id = $1", seed["inbox_id"],
+            "SELECT retry_count, next_attempt_at FROM pos_event_inbox WHERE inbox_id = $1",
+            seed["inbox_id"],
         )
         assert row["retry_count"] == expected_count
         if row["next_attempt_at"]:
             expected_minutes = 2 ** (expected_count - 1)
-            delta = row["next_attempt_at"] - datetime.now(timezone.utc)
+            delta = row["next_attempt_at"] - datetime.now(UTC)
             assert abs(delta.total_seconds() - expected_minutes * 60) < 30
 
 
@@ -564,9 +566,7 @@ async def test_payment_state_from_order_field(admin_conn):
         state="locked",
         payment_state="REFUNDED",
     )
-    respx.get(url__regex=".*/orders/.*").mock(
-        return_value=httpx.Response(200, json=clover_order)
-    )
+    respx.get(url__regex=".*/orders/.*").mock(return_value=httpx.Response(200, json=clover_order))
 
     worker = InboxWorker()
     claimed = await worker.claim_batch(batch_size=1)
@@ -600,9 +600,7 @@ async def test_payment_state_fallback(admin_conn):
             {"result": "REFUNDED"},
         ]
     }
-    respx.get(url__regex=".*/orders/.*").mock(
-        return_value=httpx.Response(200, json=clover_order)
-    )
+    respx.get(url__regex=".*/orders/.*").mock(return_value=httpx.Response(200, json=clover_order))
 
     worker = InboxWorker()
     claimed = await worker.claim_batch(batch_size=1)
@@ -626,14 +624,13 @@ async def test_payment_state_no_payments(admin_conn):
     seed = await seed_worker_prereqs(admin_conn)
 
     clover_order = make_clover_order(
-        order_id=seed["vendor_event_id"], state="locked",
+        order_id=seed["vendor_event_id"],
+        state="locked",
     )
     clover_order.pop("paymentState", None)
     clover_order.pop("payments", None)
 
-    respx.get(url__regex=".*/orders/.*").mock(
-        return_value=httpx.Response(200, json=clover_order)
-    )
+    respx.get(url__regex=".*/orders/.*").mock(return_value=httpx.Response(200, json=clover_order))
 
     worker = InboxWorker()
     claimed = await worker.claim_batch(batch_size=1)
@@ -657,20 +654,21 @@ async def test_robust_amount_parsing(admin_conn):
     seed = await seed_worker_prereqs(admin_conn)
 
     clover_order = make_clover_order(
-        order_id=seed["vendor_event_id"], state="locked",
+        order_id=seed["vendor_event_id"],
+        state="locked",
     )
     clover_order["total"] = "4200"
-    clover_order["lineItems"]["elements"] = [{
-        "id": f"li_{uuid.uuid4().hex[:8]}",
-        "name": "String Price",
-        "price": "1500",
-        "unitQty": "2",
-        "discountAmount": None,
-    }]
+    clover_order["lineItems"]["elements"] = [
+        {
+            "id": f"li_{uuid.uuid4().hex[:8]}",
+            "name": "String Price",
+            "price": "1500",
+            "unitQty": "2",
+            "discountAmount": None,
+        }
+    ]
 
-    respx.get(url__regex=".*/orders/.*").mock(
-        return_value=httpx.Response(200, json=clover_order)
-    )
+    respx.get(url__regex=".*/orders/.*").mock(return_value=httpx.Response(200, json=clover_order))
 
     worker = InboxWorker()
     claimed = await worker.claim_batch(batch_size=1)
@@ -705,7 +703,9 @@ async def test_post_lock_update_processed(admin_conn):
     order_id = seed["vendor_event_id"]
 
     clover_order_v1 = make_clover_order(
-        order_id=order_id, state="locked", payment_state="PAID",
+        order_id=order_id,
+        state="locked",
+        payment_state="PAID",
     )
     respx.get(url__regex=f".*/orders/{order_id}.*").mock(
         return_value=httpx.Response(200, json=clover_order_v1)
@@ -716,13 +716,16 @@ async def test_post_lock_update_processed(admin_conn):
     await worker.process_event(claimed1[0])
 
     evt2 = await seed_inbox_event(
-        admin_conn, seed,
+        admin_conn,
+        seed,
         vendor_event_id=order_id,
         vendor_ts=int(time.time() * 1000) + 10000,
     )
 
     clover_order_v2 = make_clover_order(
-        order_id=order_id, state="locked", payment_state="REFUNDED",
+        order_id=order_id,
+        state="locked",
+        payment_state="REFUNDED",
     )
     respx.get(url__regex=f".*/orders/{order_id}.*").mock(
         return_value=httpx.Response(200, json=clover_order_v2)
@@ -765,19 +768,26 @@ async def test_order_lifecycle_create_then_update(admin_conn):
     claimed1 = await worker.claim_batch(batch_size=1)
     await worker.process_event(claimed1[0])
 
-    assert 0 == await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM orders WHERE tenant_id = $1", seed["tenant_id"],
+    assert (
+        await admin_conn.fetchval(
+            "SELECT COUNT(*) FROM orders WHERE tenant_id = $1",
+            seed["tenant_id"],
+        )
+        == 0
     )
 
     evt2 = await seed_inbox_event(
-        admin_conn, seed,
+        admin_conn,
+        seed,
         vendor_event_id=order_id,
         vendor_event_type="UPDATE",
         vendor_ts=int(time.time() * 1000) + 5000,
     )
 
     clover_locked = make_clover_order(
-        order_id=order_id, state="locked", payment_state="PAID",
+        order_id=order_id,
+        state="locked",
+        payment_state="PAID",
         line_items=[make_line_item(name="Kebab", price=1200)],
     )
     respx.get(url__regex=f".*/orders/{order_id}.*").mock(
@@ -787,8 +797,12 @@ async def test_order_lifecycle_create_then_update(admin_conn):
     claimed2 = await worker.claim_batch(batch_size=1)
     await worker.process_event(claimed2[0])
 
-    assert 1 == await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM orders WHERE tenant_id = $1", seed["tenant_id"],
+    assert (
+        await admin_conn.fetchval(
+            "SELECT COUNT(*) FROM orders WHERE tenant_id = $1",
+            seed["tenant_id"],
+        )
+        == 1
     )
     name = await admin_conn.fetchval(
         "SELECT name_at_sale FROM sale_line_items WHERE tenant_id = $1",
@@ -807,9 +821,7 @@ async def test_order_lifecycle_create_then_update(admin_conn):
 async def test_token_expired_marks_failed(admin_conn):
     seed = await seed_worker_prereqs(admin_conn)
 
-    respx.get(url__regex=".*/orders/.*").mock(
-        return_value=httpx.Response(401)
-    )
+    respx.get(url__regex=".*/orders/.*").mock(return_value=httpx.Response(401))
 
     worker = InboxWorker()
     claimed = await worker.claim_batch(batch_size=1)
@@ -833,11 +845,10 @@ async def test_claim_expires_cleared(admin_conn):
     seed = await seed_worker_prereqs(admin_conn)
 
     clover_order = make_clover_order(
-        order_id=seed["vendor_event_id"], state="locked",
+        order_id=seed["vendor_event_id"],
+        state="locked",
     )
-    respx.get(url__regex=".*/orders/.*").mock(
-        return_value=httpx.Response(200, json=clover_order)
-    )
+    respx.get(url__regex=".*/orders/.*").mock(return_value=httpx.Response(200, json=clover_order))
 
     worker = InboxWorker()
     claimed = await worker.claim_batch(batch_size=1)
@@ -861,11 +872,10 @@ async def test_no_inventory_writes(admin_conn):
     seed = await seed_worker_prereqs(admin_conn)
 
     clover_order = make_clover_order(
-        order_id=seed["vendor_event_id"], state="locked",
+        order_id=seed["vendor_event_id"],
+        state="locked",
     )
-    respx.get(url__regex=".*/orders/.*").mock(
-        return_value=httpx.Response(200, json=clover_order)
-    )
+    respx.get(url__regex=".*/orders/.*").mock(return_value=httpx.Response(200, json=clover_order))
 
     before = await admin_conn.fetchval("SELECT COUNT(*) FROM inventory_movements")
 
@@ -888,11 +898,14 @@ async def test_unhandled_exception_caught(admin_conn):
 
     # Revoke the connection so the worker's tenant lookup returns None,
     # triggering the "No active Clover connection for tenant" path.
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         UPDATE tenant_pos_connections
         SET state = 'revoked', revoked_at = now()
         WHERE connection_id = $1
-    """, seed["connection_id"])
+    """,
+        seed["connection_id"],
+    )
 
     worker = InboxWorker()
     claimed = await worker.claim_batch(batch_size=1)
@@ -907,8 +920,7 @@ async def test_unhandled_exception_caught(admin_conn):
         seed["inbox_id"],
     )
     # No connection found → mark_failed called internally
-    assert state in ("failed", "processing"), \
-        f"Expected failed or processing, got {state}"
+    assert state in ("failed", "processing"), f"Expected failed or processing, got {state}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -922,11 +934,10 @@ async def test_uuidv7_pks(admin_conn):
     seed = await seed_worker_prereqs(admin_conn)
 
     clover_order = make_clover_order(
-        order_id=seed["vendor_event_id"], state="locked",
+        order_id=seed["vendor_event_id"],
+        state="locked",
     )
-    respx.get(url__regex=".*/orders/.*").mock(
-        return_value=httpx.Response(200, json=clover_order)
-    )
+    respx.get(url__regex=".*/orders/.*").mock(return_value=httpx.Response(200, json=clover_order))
 
     worker = InboxWorker()
     claimed = await worker.claim_batch(batch_size=1)
@@ -958,7 +969,9 @@ async def test_full_worker_lifecycle(admin_conn):
     order_id = seed["vendor_event_id"]
 
     clover_order = make_clover_order(
-        order_id=order_id, state="locked", total=5500,
+        order_id=order_id,
+        state="locked",
+        total=5500,
         payment_state="PAID",
         line_items=[
             make_line_item(name="Latte", price=550, qty=2),
@@ -996,24 +1009,31 @@ async def test_full_worker_lifecycle(admin_conn):
 
     # Replay: no duplicate order
     evt_replay = await seed_inbox_event(
-        admin_conn, seed,
+        admin_conn,
+        seed,
         vendor_event_id=order_id,
         vendor_ts=int(time.time() * 1000) + 10000,
     )
     claimed_replay = await worker.claim_batch(batch_size=1)
     if claimed_replay:
         await worker.process_event(claimed_replay[0])
-    assert 1 == await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM orders WHERE tenant_id = $1", seed["tenant_id"],
+    assert (
+        await admin_conn.fetchval(
+            "SELECT COUNT(*) FROM orders WHERE tenant_id = $1",
+            seed["tenant_id"],
+        )
+        == 1
     )
 
     # Open order: no new order created
     open_evt = await seed_inbox_event(
-        admin_conn, seed,
+        admin_conn,
+        seed,
         vendor_event_id=f"open_{uuid.uuid4().hex[:8]}",
     )
     open_order = make_clover_order(
-        order_id=open_evt["vendor_event_id"], state="open",
+        order_id=open_evt["vendor_event_id"],
+        state="open",
     )
     respx.get(url__regex=f".*/orders/{open_evt['vendor_event_id']}.*").mock(
         return_value=httpx.Response(200, json=open_order)
@@ -1021,13 +1041,18 @@ async def test_full_worker_lifecycle(admin_conn):
     claimed_open = await worker.claim_batch(batch_size=1)
     if claimed_open:
         await worker.process_event(claimed_open[0])
-    assert 1 == await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM orders WHERE tenant_id = $1", seed["tenant_id"],
+    assert (
+        await admin_conn.fetchval(
+            "SELECT COUNT(*) FROM orders WHERE tenant_id = $1",
+            seed["tenant_id"],
+        )
+        == 1
     )
 
     # Failure: retry_count increments
     fail_evt = await seed_inbox_event(
-        admin_conn, seed,
+        admin_conn,
+        seed,
         vendor_event_id=f"fail_{uuid.uuid4().hex[:8]}",
     )
     respx.get(url__regex=f".*/orders/{fail_evt['vendor_event_id']}.*").mock(
@@ -1067,13 +1092,13 @@ async def test_concurrent_claim_no_double_processing(admin_conn):
             all_claimed_ids.add(str(evt.inbox_id))
 
     assert seed["inbox_id"] in all_claimed_ids
-    assert len(all_claimed_ids) == 1, \
-        f"Expected 1 claimed event, got {len(all_claimed_ids)}"
+    assert len(all_claimed_ids) == 1, f"Expected 1 claimed event, got {len(all_claimed_ids)}"
 
     a_ids = {str(e.inbox_id) for e in claimed_a}
     b_ids = {str(e.inbox_id) for e in claimed_b}
-    assert not (seed["inbox_id"] in a_ids and seed["inbox_id"] in b_ids), \
+    assert not (seed["inbox_id"] in a_ids and seed["inbox_id"] in b_ids), (
         "Both workers claimed the same event — SKIP LOCKED broken"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1088,7 +1113,9 @@ async def test_stale_event_cannot_revert_payment_state(admin_conn):
     order_id = seed["vendor_event_id"]
 
     refunded_order = make_clover_order(
-        order_id=order_id, state="locked", payment_state="REFUNDED",
+        order_id=order_id,
+        state="locked",
+        payment_state="REFUNDED",
     )
     respx.get(url__regex=f".*/orders/{order_id}.*").mock(
         return_value=httpx.Response(200, json=refunded_order)
@@ -1105,13 +1132,16 @@ async def test_stale_event_cannot_revert_payment_state(admin_conn):
     assert ps_after_first == "REFUNDED"
 
     evt2 = await seed_inbox_event(
-        admin_conn, seed,
+        admin_conn,
+        seed,
         vendor_event_id=order_id,
         vendor_ts=int(time.time() * 1000) + 20000,
     )
 
     paid_order = make_clover_order(
-        order_id=order_id, state="locked", payment_state="PAID",
+        order_id=order_id,
+        state="locked",
+        payment_state="PAID",
     )
     respx.get(url__regex=f".*/orders/{order_id}.*").mock(
         return_value=httpx.Response(200, json=paid_order)
@@ -1146,7 +1176,8 @@ async def test_line_item_count_exact_after_replay(admin_conn):
     li_b = make_line_item(name="Hummus", price=600, qty=1)
 
     clover_order = make_clover_order(
-        order_id=order_id, state="locked",
+        order_id=order_id,
+        state="locked",
         line_items=[li_a, li_b],
     )
     respx.get(url__regex=f".*/orders/{order_id}.*").mock(
@@ -1159,7 +1190,8 @@ async def test_line_item_count_exact_after_replay(admin_conn):
     await worker.process_event(claimed1[0])
 
     evt2 = await seed_inbox_event(
-        admin_conn, seed,
+        admin_conn,
+        seed,
         vendor_event_id=order_id,
         vendor_ts=int(time.time() * 1000) + 5000,
     )
@@ -1174,8 +1206,7 @@ async def test_line_item_count_exact_after_replay(admin_conn):
     assert count == 2, f"Expected 2 line items after replay, got {count}"
 
     names = await admin_conn.fetch(
-        "SELECT name_at_sale FROM sale_line_items "
-        "WHERE tenant_id = $1 ORDER BY name_at_sale",
+        "SELECT name_at_sale FROM sale_line_items WHERE tenant_id = $1 ORDER BY name_at_sale",
         seed["tenant_id"],
     )
     assert [r["name_at_sale"] for r in names] == ["Hummus", "Shawarma"]
@@ -1195,20 +1226,32 @@ async def test_cross_tenant_same_order_id(admin_conn):
     # Unique per run to avoid cross-test-run accumulation in orders table.
     shared_order_id = f"ORDER_SHARED_{uuid.uuid4().hex[:8]}"
 
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         UPDATE pos_event_inbox SET vendor_event_id = $1
         WHERE inbox_id = $2
-    """, shared_order_id, seed_a["inbox_id"])
-    await admin_conn.execute("""
+    """,
+        shared_order_id,
+        seed_a["inbox_id"],
+    )
+    await admin_conn.execute(
+        """
         UPDATE pos_event_inbox SET vendor_event_id = $1
         WHERE inbox_id = $2
-    """, shared_order_id, seed_b["inbox_id"])
+    """,
+        shared_order_id,
+        seed_b["inbox_id"],
+    )
 
     order_a = make_clover_order(
-        order_id=shared_order_id, state="locked", total=1000,
+        order_id=shared_order_id,
+        state="locked",
+        total=1000,
     )
     order_b = make_clover_order(
-        order_id=shared_order_id, state="locked", total=2000,
+        order_id=shared_order_id,
+        state="locked",
+        total=2000,
     )
 
     respx.get(url__regex=f".*/orders/{shared_order_id}.*").mock(
@@ -1229,14 +1272,14 @@ async def test_cross_tenant_same_order_id(admin_conn):
         await worker.process_event(claimed_b[0])
 
     total_a = await admin_conn.fetchval(
-        "SELECT total_amount_cents FROM orders "
-        "WHERE tenant_id = $1 AND clover_order_id = $2",
-        seed_a["tenant_id"], shared_order_id,
+        "SELECT total_amount_cents FROM orders WHERE tenant_id = $1 AND clover_order_id = $2",
+        seed_a["tenant_id"],
+        shared_order_id,
     )
     total_b = await admin_conn.fetchval(
-        "SELECT total_amount_cents FROM orders "
-        "WHERE tenant_id = $1 AND clover_order_id = $2",
-        seed_b["tenant_id"], shared_order_id,
+        "SELECT total_amount_cents FROM orders WHERE tenant_id = $1 AND clover_order_id = $2",
+        seed_b["tenant_id"],
+        shared_order_id,
     )
 
     assert total_a == 1000
@@ -1264,7 +1307,8 @@ async def test_transaction_atomicity_rollback(admin_conn):
     li_b = make_line_item(name="Atomicity B", price=2000)
 
     clover_order = make_clover_order(
-        order_id=order_id, state="locked",
+        order_id=order_id,
+        state="locked",
         line_items=[li_a, li_b],
     )
     respx.get(url__regex=f".*/orders/{order_id}.*").mock(
@@ -1291,10 +1335,12 @@ async def test_transaction_atomicity_rollback(admin_conn):
 
     # Transaction rolled back: no order, no line items
     order_count = await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM orders WHERE tenant_id = $1", seed["tenant_id"],
+        "SELECT COUNT(*) FROM orders WHERE tenant_id = $1",
+        seed["tenant_id"],
     )
     item_count = await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM sale_line_items WHERE tenant_id = $1", seed["tenant_id"],
+        "SELECT COUNT(*) FROM sale_line_items WHERE tenant_id = $1",
+        seed["tenant_id"],
     )
     assert order_count == 0, f"Partial order survived rollback: {order_count}"
     assert item_count == 0, f"Partial line items survived rollback: {item_count}"
@@ -1308,24 +1354,39 @@ async def test_transaction_atomicity_rollback(admin_conn):
     # Clean reprocess after restoring original method
     worker._insert_line_item = original_insert
 
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         UPDATE pos_event_inbox
         SET state = 'pending', next_attempt_at = NULL, retry_count = 0
         WHERE inbox_id = $1
-    """, seed["inbox_id"])
+    """,
+        seed["inbox_id"],
+    )
 
     claimed2 = await worker.claim_batch(batch_size=1)
     assert len(claimed2) == 1
     await worker.process_event(claimed2[0])
 
-    assert 1 == await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM orders WHERE tenant_id = $1", seed["tenant_id"],
+    assert (
+        await admin_conn.fetchval(
+            "SELECT COUNT(*) FROM orders WHERE tenant_id = $1",
+            seed["tenant_id"],
+        )
+        == 1
     )
-    assert 2 == await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM sale_line_items WHERE tenant_id = $1", seed["tenant_id"],
+    assert (
+        await admin_conn.fetchval(
+            "SELECT COUNT(*) FROM sale_line_items WHERE tenant_id = $1",
+            seed["tenant_id"],
+        )
+        == 2
     )
-    assert "processed" == await admin_conn.fetchval(
-        "SELECT state FROM pos_event_inbox WHERE inbox_id = $1", seed["inbox_id"],
+    assert (
+        await admin_conn.fetchval(
+            "SELECT state FROM pos_event_inbox WHERE inbox_id = $1",
+            seed["inbox_id"],
+        )
+        == "processed"
     )
 
 
@@ -1342,8 +1403,11 @@ async def test_out_of_order_update_before_create(admin_conn):
 
     li = make_line_item(name="Kebab Plate", price=1800, qty=1)
     locked_order = make_clover_order(
-        order_id=order_id, state="locked", total=1800,
-        payment_state="PAID", line_items=[li],
+        order_id=order_id,
+        state="locked",
+        total=1800,
+        payment_state="PAID",
+        line_items=[li],
     )
 
     respx.get(url__regex=f".*/orders/{order_id}.*").mock(
@@ -1353,12 +1417,16 @@ async def test_out_of_order_update_before_create(admin_conn):
     worker = InboxWorker()
 
     # Step 1: Process UPDATE first (seed event is the UPDATE)
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         UPDATE pos_event_inbox
         SET vendor_event_type = 'UPDATE',
             vendor_ts = $1
         WHERE inbox_id = $2
-    """, int(time.time() * 1000) + 10000, seed["inbox_id"])
+    """,
+        int(time.time() * 1000) + 10000,
+        seed["inbox_id"],
+    )
 
     claimed1 = await worker.claim_batch(batch_size=1)
     assert len(claimed1) == 1
@@ -1371,13 +1439,18 @@ async def test_out_of_order_update_before_create(admin_conn):
     assert order is not None
     assert order["payment_state"] == "PAID"
     assert order["total_amount_cents"] == 1800
-    assert 1 == await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM sale_line_items WHERE tenant_id = $1", seed["tenant_id"],
+    assert (
+        await admin_conn.fetchval(
+            "SELECT COUNT(*) FROM sale_line_items WHERE tenant_id = $1",
+            seed["tenant_id"],
+        )
+        == 1
     )
 
     # Step 2: Stale CREATE arrives (Clover API still returns current locked state)
     create_evt = await seed_inbox_event(
-        admin_conn, seed,
+        admin_conn,
+        seed,
         vendor_event_id=order_id,
         vendor_event_type="CREATE",
         vendor_ts=int(time.time() * 1000),
@@ -1387,22 +1460,29 @@ async def test_out_of_order_update_before_create(admin_conn):
     assert len(claimed2) == 1
     await worker.process_event(claimed2[0])
 
-    assert 1 == await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM orders WHERE tenant_id = $1", seed["tenant_id"],
+    assert (
+        await admin_conn.fetchval(
+            "SELECT COUNT(*) FROM orders WHERE tenant_id = $1",
+            seed["tenant_id"],
+        )
+        == 1
     ), "Duplicate order from stale CREATE"
-    assert 1 == await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM sale_line_items WHERE tenant_id = $1", seed["tenant_id"],
+    assert (
+        await admin_conn.fetchval(
+            "SELECT COUNT(*) FROM sale_line_items WHERE tenant_id = $1",
+            seed["tenant_id"],
+        )
+        == 1
     ), "Line items duplicated by stale CREATE"
 
     final_ps = await admin_conn.fetchval(
-        "SELECT payment_state FROM orders WHERE tenant_id = $1", seed["tenant_id"],
+        "SELECT payment_state FROM orders WHERE tenant_id = $1",
+        seed["tenant_id"],
     )
-    assert final_ps == "PAID", \
-        f"Stale CREATE reverted payment_state from PAID → {final_ps}"
+    assert final_ps == "PAID", f"Stale CREATE reverted payment_state from PAID → {final_ps}"
 
     processed_count = await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM pos_event_inbox "
-        "WHERE tenant_id = $1 AND state = 'processed'",
+        "SELECT COUNT(*) FROM pos_event_inbox WHERE tenant_id = $1 AND state = 'processed'",
         seed["tenant_id"],
     )
     assert processed_count == 2

@@ -184,9 +184,7 @@ async def service_conn() -> AsyncIterator[Any]:
     It has SELECT + UPDATE on tenant_pos_connections and pos_event_inbox, and
     USING(true) RLS on those tables — no SET LOCAL app.tenant_id required.
     """
-    svc_url = DB_URL_SYNC.replace(
-        "reorderos:reorderos@", "service_worker:service_worker@"
-    )
+    svc_url = DB_URL_SYNC.replace("reorderos:reorderos@", "service_worker:service_worker@")
     conn = await asyncpg.connect(svc_url)
     try:
         yield conn

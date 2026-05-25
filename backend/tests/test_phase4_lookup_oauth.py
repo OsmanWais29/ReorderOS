@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from uuid6 import uuid7
@@ -48,19 +48,29 @@ async def test_lookup_finds_active_merchant(admin_conn, service_conn):
     mid = f"merch_{uuid.uuid4().hex[:8]}"
     await admin_conn.execute(
         "INSERT INTO tenants (id, name, slug) VALUES ($1, $2, $3)",
-        tid, "LookupActive", f"lookup-active-{tid[:8]}",
+        tid,
+        "LookupActive",
+        f"lookup-active-{tid[:8]}",
     )
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO tenant_pos_connections (
             connection_id, tenant_id, vendor, merchant_id, environment,
             access_token_enc, access_token_expires_at,
             refresh_token_enc, refresh_token_expires_at, state
         ) VALUES ($1,$2,'clover',$3,'sandbox',
                   $4, now()+interval'1h', $5, now()+interval'8h', 'active')
-    """, str(uuid7()), tid, mid, enc.encrypt("tok"), enc.encrypt("ref"))
+    """,
+        str(uuid7()),
+        tid,
+        mid,
+        enc.encrypt("tok"),
+        enc.encrypt("ref"),
+    )
 
     result = await service_conn.fetchval(
-        "SELECT lookup_tenant_by_merchant('clover', $1)", mid,
+        "SELECT lookup_tenant_by_merchant('clover', $1)",
+        mid,
     )
     assert str(result) == tid
 
@@ -85,19 +95,29 @@ async def test_lookup_ignores_revoked(admin_conn, service_conn):
     mid = f"merch_rev_{uuid.uuid4().hex[:8]}"
     await admin_conn.execute(
         "INSERT INTO tenants (id, name, slug) VALUES ($1, $2, $3)",
-        tid, "LookupRevoked", f"lookup-revoked-{tid[:8]}",
+        tid,
+        "LookupRevoked",
+        f"lookup-revoked-{tid[:8]}",
     )
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO tenant_pos_connections (
             connection_id, tenant_id, vendor, merchant_id, environment,
             access_token_enc, access_token_expires_at,
             refresh_token_enc, refresh_token_expires_at, state
         ) VALUES ($1,$2,'clover',$3,'sandbox',
                   $4, now()+interval'1h', $5, now()+interval'8h', 'revoked')
-    """, str(uuid7()), tid, mid, enc.encrypt("tok"), enc.encrypt("ref"))
+    """,
+        str(uuid7()),
+        tid,
+        mid,
+        enc.encrypt("tok"),
+        enc.encrypt("ref"),
+    )
 
     result = await service_conn.fetchval(
-        "SELECT lookup_tenant_by_merchant('clover', $1)", mid,
+        "SELECT lookup_tenant_by_merchant('clover', $1)",
+        mid,
     )
     assert result is None
 
@@ -116,19 +136,29 @@ async def test_lookup_finds_error_state(admin_conn, service_conn):
     mid = f"merch_err_{uuid.uuid4().hex[:8]}"
     await admin_conn.execute(
         "INSERT INTO tenants (id, name, slug) VALUES ($1, $2, $3)",
-        tid, "LookupError", f"lookup-error-{tid[:8]}",
+        tid,
+        "LookupError",
+        f"lookup-error-{tid[:8]}",
     )
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO tenant_pos_connections (
             connection_id, tenant_id, vendor, merchant_id, environment,
             access_token_enc, access_token_expires_at,
             refresh_token_enc, refresh_token_expires_at, state
         ) VALUES ($1,$2,'clover',$3,'sandbox',
                   $4, now()+interval'1h', $5, now()+interval'8h', 'error')
-    """, str(uuid7()), tid, mid, enc.encrypt("tok"), enc.encrypt("ref"))
+    """,
+        str(uuid7()),
+        tid,
+        mid,
+        enc.encrypt("tok"),
+        enc.encrypt("ref"),
+    )
 
     result = await service_conn.fetchval(
-        "SELECT lookup_tenant_by_merchant('clover', $1)", mid,
+        "SELECT lookup_tenant_by_merchant('clover', $1)",
+        mid,
     )
     assert str(result) == tid
 
@@ -188,19 +218,29 @@ async def test_app_user_can_call_lookup(admin_conn, app_conn):
     mid = f"merch_app_{uuid.uuid4().hex[:8]}"
     await admin_conn.execute(
         "INSERT INTO tenants (id, name, slug) VALUES ($1, $2, $3)",
-        tid, "LookupApp", f"lookup-app-{tid[:8]}",
+        tid,
+        "LookupApp",
+        f"lookup-app-{tid[:8]}",
     )
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO tenant_pos_connections (
             connection_id, tenant_id, vendor, merchant_id, environment,
             access_token_enc, access_token_expires_at,
             refresh_token_enc, refresh_token_expires_at, state
         ) VALUES ($1,$2,'clover',$3,'sandbox',
                   $4, now()+interval'1h', $5, now()+interval'8h', 'active')
-    """, str(uuid7()), tid, mid, enc.encrypt("tok"), enc.encrypt("ref"))
+    """,
+        str(uuid7()),
+        tid,
+        mid,
+        enc.encrypt("tok"),
+        enc.encrypt("ref"),
+    )
 
     result = await app_conn.fetchval(
-        "SELECT lookup_tenant_by_merchant('clover', $1)", mid,
+        "SELECT lookup_tenant_by_merchant('clover', $1)",
+        mid,
     )
     assert str(result) == tid
 
@@ -240,14 +280,21 @@ async def test_app_user_oauth_crud(admin_conn, app_conn):
     row = make_oauth_state_row()
 
     # INSERT
-    await app_conn.execute("""
+    await app_conn.execute(
+        """
         INSERT INTO oauth_states (state, tenant_id, user_id, expires_at)
         VALUES ($1, $2, $3, $4)
-    """, row["state"], row["tenant_id"], row["user_id"], row["expires_at"])
+    """,
+        row["state"],
+        row["tenant_id"],
+        row["user_id"],
+        row["expires_at"],
+    )
 
     # SELECT
     found = await app_conn.fetchval(
-        "SELECT tenant_id FROM oauth_states WHERE state = $1", row["state"],
+        "SELECT tenant_id FROM oauth_states WHERE state = $1",
+        row["state"],
     )
     assert str(found) == row["tenant_id"]
 
@@ -257,15 +304,16 @@ async def test_app_user_oauth_crud(admin_conn, app_conn):
             "UPDATE oauth_states SET expires_at = now() WHERE state = $1",
             row["state"],
         )
-    assert "permission denied" in str(exc.value).lower() or \
-           "insufficient" in str(exc.value).lower()
+    assert "permission denied" in str(exc.value).lower() or "insufficient" in str(exc.value).lower()
 
     # DELETE (consume the state)
     await app_conn.execute(
-        "DELETE FROM oauth_states WHERE state = $1", row["state"],
+        "DELETE FROM oauth_states WHERE state = $1",
+        row["state"],
     )
     count = await app_conn.fetchval(
-        "SELECT count(*) FROM oauth_states WHERE state = $1", row["state"],
+        "SELECT count(*) FROM oauth_states WHERE state = $1",
+        row["state"],
     )
     assert count == 0
 
@@ -279,14 +327,21 @@ async def test_service_worker_oauth_crud(admin_conn, service_conn):
     row = make_oauth_state_row()
 
     # INSERT
-    await service_conn.execute("""
+    await service_conn.execute(
+        """
         INSERT INTO oauth_states (state, tenant_id, user_id, expires_at)
         VALUES ($1, $2, $3, $4)
-    """, row["state"], row["tenant_id"], row["user_id"], row["expires_at"])
+    """,
+        row["state"],
+        row["tenant_id"],
+        row["user_id"],
+        row["expires_at"],
+    )
 
     # SELECT
     found = await service_conn.fetchval(
-        "SELECT tenant_id FROM oauth_states WHERE state = $1", row["state"],
+        "SELECT tenant_id FROM oauth_states WHERE state = $1",
+        row["state"],
     )
     assert str(found) == row["tenant_id"]
 
@@ -296,12 +351,12 @@ async def test_service_worker_oauth_crud(admin_conn, service_conn):
             "UPDATE oauth_states SET expires_at = now() WHERE state = $1",
             row["state"],
         )
-    assert "permission denied" in str(exc.value).lower() or \
-           "insufficient" in str(exc.value).lower()
+    assert "permission denied" in str(exc.value).lower() or "insufficient" in str(exc.value).lower()
 
     # DELETE
     await service_conn.execute(
-        "DELETE FROM oauth_states WHERE state = $1", row["state"],
+        "DELETE FROM oauth_states WHERE state = $1",
+        row["state"],
     )
 
 
@@ -311,18 +366,29 @@ async def test_service_worker_oauth_crud(admin_conn, service_conn):
 @pytest.mark.asyncio
 async def test_oauth_state_pk_uniqueness(admin_conn, app_conn):
     row = make_oauth_state_row()
-    await app_conn.execute("""
+    await app_conn.execute(
+        """
         INSERT INTO oauth_states (state, tenant_id, user_id, expires_at)
         VALUES ($1, $2, $3, $4)
-    """, row["state"], row["tenant_id"], row["user_id"], row["expires_at"])
+    """,
+        row["state"],
+        row["tenant_id"],
+        row["user_id"],
+        row["expires_at"],
+    )
 
     with pytest.raises(Exception) as exc:
-        await app_conn.execute("""
+        await app_conn.execute(
+            """
             INSERT INTO oauth_states (state, tenant_id, user_id, expires_at)
             VALUES ($1, $2, $3, $4)
-        """, row["state"], str(uuid.uuid4()), str(uuid.uuid4()), row["expires_at"])
-    assert "unique" in str(exc.value).lower() or \
-           "duplicate" in str(exc.value).lower()
+        """,
+            row["state"],
+            str(uuid.uuid4()),
+            str(uuid.uuid4()),
+            row["expires_at"],
+        )
+    assert "unique" in str(exc.value).lower() or "duplicate" in str(exc.value).lower()
 
 
 # ── Test 15: NOT NULL Constraints on oauth_states ─────────────────────────────
@@ -332,30 +398,45 @@ async def test_oauth_state_pk_uniqueness(admin_conn, app_conn):
 async def test_oauth_state_not_null_expires_at(app_conn):
     row = make_oauth_state_row()
     with pytest.raises(Exception):
-        await app_conn.execute("""
+        await app_conn.execute(
+            """
             INSERT INTO oauth_states (state, tenant_id, user_id, expires_at)
             VALUES ($1, $2, $3, NULL)
-        """, row["state"], row["tenant_id"], row["user_id"])
+        """,
+            row["state"],
+            row["tenant_id"],
+            row["user_id"],
+        )
 
 
 @pytest.mark.asyncio
 async def test_oauth_state_not_null_tenant_id(app_conn):
     row = make_oauth_state_row()
     with pytest.raises(Exception):
-        await app_conn.execute("""
+        await app_conn.execute(
+            """
             INSERT INTO oauth_states (state, tenant_id, user_id, expires_at)
             VALUES ($1, NULL, $2, $3)
-        """, row["state"], row["user_id"], row["expires_at"])
+        """,
+            row["state"],
+            row["user_id"],
+            row["expires_at"],
+        )
 
 
 @pytest.mark.asyncio
 async def test_oauth_state_not_null_user_id(app_conn):
     row = make_oauth_state_row()
     with pytest.raises(Exception):
-        await app_conn.execute("""
+        await app_conn.execute(
+            """
             INSERT INTO oauth_states (state, tenant_id, user_id, expires_at)
             VALUES ($1, $2, NULL, $3)
-        """, row["state"], row["tenant_id"], row["expires_at"])
+        """,
+            row["state"],
+            row["tenant_id"],
+            row["expires_at"],
+        )
 
 
 # ── Test 16: service_worker Cannot Access inventory_movements ─────────────────
@@ -372,8 +453,7 @@ async def test_service_worker_no_inventory_access(service_conn):
         await service_conn.execute(
             "SELECT 1 FROM inventory_movements LIMIT 1",
         )
-    assert "permission denied" in str(exc.value).lower() or \
-           "insufficient" in str(exc.value).lower()
+    assert "permission denied" in str(exc.value).lower() or "insufficient" in str(exc.value).lower()
 
 
 # ── Test 17: Two Connection Pools Work Simultaneously ────────────────────────
@@ -404,20 +484,18 @@ async def test_revoked_execute_blocks_call(admin_conn, service_conn):
     then restore. Validates enforcement, not just the catalog row.
     """
     await admin_conn.execute(
-        "REVOKE EXECUTE ON FUNCTION lookup_tenant_by_merchant(text, text) "
-        "FROM service_worker"
+        "REVOKE EXECUTE ON FUNCTION lookup_tenant_by_merchant(text, text) FROM service_worker"
     )
     try:
         with pytest.raises(Exception) as exc:
-            await service_conn.fetchval(
-                "SELECT lookup_tenant_by_merchant('clover', 'x')"
-            )
-        assert "permission denied" in str(exc.value).lower() or \
-               "insufficient" in str(exc.value).lower()
+            await service_conn.fetchval("SELECT lookup_tenant_by_merchant('clover', 'x')")
+        assert (
+            "permission denied" in str(exc.value).lower()
+            or "insufficient" in str(exc.value).lower()
+        )
     finally:
         await admin_conn.execute(
-            "GRANT EXECUTE ON FUNCTION lookup_tenant_by_merchant(text, text) "
-            "TO service_worker"
+            "GRANT EXECUTE ON FUNCTION lookup_tenant_by_merchant(text, text) TO service_worker"
         )
 
 
@@ -435,26 +513,38 @@ async def test_full_phase4_lifecycle(admin_conn, app_conn, service_conn):
     uid = str(uuid.uuid4())
     await admin_conn.execute(
         "INSERT INTO tenants (id, name, slug) VALUES ($1, $2, $3)",
-        tid, "Phase4Life", f"phase4-life-{tid[:8]}",
+        tid,
+        "Phase4Life",
+        f"phase4-life-{tid[:8]}",
     )
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO tenant_pos_connections (
             connection_id, tenant_id, vendor, merchant_id, environment,
             access_token_enc, access_token_expires_at,
             refresh_token_enc, refresh_token_expires_at, state
         ) VALUES ($1,$2,'clover',$3,'sandbox',
                   $4, now()+interval'1h', $5, now()+interval'8h', 'active')
-    """, str(uuid7()), tid, mid,
-         enc.encrypt("real_access_token"),
-         enc.encrypt("real_refresh_token"))
+    """,
+        str(uuid7()),
+        tid,
+        mid,
+        enc.encrypt("real_access_token"),
+        enc.encrypt("real_refresh_token"),
+    )
 
     # 2. OAUTH INITIATION (app_user creates state)
     state_token = str(uuid.uuid4())
-    await app_conn.execute("""
+    await app_conn.execute(
+        """
         INSERT INTO oauth_states (state, tenant_id, user_id, expires_at)
         VALUES ($1, $2, $3, $4)
-    """, state_token, tid, uid,
-         datetime.now(timezone.utc) + timedelta(minutes=10))
+    """,
+        state_token,
+        tid,
+        uid,
+        datetime.now(UTC) + timedelta(minutes=10),
+    )
 
     # 3. OAUTH CALLBACK (service_worker consumes state)
     stored = await service_conn.fetchrow(
@@ -464,43 +554,54 @@ async def test_full_phase4_lifecycle(admin_conn, app_conn, service_conn):
     assert str(stored["tenant_id"]) == tid
     assert str(stored["user_id"]) == uid
     await service_conn.execute(
-        "DELETE FROM oauth_states WHERE state = $1", state_token,
+        "DELETE FROM oauth_states WHERE state = $1",
+        state_token,
     )
     count = await service_conn.fetchval(
-        "SELECT count(*) FROM oauth_states WHERE state = $1", state_token,
+        "SELECT count(*) FROM oauth_states WHERE state = $1",
+        state_token,
     )
     assert count == 0
 
     # 4. WEBHOOK ARRIVES — resolve merchant → tenant
     resolved = await service_conn.fetchval(
-        "SELECT lookup_tenant_by_merchant('clover', $1)", mid,
+        "SELECT lookup_tenant_by_merchant('clover', $1)",
+        mid,
     )
     assert str(resolved) == tid
 
     # 5. INBOX EVENT (service_worker, USING(true) on inbox)
     inbox_id = str(uuid7())
-    await service_conn.execute("""
+    await service_conn.execute(
+        """
         INSERT INTO pos_event_inbox (
             inbox_id, tenant_id, vendor, vendor_event_id,
             vendor_object_type, vendor_event_type, vendor_ts,
             raw_payload, signature_verified, source
         ) VALUES ($1,$2,'clover',$3,'O','CREATE',$4,'{}',true,'webhook')
-    """, inbox_id, str(resolved),
-         f"order_{uuid.uuid4().hex[:8]}", int(time.time() * 1000))
+    """,
+        inbox_id,
+        str(resolved),
+        f"order_{uuid.uuid4().hex[:8]}",
+        int(time.time() * 1000),
+    )
 
     # 6. ORDER CREATION (service_worker with SET LOCAL)
     order_id = str(uuid7())
     async with service_conn.transaction():
+        await service_conn.execute(f"SET LOCAL app.tenant_id = '{resolved}'")
         await service_conn.execute(
-            f"SET LOCAL app.tenant_id = '{resolved}'"
-        )
-        await service_conn.execute("""
+            """
             INSERT INTO orders (
                 id, tenant_id, pos_event_inbox_id, clover_order_id,
                 total_amount_cents, state, payment_state, processed_at
             ) VALUES ($1,$2,$3,$4,4200,'locked','PAID',now())
-        """, order_id, str(resolved), inbox_id,
-             f"CO-{uuid.uuid4().hex[:8]}")
+        """,
+            order_id,
+            str(resolved),
+            inbox_id,
+            f"CO-{uuid.uuid4().hex[:8]}",
+        )
 
     # 7. VERIFY
     order = await admin_conn.fetchrow(
@@ -514,6 +615,7 @@ async def test_full_phase4_lifecycle(admin_conn, app_conn, service_conn):
     # Verify encrypted tokens survive round-trip
     stored_tok = await admin_conn.fetchval(
         "SELECT access_token_enc FROM tenant_pos_connections "
-        "WHERE vendor = 'clover' AND merchant_id = $1", mid,
+        "WHERE vendor = 'clover' AND merchant_id = $1",
+        mid,
     )
     assert enc.decrypt(stored_tok) == "real_access_token"

@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from uuid6 import uuid7
 
 from app.core.encryption import TokenEncryption
 
-FUTURE_1H = datetime.now(timezone.utc) + timedelta(hours=1)
-FUTURE_8H = datetime.now(timezone.utc) + timedelta(hours=8)
+FUTURE_1H = datetime.now(UTC) + timedelta(hours=1)
+FUTURE_8H = datetime.now(UTC) + timedelta(hours=8)
 
 enc = TokenEncryption()
 
@@ -43,7 +43,8 @@ def make_connection_row(overrides: dict | None = None) -> dict:
 
 
 async def insert_connection(conn: Any, row: dict) -> None:
-    await conn.execute("""
+    await conn.execute(
+        """
         INSERT INTO tenant_pos_connections (
             connection_id, tenant_id, vendor, merchant_id, environment,
             access_token_enc, access_token_expires_at,
@@ -51,11 +52,18 @@ async def insert_connection(conn: Any, row: dict) -> None:
             state, state_reason, refresh_failure_count
         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
     """,
-        row["connection_id"], row["tenant_id"], row["vendor"],
-        row["merchant_id"], row["environment"],
-        row["access_token_enc"], row["access_token_expires_at"],
-        row["refresh_token_enc"], row["refresh_token_expires_at"],
-        row["state"], row.get("state_reason"), row.get("refresh_failure_count", 0),
+        row["connection_id"],
+        row["tenant_id"],
+        row["vendor"],
+        row["merchant_id"],
+        row["environment"],
+        row["access_token_enc"],
+        row["access_token_expires_at"],
+        row["refresh_token_enc"],
+        row["refresh_token_expires_at"],
+        row["state"],
+        row.get("state_reason"),
+        row.get("refresh_failure_count", 0),
     )
 
 
@@ -63,5 +71,7 @@ async def seed_tenant(conn: Any, tenant_id: str, name: str, slug: str) -> None:
     """Insert a tenant with explicit id — needed since tenant_id is a FK."""
     await conn.execute(
         "INSERT INTO tenants (id, name, slug) VALUES ($1, $2, $3)",
-        tenant_id, name, slug,
+        tenant_id,
+        name,
+        slug,
     )

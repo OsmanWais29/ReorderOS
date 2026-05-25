@@ -65,7 +65,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S", "B"]
+"tests/**" = ["S", "B", "E501", "RUF002", "RUF003", "F841", "SIM300", "SIM105"]
 "alembic/env.py" = ["E402"]
 
 # ── mypy ──────────────────────────────────────────────────────────────────────

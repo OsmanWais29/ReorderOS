@@ -23,16 +23,12 @@ def test_uuid7_importable_and_produces_valid_uuids():
     assert len(uid_str) == 36, (
         f"uuid7() produced wrong length string: '{uid_str}' (len={len(uid_str)})"
     )
-    assert uid_str.count("-") == 4, (
-        f"uuid7() format wrong — expected 4 hyphens: '{uid_str}'"
-    )
+    assert uid_str.count("-") == 4, f"uuid7() format wrong — expected 4 hyphens: '{uid_str}'"
 
     # UUIDv7 version nibble is the 13th character (index 14 in the string).
     # Format: xxxxxxxx-xxxx-7xxx-xxxx-xxxxxxxxxxxx
     version_char = uid_str[14]
-    assert version_char == "7", (
-        f"uuid7() produced version nibble '{version_char}', expected '7'"
-    )
+    assert version_char == "7", f"uuid7() produced version nibble '{version_char}', expected '7'"
 
 
 def test_uuid7_values_are_unique():
@@ -66,5 +62,6 @@ def test_uuid7_is_str_compatible():
 
     # Must parse back to a standard UUID without error
     import uuid
+
     parsed = uuid.UUID(uid_str)
     assert str(parsed) == uid_str

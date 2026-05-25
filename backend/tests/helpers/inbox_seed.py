@@ -32,7 +32,8 @@ async def seed_inbox_prereqs(admin_conn: Any) -> dict:
         f"InboxTest_{tenant_id[:8]}",
         f"inbox-{tenant_id[:8]}",
     )
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO tenant_pos_connections (
             connection_id, tenant_id, vendor, merchant_id, environment,
             access_token_enc, access_token_expires_at,

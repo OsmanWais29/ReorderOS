@@ -24,14 +24,16 @@ async def seed_order_prereqs(admin_conn: Any, service_conn: Any) -> dict:
     """
     seed = await seed_inbox_prereqs(admin_conn)
 
-    inbox_row = make_inbox_row({
-        "tenant_id": seed["tenant_id"],
-        "connection_id": seed["connection_id"],
-        "vendor_event_id": f"seed_order_{uuid.uuid4().hex[:8]}",
-        "vendor_event_type": "UPDATE",
-        "vendor_ts": int(time.time() * 1000),
-        "raw_payload": json.dumps({"source": "seed"}),
-    })
+    inbox_row = make_inbox_row(
+        {
+            "tenant_id": seed["tenant_id"],
+            "connection_id": seed["connection_id"],
+            "vendor_event_id": f"seed_order_{uuid.uuid4().hex[:8]}",
+            "vendor_event_type": "UPDATE",
+            "vendor_ts": int(time.time() * 1000),
+            "raw_payload": json.dumps({"source": "seed"}),
+        }
+    )
     await insert_inbox(service_conn, inbox_row)
 
     return {

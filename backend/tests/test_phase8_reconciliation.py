@@ -12,7 +12,7 @@ import json
 import re
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -21,9 +21,7 @@ from uuid6 import uuid7
 
 from app.core.config import get_settings
 from app.modules.pos.reconciliation import ReconciliationService
-
 from tests.helpers.phase8 import (
-    enc,
     make_clover_order_list_item,
     seed_reconciliation_prereqs,
 )
@@ -40,8 +38,7 @@ settings = get_settings()
 @pytest.fixture(autouse=True)
 async def revoke_other_connections(admin_conn):
     await admin_conn.execute(
-        "UPDATE tenant_pos_connections SET state = 'revoked' "
-        "WHERE state = 'active'"
+        "UPDATE tenant_pos_connections SET state = 'revoked' WHERE state = 'active'"
     )
     yield
 
@@ -64,7 +61,8 @@ def _filter_from_request(call) -> str:
 async def test_uses_modified_time_filter(admin_conn):
     cursor = int(time.time() * 1000) - 300_000
     seed = await seed_reconciliation_prereqs(
-        admin_conn, last_reconciliation_cursor=cursor,
+        admin_conn,
+        last_reconciliation_cursor=cursor,
     )
 
     route = respx.get(url__regex=".*/orders.*").mock(
@@ -89,7 +87,8 @@ async def test_uses_modified_time_filter(admin_conn):
 @respx.mock
 async def test_since_ms_never_negative(admin_conn):
     seed = await seed_reconciliation_prereqs(
-        admin_conn, last_reconciliation_cursor=None,
+        admin_conn,
+        last_reconciliation_cursor=None,
     )
 
     route = respx.get(url__regex=".*/orders.*").mock(
@@ -115,7 +114,8 @@ async def test_since_ms_never_negative(admin_conn):
 @respx.mock
 async def test_null_cursor_30_day_lookback(admin_conn):
     seed = await seed_reconciliation_prereqs(
-        admin_conn, last_reconciliation_cursor=None,
+        admin_conn,
+        last_reconciliation_cursor=None,
     )
 
     route = respx.get(url__regex=".*/orders.*").mock(
@@ -133,8 +133,7 @@ async def test_null_cursor_30_day_lookback(admin_conn):
     now_ms = int(time.time() * 1000)
     thirty_days_ms = 30 * 24 * 60 * 60 * 1000
     expected = now_ms - thirty_days_ms
-    assert abs(since_val - expected) < 3_600_000, \
-        f"Expected ~30 days ago, got {since_val}"
+    assert abs(since_val - expected) < 3_600_000, f"Expected ~30 days ago, got {since_val}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -147,7 +146,8 @@ async def test_null_cursor_30_day_lookback(admin_conn):
 async def test_cursor_never_backward(admin_conn):
     existing_cursor = int(time.time() * 1000)
     seed = await seed_reconciliation_prereqs(
-        admin_conn, last_reconciliation_cursor=existing_cursor,
+        admin_conn,
+        last_reconciliation_cursor=existing_cursor,
     )
 
     old_order = make_clover_order_list_item(
@@ -161,12 +161,10 @@ async def test_cursor_never_backward(admin_conn):
     await svc.reconcile_connection(seed["connection_id"])
 
     new_cursor = await admin_conn.fetchval(
-        "SELECT last_reconciliation_cursor "
-        "FROM tenant_pos_connections WHERE connection_id = $1",
+        "SELECT last_reconciliation_cursor FROM tenant_pos_connections WHERE connection_id = $1",
         seed["connection_id"],
     )
-    assert new_cursor >= existing_cursor, \
-        f"Cursor went backward: {new_cursor} < {existing_cursor}"
+    assert new_cursor >= existing_cursor, f"Cursor went backward: {new_cursor} < {existing_cursor}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -179,7 +177,8 @@ async def test_cursor_never_backward(admin_conn):
 async def test_empty_results_cursor_unchanged(admin_conn):
     existing_cursor = int(time.time() * 1000) - 100_000
     seed = await seed_reconciliation_prereqs(
-        admin_conn, last_reconciliation_cursor=existing_cursor,
+        admin_conn,
+        last_reconciliation_cursor=existing_cursor,
     )
 
     respx.get(url__regex=".*/orders.*").mock(
@@ -190,8 +189,7 @@ async def test_empty_results_cursor_unchanged(admin_conn):
     await svc.reconcile_connection(seed["connection_id"])
 
     new_cursor = await admin_conn.fetchval(
-        "SELECT last_reconciliation_cursor "
-        "FROM tenant_pos_connections WHERE connection_id = $1",
+        "SELECT last_reconciliation_cursor FROM tenant_pos_connections WHERE connection_id = $1",
         seed["connection_id"],
     )
     assert new_cursor == existing_cursor
@@ -221,7 +219,8 @@ async def test_fetched_payload_prepopulated(admin_conn):
         "SELECT fetched_payload, fetched_at, source "
         "FROM pos_event_inbox "
         "WHERE tenant_id = $1 AND vendor_event_id = $2",
-        seed["tenant_id"], order_id,
+        seed["tenant_id"],
+        order_id,
     )
     assert row is not None
     assert row["fetched_payload"] is not None
@@ -247,7 +246,8 @@ async def test_requeues_processed_event(admin_conn):
     ts = int(time.time() * 1000)
 
     inbox_id = str(uuid7())
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO pos_event_inbox (
             inbox_id, tenant_id, connection_id, vendor,
             vendor_event_id, vendor_object_type, vendor_event_type,
@@ -255,7 +255,13 @@ async def test_requeues_processed_event(admin_conn):
             state, processed_at
         ) VALUES ($1,$2,$3,'clover',$4,'O','UPDATE',
                   $5, '{}', true, 'webhook', 'processed', now())
-    """, inbox_id, seed["tenant_id"], seed["connection_id"], order_id, ts)
+    """,
+        inbox_id,
+        seed["tenant_id"],
+        seed["connection_id"],
+        order_id,
+        ts,
+    )
 
     order = make_clover_order_list_item(order_id=order_id, modified_time=ts)
     respx.get(url__regex=".*/orders.*").mock(
@@ -269,8 +275,7 @@ async def test_requeues_processed_event(admin_conn):
         "SELECT state, fetched_payload FROM pos_event_inbox WHERE inbox_id = $1",
         inbox_id,
     )
-    assert row["state"] == "pending", \
-        f"Processed event not requeued: state={row['state']}"
+    assert row["state"] == "pending", f"Processed event not requeued: state={row['state']}"
     payload = row["fetched_payload"]
     if isinstance(payload, str):
         payload = json.loads(payload)
@@ -290,7 +295,8 @@ async def test_requeues_dead_letter(admin_conn):
     ts = int(time.time() * 1000)
 
     inbox_id = str(uuid7())
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO pos_event_inbox (
             inbox_id, tenant_id, connection_id, vendor,
             vendor_event_id, vendor_object_type, vendor_event_type,
@@ -298,7 +304,13 @@ async def test_requeues_dead_letter(admin_conn):
             state, retry_count
         ) VALUES ($1,$2,$3,'clover',$4,'O','UPDATE',
                   $5, '{}', true, 'webhook', 'dead_letter', 5)
-    """, inbox_id, seed["tenant_id"], seed["connection_id"], order_id, ts)
+    """,
+        inbox_id,
+        seed["tenant_id"],
+        seed["connection_id"],
+        order_id,
+        ts,
+    )
 
     order = make_clover_order_list_item(order_id=order_id, modified_time=ts)
     respx.get(url__regex=".*/orders.*").mock(
@@ -309,7 +321,8 @@ async def test_requeues_dead_letter(admin_conn):
     await svc.reconcile_connection(seed["connection_id"])
 
     state = await admin_conn.fetchval(
-        "SELECT state FROM pos_event_inbox WHERE inbox_id = $1", inbox_id,
+        "SELECT state FROM pos_event_inbox WHERE inbox_id = $1",
+        inbox_id,
     )
     assert state == "pending"
 
@@ -327,14 +340,21 @@ async def test_leaves_pending_alone(admin_conn):
     ts = int(time.time() * 1000)
 
     inbox_id = str(uuid7())
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO pos_event_inbox (
             inbox_id, tenant_id, connection_id, vendor,
             vendor_event_id, vendor_object_type, vendor_event_type,
             vendor_ts, raw_payload, signature_verified, source, state
         ) VALUES ($1,$2,$3,'clover',$4,'O','UPDATE',
                   $5, '{}', true, 'webhook', 'pending')
-    """, inbox_id, seed["tenant_id"], seed["connection_id"], order_id, ts)
+    """,
+        inbox_id,
+        seed["tenant_id"],
+        seed["connection_id"],
+        order_id,
+        ts,
+    )
 
     order = make_clover_order_list_item(order_id=order_id, modified_time=ts)
     respx.get(url__regex=".*/orders.*").mock(
@@ -345,7 +365,8 @@ async def test_leaves_pending_alone(admin_conn):
     await svc.reconcile_connection(seed["connection_id"])
 
     state = await admin_conn.fetchval(
-        "SELECT state FROM pos_event_inbox WHERE inbox_id = $1", inbox_id,
+        "SELECT state FROM pos_event_inbox WHERE inbox_id = $1",
+        inbox_id,
     )
     assert state == "pending"
 
@@ -361,10 +382,11 @@ async def test_leaves_failed_alone(admin_conn):
     seed = await seed_reconciliation_prereqs(admin_conn)
     order_id = f"fail_{uuid.uuid4().hex[:8]}"
     ts = int(time.time() * 1000)
-    future_backoff = datetime.now(timezone.utc) + timedelta(minutes=8)
+    future_backoff = datetime.now(UTC) + timedelta(minutes=8)
 
     inbox_id = str(uuid7())
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO pos_event_inbox (
             inbox_id, tenant_id, connection_id, vendor,
             vendor_event_id, vendor_object_type, vendor_event_type,
@@ -372,8 +394,14 @@ async def test_leaves_failed_alone(admin_conn):
             state, retry_count, next_attempt_at
         ) VALUES ($1,$2,$3,'clover',$4,'O','UPDATE',
                   $5, '{}', true, 'webhook', 'failed', 3, $6)
-    """, inbox_id, seed["tenant_id"], seed["connection_id"],
-        order_id, ts, future_backoff)
+    """,
+        inbox_id,
+        seed["tenant_id"],
+        seed["connection_id"],
+        order_id,
+        ts,
+        future_backoff,
+    )
 
     order = make_clover_order_list_item(order_id=order_id, modified_time=ts)
     respx.get(url__regex=".*/orders.*").mock(
@@ -486,7 +514,8 @@ async def test_pagination(admin_conn):
 @respx.mock
 async def test_cursor_advances(admin_conn):
     seed = await seed_reconciliation_prereqs(
-        admin_conn, last_reconciliation_cursor=1000,
+        admin_conn,
+        last_reconciliation_cursor=1000,
     )
 
     orders = [
@@ -502,8 +531,7 @@ async def test_cursor_advances(admin_conn):
     await svc.reconcile_connection(seed["connection_id"])
 
     cursor = await admin_conn.fetchval(
-        "SELECT last_reconciliation_cursor "
-        "FROM tenant_pos_connections WHERE connection_id = $1",
+        "SELECT last_reconciliation_cursor FROM tenant_pos_connections WHERE connection_id = $1",
         seed["connection_id"],
     )
     assert cursor == 8000
@@ -523,14 +551,13 @@ async def test_last_reconciliation_at_updated(admin_conn):
         return_value=httpx.Response(200, json={"elements": []})
     )
 
-    before = datetime.now(timezone.utc)
+    before = datetime.now(UTC)
 
     svc = ReconciliationService()
     await svc.reconcile_connection(seed["connection_id"])
 
     last_recon = await admin_conn.fetchval(
-        "SELECT last_reconciliation_at "
-        "FROM tenant_pos_connections WHERE connection_id = $1",
+        "SELECT last_reconciliation_at FROM tenant_pos_connections WHERE connection_id = $1",
         seed["connection_id"],
     )
     assert last_recon is not None
@@ -563,7 +590,8 @@ async def test_waitlist_no_tenant_id(admin_conn):
 @respx.mock
 async def test_full_reconciliation_lifecycle(admin_conn):
     seed = await seed_reconciliation_prereqs(
-        admin_conn, last_reconciliation_cursor=None,
+        admin_conn,
+        last_reconciliation_cursor=None,
     )
 
     ts_1 = int(time.time() * 1000) - 50_000
@@ -571,13 +599,16 @@ async def test_full_reconciliation_lifecycle(admin_conn):
     ts_3 = int(time.time() * 1000) - 10_000
 
     order_1 = make_clover_order_list_item(
-        order_id=f"life1_{uuid.uuid4().hex[:6]}", modified_time=ts_1,
+        order_id=f"life1_{uuid.uuid4().hex[:6]}",
+        modified_time=ts_1,
     )
     order_2 = make_clover_order_list_item(
-        order_id=f"life2_{uuid.uuid4().hex[:6]}", modified_time=ts_2,
+        order_id=f"life2_{uuid.uuid4().hex[:6]}",
+        modified_time=ts_2,
     )
     order_3 = make_clover_order_list_item(
-        order_id=f"life3_{uuid.uuid4().hex[:6]}", modified_time=ts_3,
+        order_id=f"life3_{uuid.uuid4().hex[:6]}",
+        modified_time=ts_3,
     )
 
     svc = ReconciliationService()
@@ -588,13 +619,15 @@ async def test_full_reconciliation_lifecycle(admin_conn):
     )
     await svc.reconcile_connection(seed["connection_id"])
 
-    assert 2 == await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM pos_event_inbox WHERE tenant_id = $1",
-        seed["tenant_id"],
+    assert (
+        await admin_conn.fetchval(
+            "SELECT COUNT(*) FROM pos_event_inbox WHERE tenant_id = $1",
+            seed["tenant_id"],
+        )
+        == 2
     )
     cursor_1 = await admin_conn.fetchval(
-        "SELECT last_reconciliation_cursor "
-        "FROM tenant_pos_connections WHERE connection_id = $1",
+        "SELECT last_reconciliation_cursor FROM tenant_pos_connections WHERE connection_id = $1",
         seed["connection_id"],
     )
     assert cursor_1 == ts_2
@@ -605,13 +638,15 @@ async def test_full_reconciliation_lifecycle(admin_conn):
     )
     await svc.reconcile_connection(seed["connection_id"])
 
-    assert 3 == await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM pos_event_inbox WHERE tenant_id = $1",
-        seed["tenant_id"],
+    assert (
+        await admin_conn.fetchval(
+            "SELECT COUNT(*) FROM pos_event_inbox WHERE tenant_id = $1",
+            seed["tenant_id"],
+        )
+        == 3
     )
     cursor_2 = await admin_conn.fetchval(
-        "SELECT last_reconciliation_cursor "
-        "FROM tenant_pos_connections WHERE connection_id = $1",
+        "SELECT last_reconciliation_cursor FROM tenant_pos_connections WHERE connection_id = $1",
         seed["connection_id"],
     )
     assert cursor_2 == ts_3
@@ -623,8 +658,7 @@ async def test_full_reconciliation_lifecycle(admin_conn):
     await svc.reconcile_connection(seed["connection_id"])
 
     cursor_3 = await admin_conn.fetchval(
-        "SELECT last_reconciliation_cursor "
-        "FROM tenant_pos_connections WHERE connection_id = $1",
+        "SELECT last_reconciliation_cursor FROM tenant_pos_connections WHERE connection_id = $1",
         seed["connection_id"],
     )
     assert cursor_3 == ts_3
@@ -640,14 +674,15 @@ async def test_full_reconciliation_lifecycle(admin_conn):
 async def test_future_cursor_doesnt_stall(admin_conn):
     future_cursor = 999_999_999_999_999
     seed = await seed_reconciliation_prereqs(
-        admin_conn, last_reconciliation_cursor=future_cursor,
+        admin_conn,
+        last_reconciliation_cursor=future_cursor,
     )
 
     respx.get(url__regex=".*/orders.*").mock(
         return_value=httpx.Response(200, json={"elements": []})
     )
 
-    before = datetime.now(timezone.utc)
+    before = datetime.now(UTC)
 
     svc = ReconciliationService()
     await svc.reconcile_connection(seed["connection_id"])
@@ -684,12 +719,8 @@ async def test_modified_time_tie_across_pages(admin_conn):
         )
         for i in range(99)
     ]
-    page_1.append(
-        make_clover_order_list_item(order_id=order_a_id, modified_time=shared_ts)
-    )
-    page_2 = [
-        make_clover_order_list_item(order_id=order_b_id, modified_time=shared_ts)
-    ]
+    page_1.append(make_clover_order_list_item(order_id=order_a_id, modified_time=shared_ts))
+    page_2 = [make_clover_order_list_item(order_id=order_b_id, modified_time=shared_ts)]
 
     call_count = 0
 
@@ -708,14 +739,14 @@ async def test_modified_time_tie_across_pages(admin_conn):
     await svc.reconcile_connection(seed["connection_id"])
 
     count_a = await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM pos_event_inbox "
-        "WHERE tenant_id = $1 AND vendor_event_id = $2",
-        seed["tenant_id"], order_a_id,
+        "SELECT COUNT(*) FROM pos_event_inbox WHERE tenant_id = $1 AND vendor_event_id = $2",
+        seed["tenant_id"],
+        order_a_id,
     )
     count_b = await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM pos_event_inbox "
-        "WHERE tenant_id = $1 AND vendor_event_id = $2",
-        seed["tenant_id"], order_b_id,
+        "SELECT COUNT(*) FROM pos_event_inbox WHERE tenant_id = $1 AND vendor_event_id = $2",
+        seed["tenant_id"],
+        order_b_id,
     )
     assert count_a == 1, "Order A at tie timestamp missing"
     assert count_b == 1, "Order B at tie timestamp missing"
@@ -758,12 +789,10 @@ async def test_run_all_multiple_connections(admin_conn):
     svc = ReconciliationService()
     await svc.run_all()
 
-    assert call_count >= 2, \
-        f"Only {call_count} calls — second connection was skipped"
+    assert call_count >= 2, f"Only {call_count} calls — second connection was skipped"
 
     recon_b = await admin_conn.fetchval(
-        "SELECT last_reconciliation_at "
-        "FROM tenant_pos_connections WHERE connection_id = $1",
+        "SELECT last_reconciliation_at FROM tenant_pos_connections WHERE connection_id = $1",
         seed_b["connection_id"],
     )
     assert recon_b is not None, "Second connection not reconciled"
@@ -777,14 +806,20 @@ async def test_run_all_multiple_connections(admin_conn):
 @pytest.mark.integration
 async def test_waitlist_crud(admin_conn):
     wl_id = str(uuid7())
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO pos_waitlist (id, pos_name, email, restaurant_name)
         VALUES ($1, $2, $3, $4)
-    """, wl_id, "clover", "test@restaurant.com", "Joe's Shawarma")
+    """,
+        wl_id,
+        "clover",
+        "test@restaurant.com",
+        "Joe's Shawarma",
+    )
 
     row = await admin_conn.fetchrow(
-        "SELECT pos_name, email, restaurant_name, created_at "
-        "FROM pos_waitlist WHERE id = $1", wl_id,
+        "SELECT pos_name, email, restaurant_name, created_at FROM pos_waitlist WHERE id = $1",
+        wl_id,
     )
     assert row is not None
     assert row["pos_name"] == "clover"
@@ -803,7 +838,8 @@ async def test_waitlist_crud(admin_conn):
 async def test_clover_500_handled(admin_conn):
     existing_cursor = int(time.time() * 1000) - 100_000
     seed = await seed_reconciliation_prereqs(
-        admin_conn, last_reconciliation_cursor=existing_cursor,
+        admin_conn,
+        last_reconciliation_cursor=existing_cursor,
     )
 
     respx.get(url__regex=".*/orders.*").mock(
@@ -814,8 +850,7 @@ async def test_clover_500_handled(admin_conn):
     await svc.reconcile_connection(seed["connection_id"])  # Must not raise
 
     cursor = await admin_conn.fetchval(
-        "SELECT last_reconciliation_cursor "
-        "FROM tenant_pos_connections WHERE connection_id = $1",
+        "SELECT last_reconciliation_cursor FROM tenant_pos_connections WHERE connection_id = $1",
         seed["connection_id"],
     )
     assert cursor is not None
@@ -839,8 +874,8 @@ async def test_run_all_filters_revoked(admin_conn):
     seed_revoked = await seed_reconciliation_prereqs(admin_conn)
 
     await admin_conn.execute(
-        "UPDATE tenant_pos_connections SET state = 'revoked' "
-        "WHERE connection_id = $1", seed_revoked["connection_id"],
+        "UPDATE tenant_pos_connections SET state = 'revoked' WHERE connection_id = $1",
+        seed_revoked["connection_id"],
     )
 
     order = make_clover_order_list_item()
@@ -872,7 +907,8 @@ async def test_run_all_filters_revoked(admin_conn):
 @respx.mock
 async def test_partial_pagination_failure(admin_conn):
     seed = await seed_reconciliation_prereqs(
-        admin_conn, last_reconciliation_cursor=500,
+        admin_conn,
+        last_reconciliation_cursor=500,
     )
 
     page_1_orders = [
@@ -904,12 +940,10 @@ async def test_partial_pagination_failure(admin_conn):
     assert count == 3, f"Expected 3 orders from page 1, got {count}"
 
     cursor = await admin_conn.fetchval(
-        "SELECT last_reconciliation_cursor "
-        "FROM tenant_pos_connections WHERE connection_id = $1",
+        "SELECT last_reconciliation_cursor FROM tenant_pos_connections WHERE connection_id = $1",
         seed["connection_id"],
     )
-    assert cursor >= 3000, \
-        f"Cursor should be at least 3000 (page 1 max), got {cursor}"
+    assert cursor >= 3000, f"Cursor should be at least 3000 (page 1 max), got {cursor}"
     assert cursor > 500, "Cursor didn't advance — page 1 progress lost"
 
 
@@ -926,7 +960,8 @@ async def test_duplicate_order_across_pages(admin_conn):
     shared_ts = int(time.time() * 1000)
 
     order_x = make_clover_order_list_item(
-        order_id=shared_id, modified_time=shared_ts,
+        order_id=shared_id,
+        modified_time=shared_ts,
     )
     order_only_p1 = make_clover_order_list_item(
         order_id=f"p1_{uuid.uuid4().hex[:6]}",
@@ -943,18 +978,20 @@ async def test_duplicate_order_across_pages(admin_conn):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return httpx.Response(200, json={
-                "elements": [order_only_p1, order_x] + [
-                    make_clover_order_list_item(
-                        modified_time=shared_ts - 500 + i,
-                    )
-                    for i in range(98)
-                ]
-            })
+            return httpx.Response(
+                200,
+                json={
+                    "elements": [order_only_p1, order_x]
+                    + [
+                        make_clover_order_list_item(
+                            modified_time=shared_ts - 500 + i,
+                        )
+                        for i in range(98)
+                    ]
+                },
+            )
         if call_count == 2:
-            return httpx.Response(200, json={
-                "elements": [order_x, order_only_p2]
-            })
+            return httpx.Response(200, json={"elements": [order_x, order_only_p2]})
         return httpx.Response(200, json={"elements": []})
 
     respx.get(url__regex=".*/orders.*").mock(side_effect=side_effect)
@@ -963,22 +1000,21 @@ async def test_duplicate_order_across_pages(admin_conn):
     await svc.reconcile_connection(seed["connection_id"])
 
     dup_count = await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM pos_event_inbox "
-        "WHERE tenant_id = $1 AND vendor_event_id = $2",
-        seed["tenant_id"], shared_id,
+        "SELECT COUNT(*) FROM pos_event_inbox WHERE tenant_id = $1 AND vendor_event_id = $2",
+        seed["tenant_id"],
+        shared_id,
     )
     assert dup_count == 1, f"Duplicate order created {dup_count} rows"
 
     p2_count = await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM pos_event_inbox "
-        "WHERE tenant_id = $1 AND vendor_event_id = $2",
-        seed["tenant_id"], order_only_p2["id"],
+        "SELECT COUNT(*) FROM pos_event_inbox WHERE tenant_id = $1 AND vendor_event_id = $2",
+        seed["tenant_id"],
+        order_only_p2["id"],
     )
     assert p2_count == 1
 
     cursor = await admin_conn.fetchval(
-        "SELECT last_reconciliation_cursor "
-        "FROM tenant_pos_connections WHERE connection_id = $1",
+        "SELECT last_reconciliation_cursor FROM tenant_pos_connections WHERE connection_id = $1",
         seed["connection_id"],
     )
     assert cursor >= shared_ts + 1000
@@ -996,7 +1032,8 @@ async def test_overlap_recovers_boundary_order(admin_conn):
     cursor = now_ms - 10_000  # 10 seconds ago
 
     seed = await seed_reconciliation_prereqs(
-        admin_conn, last_reconciliation_cursor=cursor,
+        admin_conn,
+        last_reconciliation_cursor=cursor,
     )
 
     missed_order = make_clover_order_list_item(
@@ -1016,21 +1053,21 @@ async def test_overlap_recovers_boundary_order(admin_conn):
     match = re.search(r"modifiedTime[><=]+(\d+)", filt)
     assert match is not None
     since_val = int(match.group(1))
-    assert since_val < cursor, \
+    assert since_val < cursor, (
         f"since_ms ({since_val}) not earlier than cursor ({cursor}) — no overlap"
+    )
 
     # Boundary order captured
     count = await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM pos_event_inbox "
-        "WHERE tenant_id = $1 AND vendor_event_id = $2",
-        seed["tenant_id"], missed_order["id"],
+        "SELECT COUNT(*) FROM pos_event_inbox WHERE tenant_id = $1 AND vendor_event_id = $2",
+        seed["tenant_id"],
+        missed_order["id"],
     )
     assert count == 1, "Boundary order lost — overlap window not working"
 
     # Cursor monotonic (didn't regress to since_ms)
     new_cursor = await admin_conn.fetchval(
-        "SELECT last_reconciliation_cursor "
-        "FROM tenant_pos_connections WHERE connection_id = $1",
+        "SELECT last_reconciliation_cursor FROM tenant_pos_connections WHERE connection_id = $1",
         seed["connection_id"],
     )
     assert new_cursor >= cursor, "Cursor went backward after overlap recovery"
@@ -1065,7 +1102,5 @@ async def test_pagination_loop_protection(admin_conn):
     svc = ReconciliationService()
     await svc.reconcile_connection(seed["connection_id"])
 
-    assert call_count <= 60, \
-        f"Pagination made {call_count} calls — no loop protection"
-    assert call_count >= 2, \
-        f"Only {call_count} page(s) fetched — pagination not working"
+    assert call_count <= 60, f"Pagination made {call_count} calls — no loop protection"
+    assert call_count >= 2, f"Only {call_count} page(s) fetched — pagination not working"

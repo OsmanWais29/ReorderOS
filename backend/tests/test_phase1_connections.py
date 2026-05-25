@@ -15,7 +15,6 @@ import asyncpg
 import pytest
 from uuid6 import uuid7
 
-from app.core.encryption import TokenEncryption
 from tests.helpers.pos_connection import (
     FUTURE_1H,
     FUTURE_8H,
@@ -102,11 +101,13 @@ async def test_check_token_expiry_order_rejects_invalid(admin_conn):
     t_id = str(uuid.uuid4())
     await seed_tenant(admin_conn, t_id, "CheckExpiry", f"chx-{t_id[:8]}")
 
-    row = make_connection_row({
-        "tenant_id": t_id,
-        "access_token_expires_at": FUTURE_8H,
-        "refresh_token_expires_at": FUTURE_1H,  # INVALID: refresh < access
-    })
+    row = make_connection_row(
+        {
+            "tenant_id": t_id,
+            "access_token_expires_at": FUTURE_8H,
+            "refresh_token_expires_at": FUTURE_1H,  # INVALID: refresh < access
+        }
+    )
     with pytest.raises(asyncpg.CheckViolationError) as exc:
         await insert_connection(admin_conn, row)
     assert "tenant_pos_token_expiry_order" in str(exc.value)
@@ -132,8 +133,9 @@ async def test_blocks_two_active_same_tenant_vendor(admin_conn):
     await insert_connection(admin_conn, row1)
 
     # Different merchant, same tenant — still blocked (one active per vendor per tenant)
-    row2 = make_connection_row({"tenant_id": t_id, "state": "active",
-                                "merchant_id": f"m_dup2_{uuid.uuid4().hex[:8]}"})
+    row2 = make_connection_row(
+        {"tenant_id": t_id, "state": "active", "merchant_id": f"m_dup2_{uuid.uuid4().hex[:8]}"}
+    )
     with pytest.raises(asyncpg.UniqueViolationError) as exc:
         await insert_connection(admin_conn, row2)
     assert "tenant_pos_one_active_per_tenant_vendor" in str(exc.value)
@@ -161,7 +163,8 @@ async def test_reconnect_allowed_after_revoke(admin_conn):
     # Revoke — exits the partial unique index
     await admin_conn.execute(
         "UPDATE tenant_pos_connections SET state = 'revoked', revoked_at = now() "
-        "WHERE connection_id = $1", row1["connection_id"]
+        "WHERE connection_id = $1",
+        row1["connection_id"],
     )
 
     # New active connection must succeed
@@ -169,8 +172,7 @@ async def test_reconnect_allowed_after_revoke(admin_conn):
     await insert_connection(admin_conn, row2)
 
     state = await admin_conn.fetchval(
-        "SELECT state FROM tenant_pos_connections WHERE connection_id = $1",
-        row2["connection_id"]
+        "SELECT state FROM tenant_pos_connections WHERE connection_id = $1", row2["connection_id"]
     )
     assert state == "active"
 
@@ -227,15 +229,14 @@ async def test_merchant_guard_frees_after_revoke(admin_conn):
 
     await admin_conn.execute(
         "UPDATE tenant_pos_connections SET state = 'revoked' WHERE connection_id = $1",
-        row1["connection_id"]
+        row1["connection_id"],
     )
 
     row2 = make_connection_row({"tenant_id": t2_id, "merchant_id": merchant, "state": "active"})
     await insert_connection(admin_conn, row2)
 
     state = await admin_conn.fetchval(
-        "SELECT state FROM tenant_pos_connections WHERE connection_id = $1",
-        row2["connection_id"]
+        "SELECT state FROM tenant_pos_connections WHERE connection_id = $1", row2["connection_id"]
     )
     assert state == "active"
 
@@ -258,17 +259,19 @@ async def test_encryption_roundtrip_through_db(admin_conn):
     access_plain = "clover_live_access_token_abc123xyz"
     refresh_plain = "clover_live_refresh_token_def456uvw"
 
-    row = make_connection_row({
-        "tenant_id": t_id,
-        "access_token_enc": enc.encrypt(access_plain),
-        "refresh_token_enc": enc.encrypt(refresh_plain),
-    })
+    row = make_connection_row(
+        {
+            "tenant_id": t_id,
+            "access_token_enc": enc.encrypt(access_plain),
+            "refresh_token_enc": enc.encrypt(refresh_plain),
+        }
+    )
     await insert_connection(admin_conn, row)
 
     stored = await admin_conn.fetchrow(
         "SELECT access_token_enc, refresh_token_enc "
         "FROM tenant_pos_connections WHERE connection_id = $1",
-        row["connection_id"]
+        row["connection_id"],
     )
 
     assert enc.decrypt(stored["access_token_enc"]) == access_plain
@@ -308,9 +311,7 @@ async def test_rls_app_user_tenant_isolation(admin_conn, app_conn):
 
     # Without any tenant context: fail-safe → zero rows, no crash
     async with app_conn.transaction():
-        rows_empty = await app_conn.fetch(
-            "SELECT connection_id FROM tenant_pos_connections"
-        )
+        rows_empty = await app_conn.fetch("SELECT connection_id FROM tenant_pos_connections")
         assert len(rows_empty) == 0
 
 
@@ -339,8 +340,7 @@ async def test_rls_service_worker_sees_all(admin_conn, service_conn):
 
     # service_worker needs no tenant context — USING(true) allows all rows
     rows = await service_conn.fetch(
-        "SELECT connection_id FROM tenant_pos_connections "
-        "WHERE connection_id = ANY($1::uuid[])",
+        "SELECT connection_id FROM tenant_pos_connections WHERE connection_id = ANY($1::uuid[])",
         [row1["connection_id"], row2["connection_id"]],
     )
     assert len(rows) == 2
@@ -394,19 +394,19 @@ async def test_refresh_failure_count_is_integer(admin_conn):
     await insert_connection(admin_conn, row)
 
     count = await admin_conn.fetchval(
-        "SELECT refresh_failure_count FROM tenant_pos_connections "
-        "WHERE connection_id = $1", row["connection_id"]
+        "SELECT refresh_failure_count FROM tenant_pos_connections WHERE connection_id = $1",
+        row["connection_id"],
     )
     assert count == 0
     assert isinstance(count, int)
 
     await admin_conn.execute(
-        "UPDATE tenant_pos_connections SET refresh_failure_count = 3 "
-        "WHERE connection_id = $1", row["connection_id"]
+        "UPDATE tenant_pos_connections SET refresh_failure_count = 3 WHERE connection_id = $1",
+        row["connection_id"],
     )
     count = await admin_conn.fetchval(
-        "SELECT refresh_failure_count FROM tenant_pos_connections "
-        "WHERE connection_id = $1", row["connection_id"]
+        "SELECT refresh_failure_count FROM tenant_pos_connections WHERE connection_id = $1",
+        row["connection_id"],
     )
     assert count == 3
     assert isinstance(count, int)
@@ -430,8 +430,8 @@ async def test_uuidv7_accepted_as_pk(admin_conn):
     await insert_connection(admin_conn, row)
 
     stored_id = await admin_conn.fetchval(
-        "SELECT connection_id::text FROM tenant_pos_connections "
-        "WHERE connection_id = $1::uuid", v7_id
+        "SELECT connection_id::text FROM tenant_pos_connections WHERE connection_id = $1::uuid",
+        v7_id,
     )
     assert stored_id == v7_id
     assert v7_id[14] == "7"  # version nibble in position 14
@@ -459,21 +459,24 @@ async def test_full_lifecycle(admin_conn, app_conn, service_conn):
     refresh_plain = "lifecycle_refresh_token"
 
     # ── 1. PENDING (OAuth initiation) ────────────────────────────────────────
-    conn_1 = make_connection_row({
-        "tenant_id": t1_id, "merchant_id": merchant, "state": "pending",
-        "access_token_enc": enc.encrypt(access_plain),
-        "refresh_token_enc": enc.encrypt(refresh_plain),
-    })
+    conn_1 = make_connection_row(
+        {
+            "tenant_id": t1_id,
+            "merchant_id": merchant,
+            "state": "pending",
+            "access_token_enc": enc.encrypt(access_plain),
+            "refresh_token_enc": enc.encrypt(refresh_plain),
+        }
+    )
     await insert_connection(admin_conn, conn_1)
 
     # ── 2. ACTIVATE (OAuth callback completes) ──────────────────────────��────
     await admin_conn.execute(
-        "UPDATE tenant_pos_connections SET state = 'active' "
-        "WHERE connection_id = $1", conn_1["connection_id"]
+        "UPDATE tenant_pos_connections SET state = 'active' WHERE connection_id = $1",
+        conn_1["connection_id"],
     )
     state = await admin_conn.fetchval(
-        "SELECT state FROM tenant_pos_connections WHERE connection_id = $1",
-        conn_1["connection_id"]
+        "SELECT state FROM tenant_pos_connections WHERE connection_id = $1", conn_1["connection_id"]
     )
     assert state == "active"
 
@@ -486,21 +489,30 @@ async def test_full_lifecycle(admin_conn, app_conn, service_conn):
     # ── 4. REVOKE ─────────────────────────────────���──────────────────────────
     await admin_conn.execute(
         "UPDATE tenant_pos_connections SET state = 'revoked', revoked_at = now() "
-        "WHERE connection_id = $1", conn_1["connection_id"]
+        "WHERE connection_id = $1",
+        conn_1["connection_id"],
     )
 
     # ── 5. RECONNECT ───────────────────────────────���─────────────────────────
-    conn_3 = make_connection_row({
-        "tenant_id": t1_id, "merchant_id": merchant, "state": "active",
-        "access_token_enc": enc.encrypt(access_plain),
-        "refresh_token_enc": enc.encrypt(refresh_plain),
-    })
+    conn_3 = make_connection_row(
+        {
+            "tenant_id": t1_id,
+            "merchant_id": merchant,
+            "state": "active",
+            "access_token_enc": enc.encrypt(access_plain),
+            "refresh_token_enc": enc.encrypt(refresh_plain),
+        }
+    )
     await insert_connection(admin_conn, conn_3)
 
     # ── 6. CROSS-TENANT GUARD ─────────────────────────────────────────���──────
-    conn_b = make_connection_row({
-        "tenant_id": t2_id, "merchant_id": merchant, "state": "active",
-    })
+    conn_b = make_connection_row(
+        {
+            "tenant_id": t2_id,
+            "merchant_id": merchant,
+            "state": "active",
+        }
+    )
     with pytest.raises(asyncpg.UniqueViolationError) as exc2:
         await insert_connection(admin_conn, conn_b)
     assert "tenant_pos_one_tenant_per_merchant" in str(exc2.value)
@@ -508,7 +520,8 @@ async def test_full_lifecycle(admin_conn, app_conn, service_conn):
     # ── 7. SERVICE_WORKER TOKEN REFRESH ────────────────────────────���─────────
     new_access = "refreshed_access_token"
     new_refresh = "refreshed_refresh_token"
-    await service_conn.execute("""
+    await service_conn.execute(
+        """
         UPDATE tenant_pos_connections
         SET access_token_enc = $1,
             access_token_expires_at = $2,
@@ -528,14 +541,14 @@ async def test_full_lifecycle(admin_conn, app_conn, service_conn):
 
     # ── 8. ENCRYPTION ROUND-TRIP ─────────────────────────────────────────────
     stored_access = await admin_conn.fetchval(
-        "SELECT access_token_enc FROM tenant_pos_connections "
-        "WHERE connection_id = $1", conn_3["connection_id"]
+        "SELECT access_token_enc FROM tenant_pos_connections WHERE connection_id = $1",
+        conn_3["connection_id"],
     )
     assert enc.decrypt(stored_access) == new_access
 
     prev_rt = await admin_conn.fetchval(
-        "SELECT prev_refresh_token_enc FROM tenant_pos_connections "
-        "WHERE connection_id = $1", conn_3["connection_id"]
+        "SELECT prev_refresh_token_enc FROM tenant_pos_connections WHERE connection_id = $1",
+        conn_3["connection_id"],
     )
     assert prev_rt is not None
     assert enc.decrypt(prev_rt) == refresh_plain  # Original stored before rotation
@@ -549,13 +562,12 @@ async def test_full_lifecycle(admin_conn, app_conn, service_conn):
             [conn_1["connection_id"], conn_3["connection_id"]],
         )
         ids = {str(r["connection_id"]) for r in rows}
-        assert conn_1["connection_id"] in ids   # revoked row visible to its tenant
-        assert conn_3["connection_id"] in ids   # active row visible
+        assert conn_1["connection_id"] in ids  # revoked row visible to its tenant
+        assert conn_3["connection_id"] in ids  # active row visible
 
     # ── 10. SERVICE_WORKER sees both tenants ─────────────────────────────────
     all_rows = await service_conn.fetch(
-        "SELECT connection_id FROM tenant_pos_connections "
-        "WHERE connection_id = ANY($1::uuid[])",
+        "SELECT connection_id FROM tenant_pos_connections WHERE connection_id = ANY($1::uuid[])",
         [conn_1["connection_id"], conn_3["connection_id"]],
     )
     all_ids = {str(r["connection_id"]) for r in all_rows}

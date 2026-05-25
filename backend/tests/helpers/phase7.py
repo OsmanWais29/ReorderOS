@@ -27,12 +27,14 @@ def make_clover_order(
     now_ms = int(time.time() * 1000)
 
     if line_items is None:
-        line_items = [{
-            "id": f"li_{uuid.uuid4().hex[:8]}",
-            "name": "Default Item",
-            "price": 1500,
-            "unitQty": 1,
-        }]
+        line_items = [
+            {
+                "id": f"li_{uuid.uuid4().hex[:8]}",
+                "name": "Default Item",
+                "price": 1500,
+                "unitQty": 1,
+            }
+        ]
 
     order: dict[str, Any] = {
         "id": oid,
@@ -82,17 +84,24 @@ async def seed_worker_prereqs(admin_conn: Any) -> dict[str, str]:
 
     await admin_conn.execute(
         "INSERT INTO tenants (id, name, slug) VALUES ($1, $2, $3)",
-        tid, f"WorkerTest_{tid[:8]}", f"wk-{tid[:8]}",
+        tid,
+        f"WorkerTest_{tid[:8]}",
+        f"wk-{tid[:8]}",
     )
     await admin_conn.execute(
         "INSERT INTO users (id, workos_id, email) VALUES ($1, $2, $3)",
-        uid, f"workos_{uid[:8]}", f"wk-{uid[:8]}@test.com",
+        uid,
+        f"workos_{uid[:8]}",
+        f"wk-{uid[:8]}@test.com",
     )
     await admin_conn.execute(
         "INSERT INTO user_tenants (id, user_id, tenant_id, role, active) VALUES ($1, $2, $3, 'owner', true)",
-        ut_id, uid, tid,
+        ut_id,
+        uid,
+        tid,
     )
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO tenant_pos_connections (
             connection_id, tenant_id, vendor, merchant_id, environment,
             access_token_enc, access_token_expires_at,
@@ -100,17 +109,30 @@ async def seed_worker_prereqs(admin_conn: Any) -> dict[str, str]:
         ) VALUES ($1,$2,'clover',$3,'sandbox',
                   $4, now()+interval'1 hour',
                   $5, now()+interval'30 days', 'active')
-    """, cid, tid, mid, enc.encrypt("worker_access"), enc.encrypt("worker_refresh"))
+    """,
+        cid,
+        tid,
+        mid,
+        enc.encrypt("worker_access"),
+        enc.encrypt("worker_refresh"),
+    )
 
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO pos_event_inbox (
             inbox_id, tenant_id, connection_id, vendor,
             vendor_event_id, vendor_object_type, vendor_event_type,
             vendor_ts, raw_payload, signature_verified, source, state
         ) VALUES ($1,$2,$3,'clover',$4,'O','UPDATE',$5,
                   $6, true, 'webhook', 'pending')
-    """, inbox_id, tid, cid, vendor_event_id,
-        int(time.time() * 1000), json.dumps({"source": "test"}))
+    """,
+        inbox_id,
+        tid,
+        cid,
+        vendor_event_id,
+        int(time.time() * 1000),
+        json.dumps({"source": "test"}),
+    )
 
     return {
         "tenant_id": tid,
@@ -132,9 +154,10 @@ async def seed_inbox_event(
     vendor_event_type = overrides.get("vendor_event_type", "UPDATE")
     vendor_ts = overrides.get("vendor_ts", int(time.time() * 1000))
     state = overrides.get("state", "pending")
-    fetched_payload = overrides.get("fetched_payload", None)
+    fetched_payload = overrides.get("fetched_payload")
 
-    await admin_conn.execute("""
+    await admin_conn.execute(
+        """
         INSERT INTO pos_event_inbox (
             inbox_id, tenant_id, connection_id, vendor,
             vendor_event_id, vendor_object_type, vendor_event_type,
@@ -143,11 +166,17 @@ async def seed_inbox_event(
         ) VALUES ($1,$2,$3,'clover',$4,'O',$5,$6,$7,$8,
                   CASE WHEN $8::jsonb IS NOT NULL THEN now() ELSE NULL END,
                   true, 'webhook', $9)
-    """, inbox_id, seed["tenant_id"], seed["connection_id"],
-        vendor_event_id, vendor_event_type, vendor_ts,
+    """,
+        inbox_id,
+        seed["tenant_id"],
+        seed["connection_id"],
+        vendor_event_id,
+        vendor_event_type,
+        vendor_ts,
         json.dumps({"source": "test"}),
         json.dumps(fetched_payload) if fetched_payload else None,
-        state)
+        state,
+    )
 
     return {
         "inbox_id": inbox_id,

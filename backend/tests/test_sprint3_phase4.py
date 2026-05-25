@@ -133,7 +133,9 @@ async def _mk_sale_line(
         " (inbox_id, tenant_id, vendor, vendor_event_id, vendor_object_type,"
         "  vendor_event_type, vendor_ts, raw_payload, signature_verified, source)"
         " VALUES ($1,$2,'clover','O:s3stub','O','UPDATE',$3,'{}',false,'webhook')",
-        inbox_id, uuid.UUID(tenant_id), int(_time.time() * 1000),
+        inbox_id,
+        uuid.UUID(tenant_id),
+        int(_time.time() * 1000),
     )
     order_id = uuid.uuid4()
     await conn.execute(
@@ -141,7 +143,9 @@ async def _mk_sale_line(
         " (id, tenant_id, pos_event_inbox_id, clover_order_id,"
         "  total_amount_cents, state, payment_state, processed_at)"
         " VALUES ($1,$2,$3,'s3_order',0,'locked','OPEN',now())",
-        order_id, uuid.UUID(tenant_id), inbox_id,
+        order_id,
+        uuid.UUID(tenant_id),
+        inbox_id,
     )
     row = await conn.fetchrow(
         "INSERT INTO sale_line_items"
@@ -149,7 +153,8 @@ async def _mk_sale_line(
         "  quantity, price_cents_at_sale, net_revenue_cents, recipe_version_id)"
         " VALUES (gen_random_uuid(),$1,$2,$3,'Sprint 3 Item',$4,0,0,$5)"
         " RETURNING id",
-        uuid.UUID(tenant_id), order_id,
+        uuid.UUID(tenant_id),
+        order_id,
         f"cli_{uuid.uuid4().hex[:8]}",
         qty,
         uuid.UUID(recipe_version_id),

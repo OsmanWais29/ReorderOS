@@ -4,4 +4,4 @@ export const API_BASE = 'https://reorderos-api-7d4et.ondigitalocean.app';
 
 // Redirect URI WorkOS will send the user back to after login.
 // Must be added in WorkOS Dashboard → Authentication → Redirects.
-export const REDIRECT_URI = 'http://localhost:8081/callback';
+export const REDIRECT_URI = 'http://localhost:8081/auth/callback';

@@ -57,11 +57,9 @@ async def handle_clover_webhook(request: Request) -> Response:
 
     # ── Verification ping ─────────────────────────────────────────────────────
     if "verificationCode" in payload:
-        return Response(
-            content=payload["verificationCode"],
-            status_code=200,
-            media_type="text/plain",
-        )
+        code = payload["verificationCode"]
+        log.info("webhook.verification_ping", verification_code=code)
+        return Response(content=code, status_code=200, media_type="text/plain")
 
     # ── Auth validation ───────────────────────────────────────────────────────
     settings = get_settings()

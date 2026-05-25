@@ -92,6 +92,7 @@ async def connect(
 
 
 @router.get("/callback")
+@router.post("/callback")
 async def callback(
     merchant_id: str,
     code: str,

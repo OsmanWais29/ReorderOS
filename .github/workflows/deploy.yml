@@ -31,7 +31,7 @@ jobs:
       - name: Validate app spec
         run: doctl apps spec validate .do/app.yaml
 
-      - name: Push spec → trigger deployment
+      - name: Wait for deployment triggered by push
         id: deploy
         env:
           APP_ID: ${{ secrets.DIGITALOCEAN_APP_ID }}
@@ -43,11 +43,9 @@ jobs:
             echo "and store the returned app id as the GitHub secret."
             exit 1
           fi
-          # Sync spec. deploy_on_push already started a deployment from the git push.
-          doctl apps update "$APP_ID" --spec .do/app.yaml --wait=false
-          # Give DO a moment to register the deployment.
-          sleep 10
-          # head -1 causes SIGPIPE with pipefail — disable temporarily.
+          # deploy_on_push: true already started a deployment from the git push.
+          # Give DO a moment to register it before we query.
+          sleep 15
           set +o pipefail
           DEP_ID=$(doctl apps list-deployments "$APP_ID" --format ID --no-header 2>/dev/null | head -1)
           set -o pipefail
@@ -126,4 +124,3 @@ jobs:
             echo "- /health/ready: see above (proves Postgres connectivity)"
             echo "- /version: see above"
           } >> "$GITHUB_STEP_SUMMARY"
-

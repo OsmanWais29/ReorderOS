@@ -14,7 +14,7 @@ from app.core.config import get_settings
 from app.core.database import get_session
 from app.core.security import Identity, Principal, get_identity, get_principal
 from app.modules.auth.models import User
-from app.modules.auth.repo import get_user_by_workos_id
+from app.modules.auth.repo import upsert_user
 from app.modules.tenants.models import Tenant, UserTenant
 from app.modules.tenants.repo import (
     list_tenants_for_user,
@@ -141,9 +141,8 @@ async def me(
 
     db: _AS = session  # type: ignore[assignment]
 
-    user = await get_user_by_workos_id(db, identity.workos_id)
-    if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = await upsert_user(db, identity)
+    await db.commit()
 
     tenants = await list_tenants_for_user(db, user.id)
     return MeResponse(

@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     clover_webhook_auth_code: str | None = Field(
         default=None, alias="CLOVER_WEBHOOK_AUTH_CODE"
     )
+    clover_post_connect_redirect: str = Field(
+        default="http://localhost:8081/onboarding/found-summary",
+        alias="CLOVER_POST_CONNECT_REDIRECT",
+    )
 
     # ── Token encryption (Fernet; supports key rotation via _previous) ───────────
     token_encryption_key: str | None = Field(default=None, alias="TOKEN_ENCRYPTION_KEY")

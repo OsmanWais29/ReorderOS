@@ -68,20 +68,12 @@ async def connect(
     user: dict = Depends(_require_owner),
     db: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
-    """Initiate Clover OAuth flow.
-
-    Creates a CSRF state token, then redirects the browser to Clover's
-    authorization page. Clover echoes the state back to /callback.
-    """
+    """Initiate Clover OAuth flow (server-side redirect, for browser navigation)."""
     settings = get_settings()
     if not settings.clover_app_id:
         raise HTTPException(status_code=503, detail="Clover integration not configured")
 
-    state_token = await _state_mgr.generate(
-        user["tenant_id"],
-        user["user_id"],
-    )
-
+    state_token = await _state_mgr.generate(user["tenant_id"], user["user_id"])
     authorize_url = (
         f"{settings.clover_oauth_base_url}/oauth/authorize"
         f"?client_id={settings.clover_app_id}"
@@ -89,6 +81,29 @@ async def connect(
         f"&state={state_token}"
     )
     return RedirectResponse(url=authorize_url, status_code=302)
+
+
+@router.get("/connect-url")
+async def connect_url(
+    user: dict = Depends(_require_owner),
+) -> dict:
+    """Return the Clover OAuth URL as JSON.
+
+    SPA / mobile clients call this with an Authorization header (which a browser
+    redirect cannot send), then redirect the browser to the returned URL themselves.
+    """
+    settings = get_settings()
+    if not settings.clover_app_id:
+        raise HTTPException(status_code=503, detail="Clover integration not configured")
+
+    state_token = await _state_mgr.generate(user["tenant_id"], user["user_id"])
+    authorize_url = (
+        f"{settings.clover_oauth_base_url}/oauth/authorize"
+        f"?client_id={settings.clover_app_id}"
+        f"&redirect_uri={settings.clover_oauth_callback_url}"
+        f"&state={state_token}"
+    )
+    return {"url": authorize_url}
 
 
 @router.get("/callback")
@@ -178,7 +193,10 @@ async def callback(
     )
     await db.commit()
 
-    return RedirectResponse(url="/settings/pos?connected=true", status_code=302)
+    return RedirectResponse(
+        url=f"{settings.clover_post_connect_redirect}?connected=true",
+        status_code=302,
+    )
 
 
 @router.get("/status")

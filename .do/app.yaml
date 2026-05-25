@@ -89,6 +89,9 @@ services:
       - key: CLOVER_WEBHOOK_AUTH_CODE
         scope: RUN_TIME
         type: SECRET
+      - key: CLOVER_POST_CONNECT_REDIRECT
+        scope: RUN_TIME
+        value: http://localhost:8081/onboarding/found-summary
       - key: TOKEN_ENCRYPTION_KEY
         scope: RUN_TIME
         type: SECRET

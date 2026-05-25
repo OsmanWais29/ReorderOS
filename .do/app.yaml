@@ -92,6 +92,9 @@ services:
       - key: CLOVER_POST_CONNECT_REDIRECT
         scope: RUN_TIME
         value: http://localhost:8081/onboarding/found-summary
+      - key: CORS_ORIGINS
+        scope: RUN_TIME
+        value: '["http://localhost:8081"]'
       - key: TOKEN_ENCRYPTION_KEY
         scope: RUN_TIME
         type: SECRET

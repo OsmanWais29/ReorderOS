@@ -84,6 +84,12 @@ class Settings(BaseSettings):
         default=None, alias="TOKEN_ENCRYPTION_KEY_PREVIOUS"
     )
 
+    # ── CORS ─────────────────────────────────────────────────────────────────
+    cors_origins: list[str] = Field(
+        default=["http://localhost:8081"],
+        alias="CORS_ORIGINS",
+    )
+
     # ── Object storage (DigitalOcean Spaces; lazy-init in app.core.storage) ──
     spaces_endpoint: str | None = Field(default=None, alias="DO_SPACES_ENDPOINT")
     spaces_region: str | None = Field(default=None, alias="DO_SPACES_REGION")

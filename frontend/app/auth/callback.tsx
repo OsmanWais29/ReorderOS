@@ -29,8 +29,8 @@ export default function Callback() {
 
     (async () => {
       try {
-        const verifier = loadVerifier();
-        if (!verifier) throw new Error('Session expired — please try again');
+        // verifier is present for PKCE (email flow), absent for social auth (Google)
+        const verifier = loadVerifier() ?? undefined;
 
         setStatus('Verifying with WorkOS…');
         const token = await exchangeCode(code, verifier);

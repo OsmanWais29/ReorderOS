@@ -208,7 +208,7 @@ async def sign_in(body: SignInRequest) -> ExchangeResponse:
 
 class ExchangeRequest(BaseModel):
     code: str
-    code_verifier: str
+    code_verifier: str | None = None
     redirect_uri: str
 
 
@@ -223,17 +223,20 @@ async def exchange_code(body: ExchangeRequest) -> ExchangeResponse:
     if not s.workos_secret_key or not s.workos_client_id:
         raise HTTPException(status_code=503, detail="Auth not configured")
 
+    payload: dict[str, str] = {
+        "client_id": s.workos_client_id,
+        "client_secret": s.workos_secret_key,
+        "grant_type": "authorization_code",
+        "code": body.code,
+        "redirect_uri": body.redirect_uri,
+    }
+    if body.code_verifier:
+        payload["code_verifier"] = body.code_verifier
+
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(
             "https://api.workos.com/user_management/authenticate",
-            json={
-                "client_id": s.workos_client_id,
-                "client_secret": s.workos_secret_key,
-                "grant_type": "authorization_code",
-                "code": body.code,
-                "code_verifier": body.code_verifier,
-                "redirect_uri": body.redirect_uri,
-            },
+            json=payload,
         )
 
     if r.status_code != 200:

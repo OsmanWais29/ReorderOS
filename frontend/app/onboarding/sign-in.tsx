@@ -7,6 +7,16 @@ import { OnboardingHeader } from '@/components/OnboardingHeader';
 import { T, TYPE } from '@/theme/tokens';
 import { signInWithPassword } from '@/auth/api';
 import { useAuth } from '@/auth/AuthContext';
+import { WORKOS_CLIENT_ID, REDIRECT_URI } from '@/auth/config';
+
+const GOOGLE_AUTH_URL =
+  `https://api.workos.com/user_management/authorize?` +
+  new URLSearchParams({
+    client_id: WORKOS_CLIENT_ID,
+    redirect_uri: REDIRECT_URI,
+    response_type: 'code',
+    provider: 'GoogleOAuth',
+  }).toString();
 
 export default function SignIn() {
   const router = useRouter();
@@ -30,6 +40,12 @@ export default function SignIn() {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Sign in failed');
       setLoading(false);
+    }
+  };
+
+  const handleGoogle = () => {
+    if (typeof window !== 'undefined') {
+      window.location.href = GOOGLE_AUTH_URL;
     }
   };
 
@@ -83,6 +99,17 @@ export default function SignIn() {
             disabled={loading || !email || !password}
             onPress={handleSignIn}
           />
+
+          <View style={styles.divider}>
+            <View style={styles.dividerLine} />
+            <Text style={styles.dividerLabel}>or</Text>
+            <View style={styles.dividerLine} />
+          </View>
+
+          <Pressable style={styles.googleBtn} onPress={handleGoogle} disabled={loading}>
+            <Text style={styles.googleLabel}>Continue with Google</Text>
+          </Pressable>
+
           <Pressable onPress={() => router.back()} style={styles.backLink}>
             <Text style={styles.backLabel}>Back to welcome</Text>
           </Pressable>
@@ -107,6 +134,18 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: T.hairline,
   },
+  divider:      { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  dividerLine:  { flex: 1, height: 1, backgroundColor: T.hairline },
+  dividerLabel: { ...TYPE.subhead, color: T.ter },
+  googleBtn: {
+    borderWidth: 1,
+    borderColor: T.sep,
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    backgroundColor: T.elev1,
+  },
+  googleLabel: { ...TYPE.body, color: T.text },
   backLink:  { alignItems: 'center', paddingVertical: 8 },
   backLabel: { ...TYPE.subhead, color: T.label },
 });

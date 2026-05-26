@@ -27,11 +27,11 @@ export type MeResponse = {
   active_tenant_id: string | null;
 };
 
-export async function exchangeCode(code: string, codeVerifier: string): Promise<string> {
+export async function exchangeCode(code: string, codeVerifier?: string): Promise<string> {
   const res = await fetch(`${API_BASE}/api/v1/auth/exchange`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code, code_verifier: codeVerifier, redirect_uri: REDIRECT_URI }),
+    body: JSON.stringify({ code, code_verifier: codeVerifier ?? null, redirect_uri: REDIRECT_URI }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));

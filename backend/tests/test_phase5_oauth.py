@@ -9,6 +9,7 @@ from __future__ import annotations
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlparse
 
 import httpx
 import pytest
@@ -129,7 +130,9 @@ async def test_connect_owner_redirects_with_state(client, admin_conn):
     assert response.status_code in (302, 307)
 
     location = response.headers["location"]
-    assert "clover.com" in location
+    parsed = urlparse(location)
+    assert parsed.hostname is not None
+    assert parsed.hostname == "clover.com" or parsed.hostname.endswith(".clover.com")
     assert f"client_id={settings.clover_app_id}" in location
     assert "state=" in location
 

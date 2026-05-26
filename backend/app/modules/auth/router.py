@@ -171,14 +171,45 @@ async def set_active_tenant(
 # ── PKCE code exchange ────────────────────────────────────────────────────────
 
 
+class ExchangeResponse(BaseModel):
+    access_token: str
+
+
+class SignInRequest(BaseModel):
+    email: str
+    password: str
+
+
+@router.post("/sign-in", response_model=ExchangeResponse)
+async def sign_in(body: SignInRequest) -> ExchangeResponse:
+    """Embedded email/password sign-in — calls WorkOS password grant directly."""
+    s = get_settings()
+    if not s.workos_secret_key or not s.workos_client_id:
+        raise HTTPException(status_code=503, detail="Auth not configured")
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.post(
+            "https://api.workos.com/user_management/authenticate",
+            json={
+                "client_id": s.workos_client_id,
+                "client_secret": s.workos_secret_key,
+                "grant_type": "password",
+                "email": body.email,
+                "password": body.password,
+            },
+        )
+
+    if r.status_code != 200:
+        detail = r.json().get("message") or r.json().get("error", "Invalid credentials")
+        raise HTTPException(status_code=401, detail=detail)
+
+    return ExchangeResponse(access_token=r.json()["access_token"])
+
+
 class ExchangeRequest(BaseModel):
     code: str
     code_verifier: str
     redirect_uri: str
-
-
-class ExchangeResponse(BaseModel):
-    access_token: str
 
 
 @router.post("/exchange", response_model=ExchangeResponse)

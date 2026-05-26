@@ -1,5 +1,19 @@
 import { API_BASE, REDIRECT_URI } from './config';
 
+export async function signInWithPassword(email: string, password: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/v1/auth/sign-in`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail ?? 'Sign in failed');
+  }
+  const data = await res.json();
+  return data.access_token as string;
+}
+
 export type MeResponse = {
   user: {
     id: string;

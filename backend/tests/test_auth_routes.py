@@ -106,10 +106,13 @@ async def test_me_returns_user_and_tenants(owner_client: AsyncClient, admin_conn
 
 
 @pytest.mark.integration
-async def test_me_no_user_returns_404(owner_client: AsyncClient) -> None:
-    """If the user hasn't registered yet, /me returns 404."""
+async def test_me_upserts_user_on_first_login(owner_client: AsyncClient, admin_conn: Any) -> None:
+    """First call to /me auto-creates the user from JWT claims and returns 200."""
     r = await owner_client.get("/api/v1/auth/me")
-    assert r.status_code == 404
+    assert r.status_code == 200
+    assert r.json()["user"]["workos_id"] == "user_test_fixed"
+    # Clean up the committed row so subsequent tests can seed the same workos_id.
+    await admin_conn.execute("DELETE FROM users WHERE workos_id = 'user_test_fixed'")
 
 
 # ── /api/v1/auth/active-tenant ────────────────────────────────────────────────

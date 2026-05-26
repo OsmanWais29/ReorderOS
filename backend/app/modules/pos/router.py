@@ -11,6 +11,7 @@ via the CSRF state token, which was created by an authenticated /connect call.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -37,7 +38,7 @@ def _from_unix_ms(ms: int) -> datetime:
 # ── Auth dependencies — exported so tests can override them ──────────────────
 
 
-async def get_current_user(principal: Principal = Depends(get_principal)) -> dict:
+async def get_current_user(principal: Principal = Depends(get_principal)) -> dict[str, Any]:
     """Resolve the authenticated principal to a plain dict.
 
     Returning a dict (not Principal) lets tests override this dependency with
@@ -50,7 +51,7 @@ async def get_current_user(principal: Principal = Depends(get_principal)) -> dic
     }
 
 
-def _require_owner(user: dict = Depends(get_current_user)) -> dict:
+def _require_owner(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
     """403 for any role that is not 'owner'."""
     if user.get("role") != "owner":
         raise HTTPException(
@@ -65,7 +66,7 @@ def _require_owner(user: dict = Depends(get_current_user)) -> dict:
 
 @router.get("/connect")
 async def connect(
-    user: dict = Depends(_require_owner),
+    user: dict[str, Any] = Depends(_require_owner),
     db: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
     """Initiate Clover OAuth flow (server-side redirect, for browser navigation)."""
@@ -85,8 +86,8 @@ async def connect(
 
 @router.get("/connect-url")
 async def connect_url(
-    user: dict = Depends(_require_owner),
-) -> dict:
+    user: dict[str, Any] = Depends(_require_owner),
+) -> dict[str, Any]:
     """Return the Clover OAuth URL as JSON.
 
     SPA / mobile clients call this with an Authorization header (which a browser
@@ -201,9 +202,9 @@ async def callback(
 
 @router.get("/status")
 async def status(
-    user: dict = Depends(get_current_user),
+    user: dict[str, Any] = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
-) -> dict:
+) -> dict[str, Any]:
     """Return the tenant's current Clover connection state.
 
     Used by the frontend settings page on every load — tells it whether to
@@ -250,9 +251,9 @@ async def status(
 
 @router.post("/disconnect")
 async def disconnect(
-    user: dict = Depends(_require_owner),
+    user: dict[str, Any] = Depends(_require_owner),
     db: AsyncSession = Depends(get_session),
-) -> dict:
+) -> dict[str, Any]:
     """Revoke the tenant's active Clover connection.
 
     Sets state='revoked' on the active connection row. The connection

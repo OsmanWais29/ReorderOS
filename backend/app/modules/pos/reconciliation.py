@@ -153,8 +153,6 @@ class ReconciliationService:
                 )
 
                 for order in orders:
-                    if not isinstance(order, dict):
-                        continue
                     if (order.get("state") or "").lower() != "locked":
                         continue
 

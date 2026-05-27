@@ -1,12 +1,18 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, Platform } from 'react-native';
+import { View, Text, StyleSheet } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import * as WebBrowser from 'expo-web-browser';
 import { Button } from '@/components/atoms';
 import { OnboardingHeader } from '@/components/OnboardingHeader';
 import { useAuth } from '@/auth/AuthContext';
 import { API_BASE } from '@/auth/config';
 import { T, TYPE } from '@/theme/tokens';
+
+// Required so iOS dismisses the auth session cleanly on return.
+WebBrowser.maybeCompleteAuthSession();
+
+const REDIRECT_URL = 'https://reorderos.com/onboarding/found-summary';
 
 export default function Connecting() {
   const { provider } = useLocalSearchParams<{ provider?: string }>();
@@ -39,13 +45,22 @@ export default function Connecting() {
         throw new Error(body.detail ?? `Server error ${res.status}`);
       }
       const { url } = await res.json();
-      if (Platform.OS === 'web') {
-        window.location.href = url;
+
+      // Opens Clover OAuth in an in-app browser on native, or a popup on web.
+      // Monitors for navigation to REDIRECT_URL and closes the browser when it lands there.
+      const result = await WebBrowser.openAuthSessionAsync(url, REDIRECT_URL);
+
+      if (result.type === 'success') {
+        const params = new URL(result.url).searchParams;
+        router.replace(`/onboarding/found-summary?connected=${params.get('connected') ?? 'true'}`);
+      } else if (result.type === 'cancel') {
+        setError('Connection cancelled. Tap below to try again.');
       } else {
-        throw new Error('Native OAuth not yet supported — use web to test.');
+        setError('Could not complete the Clover connection. Try again.');
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
+    } finally {
       setLoading(false);
     }
   };

@@ -89,8 +89,8 @@ accounting figure. The system explicitly models this as an operational estimate.
 on_hand = last_count_quantity
         + SUM(delta of receive/transfer_in/count_adjust movements)
             WHERE created_at > reconciliation_cutoff_created_at
-        - SUM(delta of sale_signal and sale_signal_reversal movements
-              * yield_factor_applied)
+        - SUM(delta_i × yield_factor_applied_i, per row)
+            for each sale_signal and sale_signal_reversal movement i
             WHERE created_at > reconciliation_cutoff_created_at
 ```
 
@@ -390,6 +390,10 @@ The role of the stored value differs by mode:
   is pre-computed at write time incorporating the yield factor, so `yield_factor_applied`
   is stored as an audit record of the factor that was used — it is not re-applied at
   query time. Applying it again at query time would double-count.
+
+For the reversal-specific requirement — that the reversal row must carry the same
+`yield_factor_applied` as its original — see §9. That requirement is a constraint of
+cancellation arithmetic and applies regardless of mode.
 
 ### `recipe_version_id` on `sale_line_items`
 

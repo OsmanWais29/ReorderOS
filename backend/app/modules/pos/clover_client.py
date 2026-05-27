@@ -148,6 +148,34 @@ class CloverClient:
             f"429 listing orders for merchant {self.merchant_id}"
         )
 
+    async def get_merchant(self) -> dict[str, Any]:
+        """Fetch merchant details (name, address, phone, etc.).
+
+        Raises:
+            TokenExpiredError: 401 from Clover.
+            RateLimitedError: 429 from Clover.
+            httpx.HTTPStatusError: any other 4xx / 5xx.
+        """
+        await _app_bucket.acquire()
+        await self._token_bucket.acquire()
+
+        url = f"{self.base_url}/v3/merchants/{self.merchant_id}"
+
+        async with httpx.AsyncClient(timeout=15) as http:
+            resp = await http.get(
+                url,
+                headers={"Authorization": f"Bearer {self.access_token}"},
+                params={"expand": "address"},
+            )
+
+        if resp.status_code == 401:
+            raise TokenExpiredError(f"401 fetching merchant {self.merchant_id}")
+        if resp.status_code == 429:
+            raise RateLimitedError(f"429 fetching merchant {self.merchant_id}")
+
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
     async def get_order(self, order_id: str) -> dict[str, Any]:
         """Fetch a single order with its line items expanded.
 

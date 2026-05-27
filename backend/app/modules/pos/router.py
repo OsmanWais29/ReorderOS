@@ -249,6 +249,203 @@ async def status(
     }
 
 
+@router.get("/sync-progress")
+async def sync_progress(
+    user: dict[str, Any] = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Return step-by-step sync progress for the connecting screen.
+
+    Steps:
+      1. oauth — always true if connection exists
+      2. menu  — count of menu_items synced
+      3. sales — 30-day sales total from orders
+      4. inventory — count of inventory_items
+    """
+    tid = user["tenant_id"]
+    await db.execute(
+        text("SELECT set_config('app.tenant_id', :tid, true)"),
+        {"tid": tid},
+    )
+
+    conn = await db.execute(
+        text("""
+            SELECT state, initial_sync_started_at, initial_sync_completed_at
+            FROM tenant_pos_connections
+            WHERE tenant_id = :tid AND vendor = 'clover'
+              AND state IN ('active', 'error')
+            ORDER BY created_at DESC LIMIT 1
+        """),
+        {"tid": tid},
+    )
+    row = conn.fetchone()
+    if row is None:
+        return {"connected": False, "steps": []}
+
+    menu_count_row = await db.execute(
+        text("SELECT COUNT(*) FROM menu_items WHERE tenant_id = :tid AND active = true"),
+        {"tid": tid},
+    )
+    menu_count: int = menu_count_row.scalar() or 0
+
+    sales_row = await db.execute(
+        text("""
+            SELECT COALESCE(SUM(total_amount_cents), 0), COUNT(*)
+            FROM orders
+            WHERE tenant_id = :tid
+              AND closed_at >= now() - interval '30 days'
+              AND state = 'locked'
+        """),
+        {"tid": tid},
+    )
+    sales_data = sales_row.fetchone()
+    sales_cents: int = sales_data[0] if sales_data else 0
+    order_count: int = sales_data[1] if sales_data else 0
+
+    inv_row = await db.execute(
+        text("SELECT COUNT(*) FROM inventory_items WHERE tenant_id = :tid AND active = true"),
+        {"tid": tid},
+    )
+    inv_count: int = inv_row.scalar() or 0
+
+    sync_started = row.initial_sync_started_at is not None
+    sync_done = row.initial_sync_completed_at is not None
+
+    steps = [
+        {"key": "oauth", "label": "Authenticating with OAuth", "done": True},
+        {
+            "key": "menu",
+            "label": f"Pulling menu ({menu_count} items)",
+            "done": sync_done and menu_count > 0,
+            "count": menu_count,
+        },
+        {
+            "key": "sales",
+            "label": f"30 days sales (${sales_cents / 100:,.0f})",
+            "done": sync_done and order_count > 0,
+            "count": order_count,
+            "total_cents": sales_cents,
+        },
+        {
+            "key": "inventory",
+            "label": f"Inventory levels ({inv_count} SKUs)",
+            "done": sync_done and inv_count > 0,
+            "count": inv_count,
+        },
+    ]
+
+    return {
+        "connected": True,
+        "sync_started": sync_started,
+        "sync_completed": sync_done,
+        "steps": steps,
+    }
+
+
+@router.get("/sync-summary")
+async def sync_summary(
+    user: dict[str, Any] = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Return aggregated summary for the found-summary screen.
+
+    Includes merchant info (from tenant), menu count, 30d sales,
+    and top 3 selling items.
+    """
+    tid = user["tenant_id"]
+    await db.execute(
+        text("SELECT set_config('app.tenant_id', :tid, true)"),
+        {"tid": tid},
+    )
+
+    conn_row = await db.execute(
+        text("""
+            SELECT connection_id, merchant_id, access_token_enc, environment
+            FROM tenant_pos_connections
+            WHERE tenant_id = :tid AND vendor = 'clover'
+              AND state IN ('active', 'error')
+            ORDER BY created_at DESC LIMIT 1
+        """),
+        {"tid": tid},
+    )
+    conn = conn_row.fetchone()
+    if conn is None:
+        return {"connected": False}
+
+    merchant_name: str | None = None
+    merchant_location: str | None = None
+    try:
+        enc = TokenEncryption()
+        access_token = enc.decrypt(conn.access_token_enc)
+        from app.modules.pos.clover_client import CloverClient
+
+        clover = CloverClient(
+            access_token=access_token,
+            merchant_id=conn.merchant_id,
+            environment=conn.environment,
+        )
+        merchant = await clover.get_merchant()
+        merchant_name = merchant.get("name")
+        addr = merchant.get("address") or {}
+        city = addr.get("city", "")
+        state_code = addr.get("state", "")
+        if city and state_code:
+            merchant_location = f"{city}, {state_code}"
+        elif city:
+            merchant_location = city
+    except Exception:
+        pass
+
+    menu_row = await db.execute(
+        text("SELECT COUNT(*) FROM menu_items WHERE tenant_id = :tid AND active = true"),
+        {"tid": tid},
+    )
+    menu_count: int = menu_row.scalar() or 0
+
+    sales_row = await db.execute(
+        text("""
+            SELECT COALESCE(SUM(total_amount_cents), 0)
+            FROM orders
+            WHERE tenant_id = :tid
+              AND closed_at >= now() - interval '30 days'
+              AND state = 'locked'
+        """),
+        {"tid": tid},
+    )
+    net_sales_cents: int = sales_row.scalar() or 0
+
+    top_items_row = await db.execute(
+        text("""
+            SELECT sli.name_at_sale, SUM(sli.quantity)::int AS total_qty
+            FROM sale_line_items sli
+            JOIN orders o ON o.id = sli.order_id AND o.tenant_id = sli.tenant_id
+            WHERE sli.tenant_id = :tid
+              AND o.closed_at >= now() - interval '30 days'
+              AND o.state = 'locked'
+              AND NOT sli.is_refunded
+              AND NOT sli.is_voided
+            GROUP BY sli.name_at_sale
+            ORDER BY total_qty DESC
+            LIMIT 3
+        """),
+        {"tid": tid},
+    )
+    top_items = [
+        {"name": r[0], "quantity": r[1]}
+        for r in top_items_row.fetchall()
+    ]
+
+    return {
+        "connected": True,
+        "merchant_id": conn.merchant_id,
+        "merchant_name": merchant_name,
+        "merchant_location": merchant_location,
+        "menu_item_count": menu_count,
+        "net_sales_30d_cents": net_sales_cents,
+        "top_items": top_items,
+    }
+
+
 @router.post("/disconnect")
 async def disconnect(
     user: dict[str, Any] = Depends(_require_owner),

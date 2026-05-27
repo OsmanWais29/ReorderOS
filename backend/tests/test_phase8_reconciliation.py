@@ -806,6 +806,7 @@ async def test_run_all_multiple_connections(admin_conn):
 @pytest.mark.integration
 async def test_waitlist_crud(admin_conn):
     wl_id = str(uuid7())
+    unique_email = f"waitlist-{uuid.uuid4().hex[:8]}@test.com"
     await admin_conn.execute(
         """
         INSERT INTO pos_waitlist (id, pos_name, email, restaurant_name)
@@ -813,7 +814,7 @@ async def test_waitlist_crud(admin_conn):
     """,
         wl_id,
         "clover",
-        "test@restaurant.com",
+        unique_email,
         "Joe's Shawarma",
     )
 
@@ -823,7 +824,7 @@ async def test_waitlist_crud(admin_conn):
     )
     assert row is not None
     assert row["pos_name"] == "clover"
-    assert row["email"] == "test@restaurant.com"
+    assert row["email"] == unique_email
     assert row["restaurant_name"] == "Joe's Shawarma"
     assert row["created_at"] is not None
 

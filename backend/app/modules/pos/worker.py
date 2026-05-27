@@ -17,6 +17,7 @@ import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import text
 from uuid6 import uuid7
@@ -24,6 +25,7 @@ from uuid6 import uuid7
 from app.core.encryption import TokenEncryption
 from app.core.logging import get_logger
 from app.core.service_db import get_service_sessionmaker
+from app.modules.inventory.services import record_sale_inventory_effect
 from app.modules.pos.clover_client import (
     CloverClient,
     OrderNotFoundError,
@@ -210,7 +212,12 @@ class InboxWorker:
             await self.mark_processed(event)
             return
 
-        # ── 4. Upsert order + line items under T1 RLS context ─────────────
+        # ── 4. Upsert order + line items + inventory effects ──────────────
+        # vendor_ts is the POS business-event timestamp — passed as recorded_at
+        # so the three-timestamp model (recorded_at vs created_at) is preserved.
+        created_ms = order_data.get("clientCreatedTime") or order_data.get("createdTime")
+        vendor_ts: datetime | None = _from_ms(_safe_int(created_ms) if created_ms else None)
+
         try:
             sm3 = get_service_sessionmaker()
             async with sm3() as session, session.begin():
@@ -231,7 +238,15 @@ class InboxWorker:
                             tenant_id=tenant_id,
                         )
                         continue
-                    await self._insert_line_item(session, tenant_id, order_row_id, li)
+                    sli_id = await self._insert_line_item(
+                        session, tenant_id, order_row_id, li
+                    )
+                    is_refunded = bool(li.get("refunded", False))
+                    is_voided = bool(li.get("exchanged", False))
+                    if sli_id and not is_refunded and not is_voided:
+                        await self._emit_inventory_effects(
+                            session, tenant_id, sli_id, vendor_ts
+                        )
         except Exception as exc:
             await self.mark_failed(event, f"{type(exc).__name__}: {exc!s}")
             return
@@ -388,7 +403,13 @@ class InboxWorker:
         tenant_id: str,
         order_id: str,
         li: dict[str, Any],
-    ) -> None:
+    ) -> str:
+        """Insert a sale_line_item and return its UUID string.
+
+        ON CONFLICT DO NOTHING (idempotent on clover_line_item_id).  If the row
+        already exists from a prior attempt, falls back to a SELECT to return
+        the existing ID so inventory effects can still be triggered idempotently.
+        """
         li_id: str = li["id"]  # caller guarantees non-empty
 
         name: str = li.get("name") or "Unknown"
@@ -401,14 +422,18 @@ class InboxWorker:
         is_refunded = bool(li.get("refunded", False))
         is_voided = bool(li.get("exchanged", False))
 
-        # Best-effort menu_item_id lookup — nullable if not catalogued yet.
+        # Best-effort menu_item_id + recipe_version_id lookup.
+        # recipe_version_id is snapshotted at insert time (Section 10 of the
+        # accounting ADR) — changing menu_items.recipe_version_id later has no
+        # effect on depletions that already have a snapshot.
         item_id: str | None = (li.get("item") or {}).get("id")
         menu_item_id: str | None = None
+        recipe_version_id: str | None = None
         if item_id:
             mi_row = (
                 await session.execute(
                     text("""
-                        SELECT id FROM menu_items
+                        SELECT id, recipe_version_id FROM menu_items
                         WHERE tenant_id = :tid AND pos_item_id = :pid
                         LIMIT 1
                     """),
@@ -417,21 +442,24 @@ class InboxWorker:
             ).fetchone()
             if mi_row:
                 menu_item_id = str(mi_row.id)
+                if mi_row.recipe_version_id is not None:
+                    recipe_version_id = str(mi_row.recipe_version_id)
 
-        await session.execute(
+        result = await session.execute(
             text("""
                 INSERT INTO sale_line_items (
                     id, tenant_id, order_id, clover_line_item_id, menu_item_id,
                     name_at_sale, quantity, price_cents_at_sale,
                     discount_amount_cents, net_revenue_cents,
-                    is_refunded, is_voided
+                    is_refunded, is_voided, recipe_version_id
                 ) VALUES (
                     :id, :tid, :order_id, :li_id, :menu_item_id,
                     :name, :qty, :price,
                     :discount, :net,
-                    :refunded, :voided
+                    :refunded, :voided, :rvid
                 )
                 ON CONFLICT ON CONSTRAINT uq_sli_clover DO NOTHING
+                RETURNING id
             """),
             {
                 "id": str(uuid7()),
@@ -446,8 +474,62 @@ class InboxWorker:
                 "net": net_revenue,
                 "refunded": is_refunded,
                 "voided": is_voided,
+                "rvid": recipe_version_id,
             },
         )
+        row = result.fetchone()
+        if row:
+            return str(row.id)
+
+        # Conflict: row exists from a prior attempt — fetch existing id.
+        existing = (
+            await session.execute(
+                text("""
+                    SELECT id FROM sale_line_items
+                    WHERE tenant_id = :tid AND clover_line_item_id = :li_id
+                    LIMIT 1
+                """),
+                {"tid": tenant_id, "li_id": li_id},
+            )
+        ).fetchone()
+        return str(existing.id)
+
+    # ── Inventory effect dispatch ─────────────────────────────────────────────
+
+    async def _emit_inventory_effects(
+        self,
+        session: Any,
+        tenant_id: str,
+        sale_line_item_id: str,
+        vendor_ts: datetime | None,
+    ) -> None:
+        """Call record_sale_inventory_effect for every recipe ingredient on the line.
+
+        Skips gracefully when the sale line has no recipe (menu_item not yet
+        catalogued, or item not linked to any recipe version).  Each call is
+        idempotent, so safe to retry on a replay.
+        """
+        rows = (
+            await session.execute(
+                text("""
+                    SELECT ri.inventory_item_id
+                      FROM sale_line_items s
+                      JOIN recipe_ingredients ri
+                        ON ri.recipe_version_id = s.recipe_version_id
+                     WHERE s.tenant_id = :tid AND s.id = :sli
+                """),
+                {"tid": tenant_id, "sli": sale_line_item_id},
+            )
+        ).fetchall()
+
+        for row in rows:
+            await record_sale_inventory_effect(
+                session,
+                tenant_id=UUID(tenant_id),
+                sale_line_item_id=UUID(sale_line_item_id),
+                inventory_item_id=UUID(str(row[0])),
+                recorded_at=vendor_ts,
+            )
 
     # ── State transitions ─────────────────────────────────────────────────────
 

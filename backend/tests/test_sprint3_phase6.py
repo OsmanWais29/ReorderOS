@@ -90,14 +90,18 @@ async def client(app_instance):
 @pytest.fixture(autouse=True)
 async def session(app_instance):
     """
-    Per-test savepoint transaction.
+    Per-test transaction isolation.
 
     Seeds all FK prerequisite rows (tenant, user, uom, ingredients) within the
-    savepoint so every test starts with a clean, consistent baseline.
+    transaction so every test starts with a clean, consistent baseline.
     Rolls back on teardown — no data persists between tests.
+
+    Uses join_transaction_mode="create_savepoint" (via make_bound_session) so
+    session.commit() inside tests wraps flushes in nested SAVEPOINTs without
+    touching the outer BEGIN. Teardown calls conn.rollback() to discard all data.
     """
-    async with engine.begin() as conn:
-        tx = await conn.begin_nested()  # SAVEPOINT
+    async with engine.connect() as conn:
+        trans = await conn.begin()
         db = make_bound_session(conn)
 
         app_instance.dependency_overrides[get_db_session] = lambda: db
@@ -151,10 +155,12 @@ async def session(app_instance):
                 {"id": ing_id, "tid": TENANT_ID, "name": ing_name},
             )
 
-        yield db
-
-        await tx.rollback()  # undo all test changes
-        app_instance.dependency_overrides.clear()
+        try:
+            yield db
+        finally:
+            await db.close()
+            await trans.rollback()  # undo all test changes
+            app_instance.dependency_overrides.clear()
 
 
 # ---------------------------------------------------------------------------

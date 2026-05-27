@@ -8,12 +8,25 @@ from decimal import Decimal
 
 import asyncpg
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.inventory.services import record_count_event
 from tests.conftest import seed_tenant
 
 pytestmark = pytest.mark.integration
 
 UTC = UTC
+
+
+@pytest.fixture
+async def db_session() -> AsyncSession:
+    """SQLAlchemy async session for service-layer calls."""
+    from app.core.database import get_sessionmaker
+
+    sm = get_sessionmaker()
+    async with sm() as session:
+        yield session
+        await session.rollback()
 
 
 # ── shared helpers ────────────────────────────────────────────────────────────
@@ -179,6 +192,7 @@ async def _count_movements_of_type(
 @pytest.mark.asyncio
 async def test_3_1_mode_a_count_with_drift_emits_count_adjust(
     admin_conn: asyncpg.Connection,
+    db_session: AsyncSession,
 ) -> None:
     t = await seed_tenant(admin_conn)
     tid = str(t["id"])
@@ -187,15 +201,15 @@ async def test_3_1_mode_a_count_with_drift_emits_count_adjust(
 
     await _mv(admin_conn, tid, item, "opening_balance", +100)
 
-    await _insert_count_event(
-        admin_conn,
-        tid,
-        item,
-        counted_quantity=95,
-        predicted_on_hand=100,
+    result = await record_count_event(
+        db_session,
+        tenant_id=uuid.UUID(tid),
+        inventory_item_id=uuid.UUID(item),
+        counted_quantity=Decimal("95"),
     )
+    await db_session.commit()
 
-    # Trigger must have emitted a count_adjust row.
+    # Service must have emitted a count_adjust row.
     n_adj = await _count_movements_of_type(admin_conn, tid, item, "count_adjust")
     assert n_adj == 1, f"expected 1 count_adjust, got {n_adj}"
 
@@ -208,6 +222,7 @@ async def test_3_1_mode_a_count_with_drift_emits_count_adjust(
     )
     assert row["delta"] == Decimal("-5"), f"expected delta=-5, got {row['delta']}"
     assert row["source_type"] == "count_event"
+    assert result["predicted_on_hand_at_count"] == Decimal("100")
 
     # on_hand must now equal counted_quantity.
     assert await _on_hand(admin_conn, tid, item) == Decimal("95")
@@ -250,6 +265,7 @@ async def test_3_2_mode_a_zero_drift_emits_nothing(
 @pytest.mark.asyncio
 async def test_3_3_mode_b_count_does_not_emit_count_adjust(
     admin_conn: asyncpg.Connection,
+    db_session: AsyncSession,
 ) -> None:
     t = await seed_tenant(admin_conn)
     tid = str(t["id"])
@@ -266,14 +282,14 @@ async def test_3_3_mode_b_count_does_not_emit_count_adjust(
     )
 
     counted_at = datetime(2026, 3, 2, 0, 0, 0, tzinfo=UTC)
-    await _insert_count_event(
-        admin_conn,
-        tid,
-        item,
-        counted_quantity=80,
-        predicted_on_hand=None,
+    await record_count_event(
+        db_session,
+        tenant_id=uuid.UUID(tid),
+        inventory_item_id=uuid.UUID(item),
+        counted_quantity=Decimal("80"),
         counted_at=counted_at,
     )
+    await db_session.commit()
 
     n_adj = await _count_movements_of_type(admin_conn, tid, item, "count_adjust")
     assert n_adj == 0, f"expected 0 count_adjust rows, got {n_adj}"
@@ -294,6 +310,7 @@ async def test_3_3_mode_b_count_does_not_emit_count_adjust(
 @pytest.mark.asyncio
 async def test_3_4_mode_b_count_reanchors_on_hand(
     admin_conn: asyncpg.Connection,
+    db_session: AsyncSession,
 ) -> None:
     t = await seed_tenant(admin_conn)
     tid = str(t["id"])
@@ -319,15 +336,15 @@ async def test_3_4_mode_b_count_reanchors_on_hand(
     pre_count = await _on_hand(admin_conn, tid, item)
     assert pre_count == Decimal("220"), f"pre-count on_hand wrong: {pre_count}"
 
-    # Insert count event — trigger updates anchor to 210 at t2.
-    await _insert_count_event(
-        admin_conn,
-        tid,
-        item,
-        counted_quantity=210,
-        predicted_on_hand=None,
+    # Service updates anchor to 210 at t2 (Mode B).
+    await record_count_event(
+        db_session,
+        tenant_id=uuid.UUID(tid),
+        inventory_item_id=uuid.UUID(item),
+        counted_quantity=Decimal("210"),
         counted_at=t2,
     )
+    await db_session.commit()
 
     row = await admin_conn.fetchrow(
         "SELECT last_count_quantity FROM inventory_items WHERE id = $1",

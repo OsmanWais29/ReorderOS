@@ -117,13 +117,25 @@ def get_db_session() -> AsyncSession:
 
 
 def make_bound_session(conn: AsyncConnection) -> AsyncSession:
-    """Test factory only.
+    """Test factory only. Never call from production code.
 
-    Returns a session that reuses *conn* so that the test's outer savepoint
-    can be rolled back to undo all changes made during a single test.
-    Never call this from production code — it bypasses the pool lifecycle.
+    Returns a session that reuses *conn* and operates inside the outer
+    transaction started by the test fixture.
+
+    join_transaction_mode="create_savepoint": every session.commit() wraps
+    its flush in a nested SAVEPOINT then releases it, leaving the outer
+    BEGIN intact so fixture teardown can call conn.rollback() to undo all
+    test data atomically.
+
+    Known fidelity gap: PostgreSQL deferred constraints (DEFERRABLE INITIALLY
+    DEFERRED) only fire at the real outer COMMIT, not at SAVEPOINT RELEASE.
+    They will not be exercised by tests using this session factory.
     """
-    return AsyncSession(bind=conn, expire_on_commit=False)
+    return AsyncSession(
+        bind=conn,
+        expire_on_commit=False,
+        join_transaction_mode="create_savepoint",
+    )
 
 
 class _EngineProxy:

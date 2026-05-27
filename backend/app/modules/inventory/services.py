@@ -39,9 +39,73 @@ async def on_hand(
     *,
     tenant_id: UUID,
     inventory_item_id: UUID,
+    reconciliation_cutoff: datetime | None = None,
 ) -> Decimal | None:
-    result = await session.execute(
-        text("""
+    """Compute current on-hand quantity.
+
+    reconciliation_cutoff: when provided (new counts, post-0010), Mode B filters
+    movements by created_at > cutoff and uses per-row yield_factor_applied.
+    When None (historical rows), falls back to recorded_at > last_count_at and
+    the live inventory_yield_factors table — backwards-compatible behaviour.
+    """
+    if reconciliation_cutoff is not None:
+        # Watermark path: created_at boundary, per-row yield snapshot.
+        sql = """
+            WITH item AS (
+                SELECT inventory_mode, last_count_at, last_count_quantity
+                  FROM inventory_items
+                 WHERE tenant_id = :tid AND id = :iid
+            ),
+            ledger_sum AS (
+                SELECT COALESCE(SUM(delta), 0) AS qty
+                  FROM inventory_movements
+                 WHERE tenant_id         = :tid
+                   AND inventory_item_id = :iid
+                   AND movement_type NOT IN ('sale_signal','sale_signal_reversal')
+            ),
+            receipts_since AS (
+                SELECT COALESCE(SUM(m.delta), 0) AS qty
+                  FROM inventory_movements m
+                 WHERE m.tenant_id         = :tid
+                   AND m.inventory_item_id = :iid
+                   AND m.movement_type IN ('receive','transfer_in','count_adjust','opening_balance')
+                   AND m.created_at > :cutoff
+            ),
+            signals_since AS (
+                SELECT COALESCE(SUM(
+                           m.delta
+                           * COALESCE(m.yield_factor_applied,
+                                      (SELECT yield_factor FROM inventory_yield_factors
+                                        WHERE tenant_id         = :tid
+                                          AND inventory_item_id = :iid),
+                                      1.0)
+                       ), 0) AS qty
+                  FROM inventory_movements m
+                 WHERE m.tenant_id         = :tid
+                   AND m.inventory_item_id = :iid
+                   AND m.movement_type     IN ('sale_signal', 'sale_signal_reversal')
+                   AND m.created_at > :cutoff
+            )
+            SELECT CASE
+                WHEN item.inventory_mode = 'recipe_deducted'
+                    THEN ledger_sum.qty
+                WHEN item.inventory_mode = 'count_anchored'
+                     AND item.last_count_quantity IS NOT NULL
+                    THEN item.last_count_quantity
+                         + receipts_since.qty
+                         - signals_since.qty
+                ELSE NULL
+            END AS qty
+            FROM item, ledger_sum, receipts_since, signals_since
+        """
+        params: dict[str, Any] = {
+            "tid": tenant_id,
+            "iid": inventory_item_id,
+            "cutoff": reconciliation_cutoff,
+        }
+    else:
+        # Historical path: recorded_at boundary, live yield factor table.
+        sql = """
             WITH item AS (
                 SELECT inventory_mode, last_count_at, last_count_quantity
                   FROM inventory_items
@@ -63,12 +127,12 @@ async def on_hand(
                    AND m.movement_type IN ('receive','transfer_in','count_adjust','opening_balance')
             ),
             signals_since AS (
-                SELECT COALESCE(SUM(ABS(m.delta)), 0) AS qty
+                SELECT COALESCE(SUM(m.delta), 0) AS qty
                   FROM inventory_movements m, item
                  WHERE m.tenant_id         = :tid
                    AND m.inventory_item_id = :iid
                    AND m.recorded_at       > item.last_count_at
-                   AND m.movement_type     = 'sale_signal'
+                   AND m.movement_type     IN ('sale_signal', 'sale_signal_reversal')
             )
             SELECT CASE
                 WHEN item.inventory_mode = 'recipe_deducted'
@@ -86,9 +150,10 @@ async def on_hand(
                 ELSE NULL
             END AS qty
             FROM item, ledger_sum, receipts_since, signals_since
-        """),
-        {"tid": tenant_id, "iid": inventory_item_id},
-    )
+        """
+        params = {"tid": tenant_id, "iid": inventory_item_id}
+
+    result = await session.execute(text(sql), params)
     return result.scalar_one_or_none()
 
 
@@ -185,6 +250,7 @@ async def record_sale_inventory_effect(
     tenant_id: UUID,
     sale_line_item_id: UUID,
     inventory_item_id: UUID,
+    recorded_at: datetime | None = None,
 ) -> UUID | None:
     """Record the inventory movement caused by one sale line.  Idempotent.
 
@@ -196,6 +262,14 @@ async def record_sale_inventory_effect(
 
     Mode A → sale_depletion, delta = -theoretical_storage_qty
     Mode B → sale_signal,    delta = +theoretical_storage_qty
+
+    The current yield factor is snapshotted in yield_factor_applied so that
+    on_hand() replay remains deterministic even if inventory_yield_factors
+    changes later.
+
+    recorded_at: business event time from the source system (POS timestamp).
+    When provided, the late-signal alert fires if the ingestion lag exceeds 30
+    minutes and the event crosses a count reconciliation boundary.
 
     Idempotency key: ``sale_line:{sale_line_item_id}:{inventory_item_id}``
     Returns None if the movement already existed (replay).
@@ -243,6 +317,17 @@ async def record_sale_inventory_effect(
         Decimal(str(row.sale_qty)) * Decimal(str(row.recipe_qty)) / Decimal(str(row.factor))
     )
 
+    # ── snapshot yield factor (identity 1.0 when no row exists) ──────────────
+    yf_res = await session.execute(
+        text("""
+            SELECT yield_factor FROM inventory_yield_factors
+             WHERE tenant_id = :tid AND inventory_item_id = :iid
+        """),
+        {"tid": tenant_id, "iid": inventory_item_id},
+    )
+    yf_row = yf_res.fetchone()
+    yield_factor = Decimal(str(yf_row[0])) if yf_row else Decimal("1.0")
+
     if row.mode == "recipe_deducted":
         movement_type = "sale_depletion"
         delta = -theoretical_qty
@@ -255,9 +340,11 @@ async def record_sale_inventory_effect(
         text("""
             INSERT INTO inventory_movements
                 (id, tenant_id, inventory_item_id, movement_type, delta,
-                 source_type, source_id, idempotency_key)
+                 source_type, source_id, idempotency_key,
+                 yield_factor_applied, recorded_at)
             VALUES (:id, :tid, :iid, :mtype, :delta,
-                    'sale_line_item', :slid, :key)
+                    'sale_line_item', :slid, :key,
+                    :yf, COALESCE(:rec_at, NOW()))
         """),
         {
             "id": mv_id,
@@ -267,6 +354,146 @@ async def record_sale_inventory_effect(
             "delta": delta,
             "slid": sale_line_item_id,
             "key": idem_key,
+            "yf": yield_factor,
+            "rec_at": recorded_at,
+        },
+    )
+    await session.flush()
+
+    # ── late-signal detection ─────────────────────────────────────────────────
+    if recorded_at is not None:
+        now = datetime.now(UTC)
+        gap_seconds = (now - recorded_at).total_seconds()
+        if gap_seconds > 1800:
+            boundary_res = await session.execute(
+                text("""
+                    SELECT 1 FROM inventory_count_events
+                     WHERE tenant_id         = :tid
+                       AND inventory_item_id = :iid
+                       AND (
+                           (reconciliation_cutoff_created_at IS NOT NULL
+                            AND reconciliation_cutoff_created_at > :rec_at
+                            AND reconciliation_cutoff_created_at <= :now)
+                        OR (reconciliation_cutoff_created_at IS NULL
+                            AND counted_at > :rec_at
+                            AND counted_at <= :now)
+                       )
+                     LIMIT 1
+                """),
+                {
+                    "tid": tenant_id,
+                    "iid": inventory_item_id,
+                    "rec_at": recorded_at,
+                    "now": now,
+                },
+            )
+            if boundary_res.fetchone():
+                payload_str = json.dumps({
+                    "inventory_item_id": str(inventory_item_id),
+                    "movement_id": str(mv_id),
+                    "recorded_at": recorded_at.isoformat(),
+                    "created_at": now.isoformat(),
+                    "gap_seconds": round(gap_seconds),
+                })
+                await session.execute(
+                    text("""
+                        INSERT INTO monitoring_alerts
+                            (id, tenant_id, monitor_name, severity, trigger_payload)
+                        VALUES (gen_random_uuid(), :tid,
+                                'late_signal_reconciliation', 'warn',
+                                CAST(:payload AS jsonb))
+                        ON CONFLICT (tenant_id, monitor_name) WHERE resolved_at IS NULL
+                        DO UPDATE SET
+                            last_seen_at    = now(),
+                            alert_count     = monitoring_alerts.alert_count + 1,
+                            trigger_payload = EXCLUDED.trigger_payload
+                    """),
+                    {"tid": tenant_id, "payload": payload_str},
+                )
+                await session.flush()
+
+    return mv_id
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 4B-reversal — record_sale_reversal
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+async def record_sale_reversal(
+    session: AsyncSession,
+    *,
+    tenant_id: UUID,
+    original_movement_id: UUID,
+    inventory_item_id: UUID,
+) -> UUID | None:
+    """Reverse a sale_depletion or sale_signal movement.  Idempotent.
+
+    Emits sale_depletion_reversal or sale_signal_reversal with the exact
+    arithmetic negation of the original delta.  The original row is never
+    touched — append-only ledger semantics are preserved.
+
+    Idempotency key: ``reversal:{original_movement_id}:{inventory_item_id}``
+    Returns None if the reversal already existed (replay).
+    """
+    idem_key = f"reversal:{original_movement_id}:{inventory_item_id}"
+
+    # ── idempotency check ─────────────────────────────────────────────────────
+    existing = await session.execute(
+        text(
+            "SELECT id FROM inventory_movements WHERE tenant_id = :tid AND idempotency_key = :key"
+        ),
+        {"tid": tenant_id, "key": idem_key},
+    )
+    if existing.fetchone():
+        return None
+
+    # ── read original movement ────────────────────────────────────────────────
+    orig_res = await session.execute(
+        text("""
+            SELECT delta, movement_type, yield_factor_applied FROM inventory_movements
+             WHERE tenant_id = :tid AND id = :oid
+        """),
+        {"tid": tenant_id, "oid": original_movement_id},
+    )
+    orig_row = orig_res.fetchone()
+    if not orig_row:
+        raise ValueError(
+            f"movement {original_movement_id} not found for tenant {tenant_id}"
+        )
+
+    orig_delta: Decimal = Decimal(str(orig_row[0]))
+    orig_type: str = orig_row[1]
+    orig_yield = Decimal(str(orig_row[2])) if orig_row[2] is not None else None
+
+    if orig_type == "sale_depletion":
+        reversal_type = "sale_depletion_reversal"
+    elif orig_type == "sale_signal":
+        reversal_type = "sale_signal_reversal"
+    else:
+        raise ValueError(
+            f"movement {original_movement_id} has type {orig_type!r}; "
+            "only sale_depletion and sale_signal can be reversed via this function"
+        )
+
+    mv_id = uuid4()
+    await session.execute(
+        text("""
+            INSERT INTO inventory_movements
+                (id, tenant_id, inventory_item_id, movement_type, delta,
+                 source_type, source_id, idempotency_key, yield_factor_applied)
+            VALUES (:id, :tid, :iid, :mtype, :delta,
+                    'reversal', :orig_id, :key, :yf)
+        """),
+        {
+            "id": mv_id,
+            "tid": tenant_id,
+            "iid": inventory_item_id,
+            "mtype": reversal_type,
+            "delta": -orig_delta,
+            "orig_id": original_movement_id,
+            "key": idem_key,
+            "yf": orig_yield,
         },
     )
 
@@ -320,6 +547,11 @@ async def record_count_event(
         raise ValueError(f"inventory_item {inventory_item_id} not found for tenant {tenant_id}")
     item_mode: str = lock_row[1]
 
+    # Watermark captured while the item row lock is held.  Any sale_signal
+    # that arrives concurrently must wait for this transaction; its created_at
+    # will be > cutoff and correctly attributed to the post-count period.
+    cutoff = datetime.now(UTC)
+
     # ── idempotency ────────────────────────────────────────────────────────────
     existing = await session.execute(
         text(
@@ -336,23 +568,27 @@ async def record_count_event(
             "counted_quantity": counted_quantity,
         }
 
-    # ── 2. snapshot predicted on_hand via Python service ──────────────────────
+    # ── 2. snapshot predicted on_hand using watermark (lock held) ─────────────
     predicted: Decimal | None = await on_hand(
-        session, tenant_id=tenant_id, inventory_item_id=inventory_item_id
+        session,
+        tenant_id=tenant_id,
+        inventory_item_id=inventory_item_id,
+        reconciliation_cutoff=cutoff,
     )
 
-    # ── 3. insert count event ─────────────────────────────────────────────────
+    # ── 3. insert count event with reconciliation watermark ───────────────────
     event_id = uuid4()
     await session.execute(
         text("""
             INSERT INTO inventory_count_events
                 (id, tenant_id, inventory_item_id,
                  counted_quantity, predicted_on_hand_at_count,
-                 counted_at, counted_by, notes, idempotency_key)
+                 counted_at, counted_by, notes, idempotency_key,
+                 reconciliation_cutoff_created_at)
             VALUES
                 (:id, :tid, :iid,
                  :counted, :predicted,
-                 :at, :by, :notes, :key)
+                 :at, :by, :notes, :key, :cutoff)
         """),
         {
             "id": event_id,
@@ -364,6 +600,7 @@ async def record_count_event(
             "by": counted_by,
             "notes": notes,
             "key": idem_key,
+            "cutoff": cutoff,
         },
     )
     await session.flush()

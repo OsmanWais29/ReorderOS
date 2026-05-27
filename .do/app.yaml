@@ -118,6 +118,46 @@ services:
         scope: RUN_TIME
         type: SECRET
 
+workers:
+  - name: inbox-worker
+    github:
+      repo: OsmanWais29/ReorderOS
+      branch: main
+      deploy_on_push: true
+    source_dir: backend
+    dockerfile_path: backend/Dockerfile
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    run_command: python -m app.workers.inbox_worker
+    envs:
+      - key: APP_ENV
+        scope: RUN_AND_BUILD_TIME
+        value: production
+      - key: APP_LOG_LEVEL
+        scope: RUN_AND_BUILD_TIME
+        value: INFO
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: ${reorderos-dev-pg.DATABASE_URL}
+      - key: SERVICE_DATABASE_URL
+        scope: RUN_TIME
+        type: SECRET
+      - key: CLOVER_APP_ID
+        scope: RUN_TIME
+        value: "DJFFAT14DS7QM"
+      - key: CLOVER_APP_SECRET
+        scope: RUN_TIME
+        type: SECRET
+      - key: CLOVER_ENVIRONMENT
+        scope: RUN_TIME
+        value: sandbox
+      - key: CLOVER_API_BASE_URL
+        scope: RUN_TIME
+        value: https://apisandbox.dev.clover.com
+      - key: TOKEN_ENCRYPTION_KEY
+        scope: RUN_TIME
+        type: SECRET
+
 databases:
   # `name` is the spec component name used by ${...DATABASE_URL} interpolation
   # above. `cluster_name` must match the actual managed-DB name in your DO

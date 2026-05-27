@@ -74,14 +74,18 @@ async def client(app_instance):
 
 @pytest.fixture
 async def session(app_instance):
-    """Savepoint transaction with FK prerequisites seeded.
+    """Transaction-isolated session with FK prerequisites seeded.
 
     Service tests call service functions directly with this session.
     HTTP tests use the bound session via get_db_session override.
     Asyncpg tests (7.1-7.14) do not request this fixture.
+
+    Uses join_transaction_mode="create_savepoint" (via make_bound_session) so
+    session.commit() inside tests creates nested SAVEPOINTs without releasing
+    the outer BEGIN. Teardown calls conn.rollback() to discard all test data.
     """
-    async with engine.begin() as conn:
-        tx = await conn.begin_nested()  # SAVEPOINT
+    async with engine.connect() as conn:
+        trans = await conn.begin()
         db = make_bound_session(conn)
 
         app_instance.dependency_overrides[get_db_session] = lambda: db
@@ -92,6 +96,28 @@ async def session(app_instance):
             tenant_id=str(T7_TENANT_ID),
             role="manager",
         )
+
+        # Purge any data left by a previous run where the savepoint didn't roll back.
+        for tbl in (
+            "ingredient_cost_snapshots",
+            "receipt_lines",
+            "inventory_count_events",
+            "inventory_movements",
+            "monitoring_alerts",
+            "idempotency_keys",
+            "receipts",
+            "inventory_yield_factors",
+            "recipe_ingredients",
+            "inventory_items",
+            "recipe_versions",
+            "sale_line_items",
+            "orders",
+            "pos_event_inbox",
+        ):
+            await conn.execute(
+                text(f"DELETE FROM {tbl} WHERE tenant_id = :tid"),  # noqa: S608
+                {"tid": T7_TENANT_ID},
+            )
 
         await conn.execute(
             text("""
@@ -133,10 +159,12 @@ async def session(app_instance):
                 {"id": ing_id, "tid": T7_TENANT_ID, "name": ing_name},
             )
 
-        yield db
-
-        await tx.rollback()
-        app_instance.dependency_overrides.clear()
+        try:
+            yield db
+        finally:
+            await db.close()
+            await trans.rollback()
+            app_instance.dependency_overrides.clear()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -666,36 +694,31 @@ async def test_7_9_mode_b_missing_yield_factor_defaults_to_1(
 
 
 @pytest.mark.asyncio
-async def test_7_10_mode_a_drift_emits_count_adjust(
-    admin_conn: asyncpg.Connection,
-) -> None:
-    """Mode A count with drift → trigger emits count_adjust with delta = counted - predicted."""
-    t = await seed_tenant(admin_conn)
-    tid = str(t["id"])
-    uom = await _mk_uom(admin_conn, tid)
-    item = await _mk_item(admin_conn, tid, uom, mode="recipe_deducted")
+async def test_7_10_mode_a_drift_emits_count_adjust(session) -> None:
+    """Mode A count with drift → service emits count_adjust with delta = counted - predicted."""
+    item_id = uuid.uuid4()
+    await _seed_item(session, item_id, "recipe_deducted")
+    await _seed_movement(session, item_id, "opening_balance", 100)
 
-    await _mv(admin_conn, tid, item, "opening_balance", +100)
-
-    await _insert_count_event(
-        admin_conn,
-        tid,
-        item,
-        counted_quantity=95,
-        predicted_on_hand=100,
+    result = await record_count_event(
+        session,
+        tenant_id=T7_TENANT_ID,
+        inventory_item_id=item_id,
+        counted_quantity=Decimal("95"),
     )
 
-    n = await _count_mvt(admin_conn, tid, item, "count_adjust")
-    assert n == 1, f"expected 1 count_adjust, got {n}"
+    assert result["predicted_on_hand_at_count"] == Decimal("100")
 
-    row = await admin_conn.fetchrow(
-        "SELECT delta FROM inventory_movements"
-        " WHERE tenant_id=$1 AND inventory_item_id=$2 AND movement_type='count_adjust'",
-        uuid.UUID(tid),
-        uuid.UUID(item),
+    adj = await session.execute(
+        text("""
+        SELECT delta FROM inventory_movements
+         WHERE tenant_id=:tid AND inventory_item_id=:iid AND movement_type='count_adjust'
+        """),
+        {"tid": T7_TENANT_ID, "iid": item_id},
     )
-    assert row["delta"] == Decimal("-5"), f"expected delta=-5, got {row['delta']}"
-    assert await _on_hand(admin_conn, tid, item) == Decimal("95")
+    row = adj.fetchone()
+    assert row is not None, "expected 1 count_adjust movement"
+    assert row[0] == Decimal("-5"), f"expected delta=-5, got {row[0]}"
 
 
 @pytest.mark.asyncio
@@ -748,39 +771,29 @@ async def test_7_12_mode_b_count_does_not_emit_count_adjust(
 
 
 @pytest.mark.asyncio
-async def test_7_13_mode_b_count_updates_anchor(
-    admin_conn: asyncpg.Connection,
-) -> None:
-    """Mode B count event trigger updates last_count_quantity and last_count_at."""
-    t = await seed_tenant(admin_conn)
-    tid = str(t["id"])
-    uom = await _mk_uom(admin_conn, tid)
-
+async def test_7_13_mode_b_count_updates_anchor(session) -> None:
+    """Mode B count event service updates last_count_quantity and last_count_at."""
     t0 = datetime(2026, 4, 1, tzinfo=UTC_TZ)
     t2 = datetime(2026, 4, 2, tzinfo=UTC_TZ)
-    item = await _mk_item(
-        admin_conn,
-        tid,
-        uom,
-        mode="count_anchored",
-        last_count_at=t0,
-        last_count_qty=200,
-    )
-    await _insert_count_event(
-        admin_conn,
-        tid,
-        item,
-        counted_quantity=210,
-        predicted_on_hand=None,
+    item_id = uuid.uuid4()
+    await _seed_item(session, item_id, "count_anchored", lca=t0, lcq=200)
+
+    await record_count_event(
+        session,
+        tenant_id=T7_TENANT_ID,
+        inventory_item_id=item_id,
+        counted_quantity=Decimal("210"),
         counted_at=t2,
     )
 
-    row = await admin_conn.fetchrow(
-        "SELECT last_count_quantity, last_count_at FROM inventory_items WHERE id = $1",
-        uuid.UUID(item),
+    row = await session.execute(
+        text("SELECT last_count_quantity, last_count_at FROM inventory_items WHERE id=:iid"),
+        {"iid": item_id},
     )
-    assert row["last_count_quantity"] == Decimal("210")
-    assert row["last_count_at"] == t2
+    item_row = row.fetchone()
+    assert item_row is not None
+    assert item_row[0] == Decimal("210")
+    assert item_row[1] == t2
 
 
 @pytest.mark.asyncio

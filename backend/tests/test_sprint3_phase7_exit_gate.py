@@ -87,9 +87,14 @@ async def client(app_instance):
 
 @pytest.fixture(autouse=True)
 async def session(app_instance):
-    """Per-test savepoint. Seeds FK prerequisites. Rolls back on teardown."""
-    async with engine.begin() as conn:
-        tx = await conn.begin_nested()
+    """Per-test transaction isolation. Seeds FK prerequisites. Rolls back on teardown.
+
+    Uses join_transaction_mode="create_savepoint" (via make_bound_session) so
+    session.commit() inside tests creates nested SAVEPOINTs without releasing
+    the outer BEGIN. Teardown calls conn.rollback() to discard all test data.
+    """
+    async with engine.connect() as conn:
+        trans = await conn.begin()
         db = make_bound_session(conn)
 
         app_instance.dependency_overrides[get_db_session] = lambda: db
@@ -100,6 +105,28 @@ async def session(app_instance):
             tenant_id=str(TENANT_ID),
             role="manager",
         )
+
+        # Purge any data left by a previous run where the savepoint didn't roll back.
+        for tbl in (
+            "ingredient_cost_snapshots",
+            "receipt_lines",
+            "inventory_count_events",
+            "inventory_movements",
+            "monitoring_alerts",
+            "idempotency_keys",
+            "receipts",
+            "inventory_yield_factors",
+            "recipe_ingredients",
+            "inventory_items",
+            "recipe_versions",
+            "sale_line_items",
+            "orders",
+            "pos_event_inbox",
+        ):
+            await conn.execute(
+                text(f"DELETE FROM {tbl} WHERE tenant_id = :tid"),  # noqa: S608
+                {"tid": TENANT_ID},
+            )
 
         # FK prerequisites
         await conn.execute(
@@ -144,10 +171,12 @@ async def session(app_instance):
                 {"id": ing_id, "tid": TENANT_ID, "name": ing_name},
             )
 
-        yield db
-
-        await tx.rollback()
-        app_instance.dependency_overrides.clear()
+        try:
+            yield db
+        finally:
+            await db.close()
+            await trans.rollback()
+            app_instance.dependency_overrides.clear()
 
 
 # ---------------------------------------------------------------------------

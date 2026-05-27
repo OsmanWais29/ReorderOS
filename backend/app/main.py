@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,12 +17,44 @@ from app.core.logging import configure_logging, get_logger
 from app.modules.observability.router import router as observability_router
 
 
+async def _assert_schema_at_head() -> None:
+    """Raise RuntimeError if the DB schema is behind the alembic head revision.
+
+    Catches stale workers, missed migrations on deploy, and containers started
+    with the wrong DATABASE_URL before any requests are served.
+    """
+    from alembic.config import Config
+    from alembic.runtime.migration import MigrationContext
+    from alembic.script import ScriptDirectory
+
+    from app.core.database import get_engine
+
+    cfg = Config("alembic.ini")
+    script = ScriptDirectory.from_config(cfg)
+    head_rev = script.get_current_head()
+
+    def _read_current_rev(sync_conn: Any) -> str | None:
+        ctx = MigrationContext.configure(sync_conn)
+        return ctx.get_current_revision()
+
+    async with get_engine().connect() as conn:
+        current_rev = await conn.run_sync(_read_current_rev)
+
+    if current_rev != head_rev:
+        raise RuntimeError(
+            f"Schema at {current_rev!r}, alembic head is {head_rev!r}. "
+            "Run `alembic upgrade head` before starting the app."
+        )
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     log = get_logger("app.lifespan")
     settings = get_settings()
     log.info("startup", env=settings.app_env, version=__version__)
+    await _assert_schema_at_head()
+    log.info("schema.ok")
     try:
         yield
     finally:

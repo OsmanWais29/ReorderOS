@@ -27,6 +27,51 @@ DB_URL_SYNC = (
     .replace("postgres://", "postgresql://")
 )
 
+# Path to alembic.ini — one directory above tests/.
+_ALEMBIC_INI = os.path.join(os.path.dirname(__file__), "..", "alembic.ini")
+
+
+# ── Schema governance ─────────────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="session", autouse=True)
+def validate_schema() -> None:
+    """Assert the database is at the alembic head revision before any test runs.
+
+    Fails loudly so developers know to run `alembic upgrade head` first.
+    Never auto-migrates — schema mutations are always explicit and deliberate.
+
+    Uses asyncio.run() so the check runs in its own event loop before
+    pytest-asyncio's session runner starts, avoiding loop-scope conflicts.
+    """
+    import asyncio
+
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    cfg = Config(_ALEMBIC_INI)
+    script = ScriptDirectory.from_config(cfg)
+    head_rev = script.get_current_head()
+
+    async def _read_current_rev() -> str | None:
+        conn = await asyncpg.connect(DB_URL_SYNC)
+        try:
+            row = await conn.fetchrow(
+                "SELECT version_num FROM alembic_version LIMIT 1"
+            )
+            return row["version_num"] if row else None
+        finally:
+            await conn.close()
+
+    current_rev = asyncio.run(_read_current_rev())
+
+    assert current_rev == head_rev, (
+        f"\n\nDatabase schema is at revision {current_rev!r} "
+        f"but alembic head is {head_rev!r}.\n"
+        "Run:  alembic upgrade head\n"
+        "then re-run the tests.\n"
+    )
+
 
 # ── Engine reset between tests ────────────────────────────────────────────────
 # SQLAlchemy's async engine is a module-level singleton tied to the event loop

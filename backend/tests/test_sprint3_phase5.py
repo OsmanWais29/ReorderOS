@@ -77,16 +77,18 @@ async def client(app_instance):
 @pytest.fixture(autouse=True)
 async def session(app_instance):
     """
-    Per-test savepoint transaction.
+    Per-test transaction isolation.
 
-    1. Grabs a connection from the engine and starts a SAVEPOINT via conn.begin().
-    2. Creates a session bound to that connection.
+    1. Opens a connection and starts an explicit outer BEGIN.
+    2. make_bound_session uses join_transaction_mode="create_savepoint" so
+       every session.commit() inside a test wraps its flush in a nested
+       SAVEPOINT then releases it — the outer BEGIN stays intact.
     3. Overrides get_db_session and get_principal for all routes in this test.
     4. Yields the session so test bodies can run raw queries.
-    5. Rolls back the savepoint in teardown — all test data vanishes.
+    5. Rolls back the outer BEGIN in teardown — all test data vanishes.
     """
-    async with engine.begin() as conn:
-        tx = await conn.begin_nested()  # SAVEPOINT
+    async with engine.connect() as conn:
+        trans = await conn.begin()
         db = make_bound_session(conn)
 
         app_instance.dependency_overrides[get_db_session] = lambda: db
@@ -97,6 +99,29 @@ async def session(app_instance):
             tenant_id=str(TENANT_ID),
             role="manager",
         )
+
+        # Clean up any leftover data from previous runs (handles the case where
+        # a prior run's savepoint failed to roll back).
+        for tbl in (
+            "ingredient_cost_snapshots",
+            "receipt_lines",
+            "inventory_count_events",
+            "inventory_movements",
+            "monitoring_alerts",
+            "idempotency_keys",
+            "receipts",
+            "inventory_yield_factors",
+            "recipe_ingredients",
+            "inventory_items",
+            "recipe_versions",
+            "sale_line_items",
+            "orders",
+            "pos_event_inbox",
+        ):
+            await conn.execute(
+                text(f"DELETE FROM {tbl} WHERE tenant_id = :tid"),  # noqa: S608
+                {"tid": TENANT_ID},
+            )
 
         # Seed prerequisite FK rows so item inserts succeed.
         await conn.execute(
@@ -135,10 +160,12 @@ async def session(app_instance):
             {"id": INGREDIENT_A, "tid": TENANT_ID},
         )
 
-        yield db
-
-        await tx.rollback()  # undo all test changes
-        app_instance.dependency_overrides.clear()
+        try:
+            yield db
+        finally:
+            await db.close()
+            await trans.rollback()  # undo all test changes
+            app_instance.dependency_overrides.clear()
 
 
 # ---------------------------------------------------------------------------

@@ -439,21 +439,21 @@ async def test_oauth_state_not_null_user_id(app_conn):
         )
 
 
-# ── Test 16: service_worker Cannot Access inventory_movements ─────────────────
+# ── Test 16: service_worker inventory access is RLS-isolated ─────────────────
 
 
 @pytest.mark.asyncio
-async def test_service_worker_no_inventory_access(service_conn):
-    """service_worker must not access inventory_movements until Sprint 5 adds grants.
+async def test_service_worker_inventory_access_rls_isolated(service_conn):
+    """service_worker can query inventory_movements but T1 RLS returns no rows
+    without app.tenant_id set.  Migration 0011 added inventory grants; the
+    worker always SET set_config('app.tenant_id', ...) before writing.
 
-    If this fails, someone prematurely granted access and the worker could
-    accidentally deplete inventory.
+    Zero rows (not a permission error) is the correct result here.
     """
-    with pytest.raises(Exception) as exc:
-        await service_conn.execute(
-            "SELECT 1 FROM inventory_movements LIMIT 1",
-        )
-    assert "permission denied" in str(exc.value).lower() or "insufficient" in str(exc.value).lower()
+    count = await service_conn.fetchval(
+        "SELECT count(*) FROM inventory_movements"
+    )
+    assert count == 0
 
 
 # ── Test 17: Two Connection Pools Work Simultaneously ────────────────────────

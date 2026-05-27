@@ -89,10 +89,15 @@ accounting figure. The system explicitly models this as an operational estimate.
 on_hand = last_count_quantity
         + SUM(delta of receive/transfer_in/count_adjust movements)
             WHERE created_at > reconciliation_cutoff_created_at
-        - SUM(ABS(delta of sale_signal movements))
+        - SUM(delta of sale_signal and sale_signal_reversal movements
+              * yield_factor_applied)
             WHERE created_at > reconciliation_cutoff_created_at
-          * yield_factor_applied
 ```
+
+**Sign convention**: `sale_signal` rows store a positive delta (theoretical units consumed);
+`sale_signal_reversal` rows store the arithmetic negation (negative delta). Summing both
+without `ABS()` nets them correctly — a reversal cancels its original. Using `ABS()` would
+accumulate magnitudes rather than netting them and produces wrong answers when reversals exist.
 
 The filter boundary is `created_at` (system ingestion time), not `recorded_at`
 (business event time). See Section 4 for why.
@@ -339,6 +344,14 @@ A reversal row must:
 - Have `source_type = 'reversal'`
 - Have idempotency key `reversal:{original_movement_id}:{inventory_item_id}`
 - Have `movement_type` matching the table above
+- Have `yield_factor_applied` equal to the original row's `yield_factor_applied`
+
+The `yield_factor_applied` requirement is a constraint of reversal arithmetic, not a field
+detail. The watermark `on_hand()` path computes `delta * yield_factor_applied` for every
+movement in the signal set. For the original and its reversal to net exactly to zero, both
+must carry the same `yield_factor_applied`. A reversal with a different or absent value
+would not cancel the original, silently corrupting Mode B `on_hand()` calculations.
+Do not omit or override this field when writing reversal rows.
 
 A reversal is idempotent. Calling `record_sale_reversal()` twice produces one row.
 
@@ -359,15 +372,24 @@ current state of any mutable reference table.
 ### `yield_factor_applied` on `inventory_movements`
 
 Every `sale_depletion` and `sale_signal` row stores the yield factor that was in
-effect at write time. `on_hand()` replay uses this stored value. Changing
-`inventory_yield_factors` after a depletion was written does not affect that
-depletion's delta.
+effect at write time. Changing `inventory_yield_factors` after a depletion was written
+does not affect that depletion's historical record.
 
-**Rule**: `record_sale_inventory_effect()` must always read the current yield factor,
-store it in `yield_factor_applied`, and compute the delta using that stored value
-— never inline from the reference table after the fact.
+**Rule**: `record_sale_inventory_effect()` must always read the current yield factor
+and store it in `yield_factor_applied` — never leave this field NULL and never inline
+from the reference table after the fact.
 
 If `inventory_yield_factors` has no row for the item, store `1.0` (the identity).
+
+The role of the stored value differs by mode:
+
+- **Mode B (`sale_signal`)**: `on_hand()` applies `yield_factor_applied` at query time
+  to each signal row's delta (`delta * yield_factor_applied`). The stored snapshot is
+  what makes Mode B on_hand() stable across future yield table changes.
+- **Mode A (`sale_depletion`)**: `on_hand()` sums deltas directly (per §2). The delta
+  is pre-computed at write time incorporating the yield factor, so `yield_factor_applied`
+  is stored as an audit record of the factor that was used — it is not re-applied at
+  query time. Applying it again at query time would double-count.
 
 ### `recipe_version_id` on `sale_line_items`
 

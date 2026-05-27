@@ -2,11 +2,23 @@ import React, { useState } from 'react';
 import { View, Text, StyleSheet, Platform } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import * as WebBrowser from 'expo-web-browser';
+import * as Linking from 'expo-linking';
 import { Button } from '@/components/atoms';
 import { OnboardingHeader } from '@/components/OnboardingHeader';
 import { useAuth } from '@/auth/AuthContext';
 import { API_BASE } from '@/auth/config';
 import { T, TYPE } from '@/theme/tokens';
+
+const PROVIDER_LABELS: Record<string, string> = {
+  clover: 'Clover',
+  square: 'Square',
+  lightspeed: 'Lightspeed',
+  touchbistro: 'TouchBistro',
+  maitred: "Maitre'D",
+  toast: 'Toast',
+  veloce: 'Veloce',
+};
 
 export default function Connecting() {
   const { provider } = useLocalSearchParams<{ provider?: string }>();
@@ -14,6 +26,8 @@ export default function Connecting() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const providerLabel = PROVIDER_LABELS[provider ?? ''] ?? provider ?? 'This POS';
 
   const handleConnect = async () => {
     if (!token || !me) {
@@ -39,10 +53,20 @@ export default function Connecting() {
         throw new Error(body.detail ?? `Server error ${res.status}`);
       }
       const { url } = await res.json();
+
       if (Platform.OS === 'web') {
         window.location.href = url;
       } else {
-        throw new Error('Native OAuth not yet supported — use web to test.');
+        const redirectUrl = Linking.createURL('/onboarding/found-summary');
+        const result = await WebBrowser.openAuthSessionAsync(url, redirectUrl);
+        if (result.type === 'success') {
+          router.replace({
+            pathname: '/onboarding/found-summary',
+            params: { connected: 'true' },
+          });
+        } else {
+          setLoading(false);
+        }
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
@@ -55,11 +79,9 @@ export default function Connecting() {
       <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
         <OnboardingHeader step={5} totalSteps={14} onBack={() => router.back()} />
         <View style={styles.body}>
-          <Text style={styles.h2}>
-            {provider ? provider.charAt(0).toUpperCase() + provider.slice(1) : 'This POS'} coming soon
-          </Text>
+          <Text style={styles.h2}>{providerLabel} coming soon</Text>
           <Text style={styles.sub}>
-            We're adding more integrations. Clover is available now — go back and
+            We're adding more integrations. Clover is available now {'—'} go back and
             select Clover to connect your POS.
           </Text>
         </View>
@@ -77,7 +99,7 @@ export default function Connecting() {
         <Text style={styles.h2}>Connect Clover</Text>
         <Text style={styles.sub}>
           You'll be redirected to Clover to authorise ReorderOS. We read your
-          orders and menu — we never write to your POS.
+          orders and menu {'—'} we never write to your POS.
         </Text>
         {error && <Text style={styles.error}>{error}</Text>}
       </View>

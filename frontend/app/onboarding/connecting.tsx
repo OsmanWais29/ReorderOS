@@ -10,21 +10,29 @@ import { T, TYPE } from '@/theme/tokens';
 
 export default function Connecting() {
   const { provider } = useLocalSearchParams<{ provider?: string }>();
-  const { token } = useAuth();
+  const { token, me } = useAuth();
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleConnect = async () => {
-    if (!token) {
+    if (!token || !me) {
       setError('Not signed in — please go back and sign in first.');
+      return;
+    }
+    const tenantId = me.tenants?.[0]?.id;
+    if (!tenantId) {
+      setError('No tenant found — please complete account setup first.');
       return;
     }
     setLoading(true);
     setError(null);
     try {
       const res = await fetch(`${API_BASE}/api/v1/pos/clover/connect-url`, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'X-Tenant-Id': tenantId,
+        },
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));

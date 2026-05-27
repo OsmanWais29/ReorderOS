@@ -1,15 +1,19 @@
-import React from 'react';
-import { View, Text, ScrollView, StyleSheet } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, ScrollView, StyleSheet, TextInput, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Card, Pill, Button } from '@/components/atoms';
 import { Icon } from '@/components/Icon';
 import { useAuth } from '@/auth/AuthContext';
+import { registerTenant } from '@/auth/api';
 import { T, TYPE } from '@/theme/tokens';
 
 export default function Home() {
-  const { me, signOut } = useAuth();
+  const { me, token, signOut } = useAuth();
   const router = useRouter();
+  const [bizName, setBizName] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   const firstName = me?.user.first_name ?? me?.user.email ?? 'there';
   const tenantName = me?.tenants[0]?.name ?? null;
@@ -17,6 +21,22 @@ export default function Home() {
   const handleSignOut = async () => {
     await signOut();
     router.replace('/onboarding/welcome');
+  };
+
+  const handleCreateTenant = async () => {
+    if (!token || !bizName.trim()) return;
+    setCreating(true);
+    setCreateError(null);
+    const slug = bizName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    try {
+      await registerTenant(token, slug, bizName.trim());
+      if (Platform.OS === 'web') {
+        window.location.reload();
+      }
+    } catch (err: unknown) {
+      setCreateError(err instanceof Error ? err.message : 'Failed to create restaurant');
+      setCreating(false);
+    }
   };
 
   return (
@@ -46,9 +66,27 @@ export default function Home() {
               </Text>
             )}
             {me.tenants.length === 0 && (
-              <Text style={[styles.authLine, { color: T.amber }]}>
-                No tenant yet — call register-tenant to set one up.
-              </Text>
+              <View style={{ marginTop: 12, gap: 8 }}>
+                <Text style={[styles.authLine, { color: T.amber }]}>
+                  No restaurant set up yet. Create one to continue.
+                </Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Restaurant name"
+                  placeholderTextColor={T.ter}
+                  value={bizName}
+                  onChangeText={setBizName}
+                  autoCapitalize="words"
+                  editable={!creating}
+                />
+                {createError && <Text style={[styles.authLine, { color: T.red }]}>{createError}</Text>}
+                <Button
+                  label={creating ? 'Creating…' : 'Create restaurant'}
+                  fullWidth
+                  disabled={creating || !bizName.trim()}
+                  onPress={handleCreateTenant}
+                />
+              </View>
             )}
           </Card>
         )}
@@ -96,6 +134,11 @@ const styles = StyleSheet.create({
   authLine: { ...TYPE.footnote, color: T.sec, marginTop: 2 },
   bold: { color: T.text, fontWeight: '600' },
   mono: { fontFamily: 'Menlo', color: T.label },
+  input: {
+    ...TYPE.body, color: T.text, backgroundColor: T.bg,
+    borderWidth: 1, borderColor: T.hairline, borderRadius: T.radius,
+    paddingHorizontal: 12, paddingVertical: 10,
+  },
   section: { ...TYPE.headline, color: T.text, marginTop: 24, marginBottom: 12 },
   cardTitle: { ...TYPE.headline, color: T.text },
   cardBody: { ...TYPE.subhead, color: T.sec, marginTop: 6 },

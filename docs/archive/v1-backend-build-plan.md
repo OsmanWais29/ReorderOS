@@ -1,5 +1,9 @@
 # ReorderOS V1 Backend Build Plan
 
+> **Supersession notice (2026-05-27):** Statements in this document referring to "current quantity materialized on item" or "ledger sum equals inventory_items.current_quantity" are obsolete as of migration 0009. The current accounting model is documented in `backend/docs/inventory_accounting_semantics.md`, which is the canonical source for inventory semantics. Where this document and the semantics doc conflict, the semantics doc wins.
+>
+> The Sprint 5 plan in this document is superseded by `backend/docs/sprints/sprint-5-unified-spec-v5-LOCKED.md`.
+
 Status: planning baseline for Clover-only App Store launch.
 
 ## V1 Product Locks

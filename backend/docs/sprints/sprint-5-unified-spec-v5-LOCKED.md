@@ -416,7 +416,7 @@ Modifier:
 sale_line:{sale_line_item_id}:modifier:{sale_line_item_modifier_id}:{modifier_version_id}:{inventory_item_id}
 ```
 
-**`inventory_accounting_semantics.md` §6 must be updated to reflect these new formats.** Old format (`sale_line:{id}:{ii}`) is superseded. No production data exists with old format (Sprint 4 uncommitted), so no migration needed. *(Verified 2026-05-31 against the prod cluster `reorderos-dev-pg`: `inventory_movements` has 0 rows, so the clean format is adopted directly with no legacy compatibility shim.)*
+**`inventory_accounting_semantics.md` §6 must be updated to reflect these new formats.** Old format (`sale_line:{id}:{ii}`) is superseded. No production data exists with old format (Sprint 4 uncommitted), so no data migration needed. *(Verified 2026-05-31 against the prod cluster `reorderos-dev-pg`: `inventory_movements` has 0 rows. Per phase-map edit 3, the writer still performs a cheap legacy-key existence check (`sale_line:{sli}:{ii}`) before writing the new-format movement — defense-in-depth for dev/future environments where legacy rows could exist. No data migration, just a read-check at write time.)*
 
 #### Formulas
 

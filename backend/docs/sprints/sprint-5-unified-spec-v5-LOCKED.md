@@ -682,11 +682,11 @@ Thin typed wrappers over the §5 endpoints (no new endpoints invented here):
 
 Per `SPRINTS.md:548–553`: loading skeleton, error + retry, empty + CTA, stale "last updated", pull-to-refresh. All user-facing strings added to `frontend/src/i18n/strings.ts` in **EN and FR** (`v1-scope.md:82` — bilingual on every customer-facing surface); validation errors rendered from stable codes per `v1-scope.md:85`.
 
-## F.5 ⚠️ Coverage display — open dependency (needs your call)
+## F.5 Coverage display — RESOLVED: deferred to Sprint 9
 
-The Stock/Home **coverage card** (the "X% of sales depleting" surface from our earlier discussion) reads `vw_depletion_coverage`, but **v5 §5 defines no read endpoint for it**, and operator-facing dashboards are Sprint 9 scope (`SPRINTS.md:466,489`). Options:
-- **(a)** Defer the coverage card to Sprint 9 (recommended — keeps Sprint 5 to its locked surface). The view ships in Sprint 5; the screen that renders it ships in Sprint 9.
-- **(b)** Add a minimal `GET /onboarding/coverage` (or `/inventory/coverage`) read endpoint in Sprint 5 so the card can render now. This is the only net-new API beyond §5 — flagged, not assumed.
+**Decision (2026-06-01, founder):** Option (a). The `vw_depletion_coverage` **view ships in Sprint 5**, but the operator-facing **coverage card** that renders it is deferred to Sprint 9 dashboards (`SPRINTS.md:466,489`). No coverage read endpoint is added in Sprint 5 — the §5 API surface stays as locked.
+
+Rationale: during onboarding there are no sales yet, so a coverage card would read 0% regardless; it is only meaningful post-sales. The Sprint 5 onboarding status surface is the **progress counter** (`confirmed / (total − skipped)`, §1, `GET /onboarding/progress`), not coverage. Coverage % is a post-sales operational metric and belongs with Sprint 9.
 
 ## F.6 Frontend acceptance gates (extends §39 to the UI)
 

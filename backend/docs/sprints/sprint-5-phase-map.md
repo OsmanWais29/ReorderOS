@@ -21,9 +21,9 @@
 | **0a** | Migration **0014** — all new tables **with inline NOT NULL/CHECK + RLS ENABLE/FORCE + tenant policies**: `recipes`, `recipe_drafts`, `recipe_llm_suggestions`, `modifiers`, `modifier_versions`, `modifier_ingredients`, `modifier_drafts`, `modifier_llm_suggestions`, `sale_line_item_modifiers`, `unit_conversions` (+ seeds). Naming per **edit 1** (`modifiers`, not `pos_modifiers`). Metadata on empty tables → batchable (std §2.1). | §6 | schema asserts; round-trip |
 | **0b** | Migration **0015** — nullable cols on existing: `recipe_versions`(recipe_id, version_number, yield_quantity), `recipe_ingredients`(unit), `sale_line_items`(depletion_status, depletion_reason). `is_refunded` already exists (0006) → skip. Metadata. | §6 | round-trip |
 | **0c** | Migration **0016** — **sole data-validating migration, isolated (std §4.1)**: NOT NULL + CHECK + UNIQUE tighten on the 3 pre-existing tables, with **§3 preflight (count-and-stop)** + **§1.2 five-dimension risk block**. | §6, 28, 34 | preflight passes (0 rows); round-trip |
-| **0d** | Migration **0017** — `vw_depletion_coverage` view + `service_worker` UPDATE grant on `sale_line_items`. Metadata. | §6, 30 | view returns both pct cols |
-| **1** | Unit service `depletion/conversions.py` + `depletion/units.py` (canonical allowlist); `convert()` reads `unit_conversions`. | §6 | gate 36 + conversion tests |
-| **2** | **Clover catalog sync** — extend client (items/categories/modifier_groups); async sync at OAuth callback; `POST /pos/clover/sync-menu`; populate `menu_items` + `modifiers`(status=draft); `is_active=false` on removal; partial-unique dedup. | §4 | gates 2, 13, 37, 42 |
+| **0d** | Migration **0017** — `vw_depletion_coverage` view + `service_worker` UPDATE grant on `sale_line_items` + **`menu_items` service_worker INSERT/UPDATE grant + policy (Phase 2 prereq)**. Metadata. | §6, 30 | view returns both pct cols |
+| **1** | Unit service `depletion/conversions.py` + `depletion/units.py` (canonical allowlist); `convert()` reads `unit_conversions` with **3-tier precedence resolution: item → tenant → global, most-specific wins** (per the tiered table fix). | §6 | gate 36 + conversion + precedence tests |
+| **2** | **Clover catalog sync** — extend client (items/categories/modifier_groups); async sync at OAuth callback; `POST /pos/clover/sync-menu`; populate `menu_items` + `modifiers`(status=draft); `is_active=false` on removal; partial-unique dedup. **BLOCKED until `0017` adds `menu_items` service_worker INSERT/UPDATE grant + policy.** | §4 | gates 2, 13, 37, 42 |
 | **3** | Recipe CRUD + state machine: `GET /onboarding/recipes`, GET/PATCH (**409 if confirmed**), skip, `GET /onboarding/progress`; Manager+ write, Staff read; field-blur auto-save to `recipe_drafts`. | §5 | gates 3, 11 |
 | **4** | Confirm/un-confirm engine: 6-step atomic confirm (**400 if zero ingredients**, inventory auto-create case-insensitive Mode-A); 3-step atomic un-confirm; `recipe_versions` immutable. | §7, §8, §1 | gates 5,6,8,9,10,41; fail 7,8,11 |
 | **5** | **LLM suggestion service** *(moved earlier — edit 7)*: `POST /onboarding/recipes/suggest`, Claude tool-use, bundled base+modifiers, confidence, **canonical-unit validation on output**, cost logging, append-only suggestion tables. **Import-isolated from `depletion/`.** | §2 | gate 7; fail-1 boundary |
@@ -35,7 +35,7 @@
 | **11** | **Refund/reversal wiring** + activates full PARTIALLY_REFUNDED eligibility (edit 4). Reversal scope per **edit 5**; both refund-arrival paths tested per **edit 8**. | §11 | gates 20, 21; fail 15 |
 | **12** | Worker end-to-end: pending lifecycle, line-level granularity. | §11, §12 | gates 23,25,29,40; fail 13 |
 | **13** | Coverage view verification + monitoring diagnostics (F5.x). Coverage *card* deferred to Sprint 9 (F.5). | §12 | gate 30 |
-| **14** | **CI no-LLM guard** `tools/ci/check_no_llm_in_depletion.py` (direct + transitive import graph). | §10 | gate 33; fail 1 |
+| **14** | **CI depletion-isolation guard** `tools/ci/check_no_llm_in_depletion.py` (direct + transitive import graph) — fails on LLM imports **and on any import/query of `recipe_drafts`/`modifier_drafts` from `depletion/`** (decision 4). | §10 | gate 33; fail 1 |
 | **15** | Exit-gate sweep + fixture suite (§39) + e2e (§40). | all | gates 39, 40 |
 | **16** | **Frontend (Appendix F)**: onboarding `recipes.tsx`, post-onboarding `recipes/[menuItemId]`, components, `api/recipes.ts`, EN/FR. | §1,§3,§13 | FE-1…FE-9 |
 
@@ -71,6 +71,16 @@ If either exists → skip (idempotent). Prod has 0 legacy rows today; the guard 
 - *Refund after depletion:* triggers `record_sale_reversal()` (edit 5) over base + modifier movements.
 - *Refund before depletion:* marks `is_refunded=true` first; when depletion runs, eligibility fails → `depletion_status='failed'` / `reason='line_refunded'`, no ledger writes.
 Both require fixtures; the second is the easy-to-forget case.
+
+## DDL-review rules (round 2 — 0014)
+
+**`unit_conversions` is three-tier, not global-only.** A composite `PK(from_unit,to_unit)` is forbidden — it structurally blocks per-ingredient density (v5 §6: weight→volume needs a non-NULL `inventory_item_id`; `cup` differs by ingredient). Shape: surrogate `id` PK + nullable `tenant_id`/`inventory_item_id` + `dimension`, three partial-unique indexes (global / tenant / item), RLS `tenant_id IS NULL OR tenant_id = current_tenant`. Global tier seeded; tenant/item override writes are a later sprint. **Phase 1 walker must resolve precedence item → tenant → global (most-specific wins).**
+
+**`modifiers.current_version_id` integrity (decision 3) = DB-level composite FK.** `(modifiers.id, current_version_id) → modifier_versions(modifier_id, id)` (backed by `UNIQUE(modifier_id, id)` on `modifier_versions`). A version can never be pointed at by the wrong modifier. NULL while draft/skipped (MATCH SIMPLE skips the check).
+
+**Depletion never reads drafts (decision 4) = fail-gate invariant.** `recipe_drafts`/`modifier_drafts` are mutable scratch; confirm materializes them into immutable `*_versions`; depletion reads only `*_versions`. Enforced by the Phase 14 guard (extended above).
+
+**`sale_line_item_modifiers` is a subset, not an audit (edit 6).** Worker writes rows only for confirmed additive modifiers; unconfirmed/non-additive are intentionally skipped (no row). Documented in the migration so no future dev reads it as a complete modifier record.
 
 ## Approved (locked — not re-litigated)
 

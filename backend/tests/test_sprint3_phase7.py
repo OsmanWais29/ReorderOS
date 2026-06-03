@@ -38,6 +38,7 @@ from app.modules.inventory.services import (
     record_sale_inventory_effect,
 )
 from tests.conftest import seed_tenant
+from tests.helpers.sprint5 import seed_recipe_version_session
 
 pytestmark = pytest.mark.integration
 
@@ -422,22 +423,10 @@ async def _seed_recipe(
     item_id: uuid.UUID,
     recipe_qty: float,
 ) -> uuid.UUID:
-    rv_id = uuid.uuid4()
-    await session.execute(
-        text("""
-        INSERT INTO recipe_versions (id, tenant_id, name) VALUES (:id, :tid, :name)
-    """),
-        {"id": rv_id, "tid": tenant_id, "name": f"rv7-{rv_id.hex[:6]}"},
+    seeded = await seed_recipe_version_session(
+        session, tenant_id, ingredients=[(item_id, recipe_qty)]
     )
-    await session.execute(
-        text("""
-        INSERT INTO recipe_ingredients (tenant_id, recipe_version_id, inventory_item_id, quantity)
-        VALUES (:tid, :rvid, :iid, :qty)
-    """),
-        {"tid": tenant_id, "rvid": rv_id, "iid": item_id, "qty": recipe_qty},
-    )
-    await session.flush()
-    return rv_id
+    return uuid.UUID(seeded.recipe_version_id)
 
 
 async def _seed_sale_line(

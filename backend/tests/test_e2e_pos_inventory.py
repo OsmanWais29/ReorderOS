@@ -40,6 +40,7 @@ from uuid6 import uuid7
 
 from app.modules.pos.worker import InboxWorker
 from tests.helpers.phase7 import make_clover_order, seed_worker_prereqs
+from tests.helpers.sprint5 import seed_recipe_version
 
 pytestmark = pytest.mark.integration
 
@@ -96,22 +97,8 @@ async def _seed_recipe(
     """Create a recipe_version + one recipe_ingredient per (inventory_item_id, qty) pair.
     Returns the recipe_version_id.
     """
-    rv_row = await conn.fetchrow(
-        "INSERT INTO recipe_versions (tenant_id, name) VALUES ($1, $2) RETURNING id",
-        uuid.UUID(tenant_id),
-        f"rv-{uuid.uuid4().hex[:6]}",
-    )
-    rv_id = str(rv_row["id"])
-    for inv_item_id, qty in ingredients:
-        await conn.execute(
-            "INSERT INTO recipe_ingredients (tenant_id, recipe_version_id, inventory_item_id, quantity)"
-            " VALUES ($1, $2, $3, $4)",
-            uuid.UUID(tenant_id),
-            uuid.UUID(rv_id),
-            uuid.UUID(inv_item_id),
-            qty,
-        )
-    return rv_id
+    seeded = await seed_recipe_version(conn, tenant_id, ingredients=ingredients)
+    return seeded.recipe_version_id
 
 
 async def _seed_menu_item(

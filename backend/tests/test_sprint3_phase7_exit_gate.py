@@ -45,6 +45,7 @@ from app.core.database import engine, get_db_session, make_bound_session
 from app.core.security import Principal, get_principal
 from app.main import create_app
 from app.modules.inventory.services import record_sale_inventory_effect
+from tests.helpers.sprint5 import seed_recipe_version_session
 
 pytestmark = pytest.mark.integration
 
@@ -331,36 +332,19 @@ async def create_recipe_for_item(
     inventory_item_id: uuid.UUID,
     qty_per_serving: float,
 ) -> None:
-    """Create a recipe_version + recipe_ingredient using Sprint 3 schema.
+    """Create a 0016-valid menu_item -> recipe -> recipe_version chain at the
+    given (fixed) recipe_version_id, idempotently.
 
-    Sprint 3 uses recipe_versions / recipe_ingredients directly.
-    There are no menu_items or recipes tables in this sprint.
+    Uses the shared Sprint-5 seed helper. The explicit recipe_version_id makes a
+    repeated call (fixed RECIPE_A / RECIPE_B against the no-teardown dev DB) a
+    no-op, preserving the old ON CONFLICT DO NOTHING behaviour.
     """
-    await session.execute(
-        text("""
-        INSERT INTO recipe_versions (id, tenant_id, name)
-        VALUES (:id, :tid, :name) ON CONFLICT (id) DO NOTHING
-    """),
-        {
-            "id": recipe_version_id,
-            "tid": TENANT_ID,
-            "name": f"rv-{str(recipe_version_id)[-4:]}",
-        },
+    await seed_recipe_version_session(
+        session,
+        TENANT_ID,
+        recipe_version_id=recipe_version_id,
+        ingredients=[(inventory_item_id, qty_per_serving)],
     )
-    await session.execute(
-        text("""
-        INSERT INTO recipe_ingredients (tenant_id, recipe_version_id, inventory_item_id, quantity)
-        VALUES (:tid, :rvid, :iid, :qty)
-        ON CONFLICT DO NOTHING
-    """),
-        {
-            "tid": TENANT_ID,
-            "rvid": recipe_version_id,
-            "iid": inventory_item_id,
-            "qty": qty_per_serving,
-        },
-    )
-    await session.flush()
 
 
 async def create_sale_line(

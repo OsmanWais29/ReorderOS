@@ -33,6 +33,7 @@ from app.modules.inventory.services import (
     record_sale_reversal,
 )
 from tests.conftest import seed_tenant
+from tests.helpers.sprint5 import seed_recipe_version
 
 pytestmark = pytest.mark.integration
 
@@ -101,22 +102,10 @@ async def _mk_recipe(
     *,
     recipe_qty: float,
 ) -> tuple[str, str]:
-    rv_row = await conn.fetchrow(
-        "INSERT INTO recipe_versions (tenant_id, name) VALUES ($1, $2) RETURNING id",
-        uuid.UUID(tenant_id),
-        f"rv-{uuid.uuid4().hex[:6]}",
+    seeded = await seed_recipe_version(
+        conn, tenant_id, ingredients=[(inventory_item_id, recipe_qty)]
     )
-    rv_id = str(rv_row["id"])
-    ri_row = await conn.fetchrow(
-        "INSERT INTO recipe_ingredients"
-        " (tenant_id, recipe_version_id, inventory_item_id, quantity)"
-        " VALUES ($1, $2, $3, $4) RETURNING id",
-        uuid.UUID(tenant_id),
-        uuid.UUID(rv_id),
-        uuid.UUID(inventory_item_id),
-        recipe_qty,
-    )
-    return rv_id, str(ri_row["id"])
+    return seeded.recipe_version_id, seeded.ingredient_ids[0]
 
 
 async def _mk_sale_line(

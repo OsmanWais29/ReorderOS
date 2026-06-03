@@ -9,6 +9,12 @@ Migration Risk Standard §2.1 (new tables, indexes, RLS, grants — no validatio
 existing data), so it is safe to batch. All inline NOT NULL / CHECK constraints sit
 on brand-new empty tables and therefore validate nothing existing.
 
+One constraint touches an existing table: UNIQUE(tenant_id, id) on inventory_items,
+added solely as the composite-FK target for unit_conversions' same-tenant guard
+(review edit 4). Because id is already that table's PK, the pair is trivially
+unique — it validates no data and cannot fail — so the metadata classification
+holds.
+
 Risk classification (Migration Risk Standard §1.2):
   - Data validity:            Low  — all new tables, zero existing rows touched.
   - Availability impact:      Low  — CREATE TABLE/INDEX only; no locks on live tables.
@@ -418,11 +424,22 @@ def upgrade() -> None:  # noqa: PLR0915
     # factor multiplies a from_unit qty to yield the to_unit qty:
     #   to_qty = from_qty * factor.
     # ═════════════════════════════════════════════════════════════════════════
+    # Same-tenant integrity for item-tier overrides (review edit 4): an item
+    # override must reference an item OWNED BY THE SAME TENANT. Enforced via a
+    # composite FK (tenant_id, inventory_item_id) → inventory_items(tenant_id, id),
+    # which needs this UNIQUE target. Because id is already inventory_items' PK,
+    # (tenant_id, id) is TRIVIALLY unique — this validates no existing data (and
+    # the table is empty); it exists only as the FK target. So this migration
+    # stays metadata in effect despite touching an existing table.
+    op.execute("""
+        ALTER TABLE inventory_items
+            ADD CONSTRAINT uq_inventory_items_tenant_id UNIQUE (tenant_id, id)
+    """)
     op.execute(f"""
         CREATE TABLE unit_conversions (
             id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
             tenant_id         uuid REFERENCES tenants(id),
-            inventory_item_id uuid REFERENCES inventory_items(id),
+            inventory_item_id uuid,
             from_unit         text NOT NULL CHECK (from_unit IN {_UNIT_CHECK}),
             to_unit           text NOT NULL CHECK (to_unit IN {_UNIT_CHECK}),
             dimension         text NOT NULL
@@ -432,7 +449,14 @@ def upgrade() -> None:  # noqa: PLR0915
             -- An item-specific override always belongs to a tenant
             -- (inventory_items are tenant-scoped).
             CONSTRAINT unit_conversions_item_requires_tenant
-                CHECK (inventory_item_id IS NULL OR tenant_id IS NOT NULL)
+                CHECK (inventory_item_id IS NULL OR tenant_id IS NOT NULL),
+            -- Same-tenant guard: when inventory_item_id is set, the
+            -- (tenant_id, item) pair MUST exist in inventory_items — so a tenant
+            -- can never override another tenant's item. MATCH SIMPLE skips the
+            -- check for global/tenant rows (inventory_item_id NULL).
+            CONSTRAINT unit_conversions_item_tenant_fk
+                FOREIGN KEY (tenant_id, inventory_item_id)
+                REFERENCES inventory_items(tenant_id, id)
         )
     """)
     # One conversion per unit pair PER TIER (partial uniques, one per tier).
@@ -497,6 +521,8 @@ def upgrade() -> None:  # noqa: PLR0915
 def downgrade() -> None:
     # Reverse dependency order. CASCADE not needed — drop children before parents.
     op.execute("DROP TABLE IF EXISTS unit_conversions")
+    # Drop the FK-target UNIQUE added to the pre-existing inventory_items table.
+    op.execute("ALTER TABLE inventory_items DROP CONSTRAINT IF EXISTS uq_inventory_items_tenant_id")
     op.execute("DROP TABLE IF EXISTS sale_line_item_modifiers")
     op.execute("DROP TABLE IF EXISTS modifier_llm_suggestions")
     op.execute("DROP TABLE IF EXISTS modifier_drafts")

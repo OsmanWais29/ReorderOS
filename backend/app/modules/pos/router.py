@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +24,7 @@ from app.core.config import get_settings
 from app.core.database import get_session
 from app.core.encryption import TokenEncryption
 from app.core.security import Principal, get_principal
+from app.modules.pos.catalog_sync import CatalogSyncService
 from app.modules.pos.state_manager import OAuthStateManager
 
 router = APIRouter(prefix="/pos/clover", tags=["pos"])
@@ -57,6 +58,20 @@ def _require_owner(user: dict[str, Any] = Depends(get_current_user)) -> dict[str
         raise HTTPException(
             status_code=403,
             detail=f"Owner role required; you have '{user.get('role')}'",
+        )
+    return user
+
+
+def _require_manager(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    """403 for any role below manager (manager or owner pass).
+
+    Catalog/menu operations are Manager-allowed per v1-scope (Manager owns
+    recipes/items operationally).
+    """
+    if user.get("role") not in ("owner", "manager"):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Manager role or higher required; you have '{user.get('role')}'",
         )
     return user
 
@@ -113,6 +128,7 @@ async def callback(
     merchant_id: str,
     code: str,
     state: str,
+    background_tasks: BackgroundTasks,
     client_id: str | None = None,
     db: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
@@ -155,7 +171,7 @@ async def callback(
         text("SELECT set_config('app.tenant_id', :tid, true)"),
         {"tid": tenant_id},
     )
-    await db.execute(
+    result = await db.execute(
         text("""
             INSERT INTO tenant_pos_connections (
                 connection_id, tenant_id, vendor, merchant_id, environment,
@@ -178,6 +194,7 @@ async def callback(
                 state_reason             = NULL,
                 refresh_failure_count    = 0,
                 updated_at               = now()
+            RETURNING connection_id
         """),
         {
             "cid": str(conn_id),
@@ -192,7 +209,15 @@ async def callback(
             "uid": user_id,
         },
     )
+    # The real connection_id: on reconnect the ON CONFLICT DO UPDATE keeps the
+    # existing row's id, not the freshly-generated conn_id — so capture it.
+    active_conn_id = result.scalar_one()
     await db.commit()
+
+    # Kick the catalog sync off the HTTP path so the menu populates immediately
+    # for the Recipes screen. Passes only the connection_id (a scalar); the task
+    # opens its own service-worker session, never the request-scoped db.
+    background_tasks.add_task(CatalogSyncService().sync_connection, str(active_conn_id))
 
     return RedirectResponse(
         url=f"{settings.clover_post_connect_redirect}?connected=true",
@@ -278,3 +303,38 @@ async def disconnect(
     )
     await db.commit()
     return {"status": "disconnected"}
+
+
+@router.post("/sync-menu", status_code=202)
+async def sync_menu(
+    background_tasks: BackgroundTasks,
+    user: dict[str, Any] = Depends(_require_manager),
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Operator-triggered catalog re-sync from Clover (Manager+).
+
+    Recovery path for a lost initial sync, and a way to pull menu changes made in
+    Clover. Schedules the sync off the HTTP path and returns 202 immediately;
+    404 if the tenant has no active Clover connection.
+    """
+    await db.execute(
+        text("SELECT set_config('app.tenant_id', :tid, true)"),
+        {"tid": user["tenant_id"]},
+    )
+    row = (
+        await db.execute(
+            text("""
+                SELECT connection_id
+                FROM tenant_pos_connections
+                WHERE tenant_id = :tid AND vendor = 'clover' AND state = 'active'
+                ORDER BY created_at DESC
+                LIMIT 1
+            """),
+            {"tid": user["tenant_id"]},
+        )
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="No active Clover connection")
+
+    background_tasks.add_task(CatalogSyncService().sync_connection, str(row[0]))
+    return {"status": "sync_started"}

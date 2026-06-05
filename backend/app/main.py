@@ -106,6 +106,11 @@ def create_app() -> FastAPI:
     app.include_router(pos_router, prefix="/api/v1")
     app.include_router(webhook_router, prefix="/api/v1")
 
+    # Sprint 5: onboarding Recipes (draft side)
+    from app.modules.recipes.router import router as recipes_router
+
+    app.include_router(recipes_router, prefix="/api/v1")
+
     return app
 
 

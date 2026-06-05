@@ -18,15 +18,50 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.inventory.depletion.units import DIMENSION_OF
+
 
 class MenuItemNotFound(Exception):
     """The menu_item_id does not exist for this tenant (→ 404)."""
 
 
 class RecipeConfirmed(Exception):
-    """The recipe is confirmed; drafts cannot be edited (→ 409). The 'confirmed'
-    state is produced by Phase 4's confirm endpoint; this guard is built and
-    tested now so it is correct when that lands."""
+    """The recipe is already confirmed (→ 409). Edits and re-confirms are rejected;
+    un-confirm first. (Also the double-click guard: a second confirm of the same
+    draft, having lost the FOR UPDATE race, re-reads status='confirmed' and lands
+    here — one version is produced, not two.)"""
+
+
+class RecipeSkipped(Exception):
+    """Confirm attempted on a skipped recipe (→ 409). Un-skip (PATCH) first."""
+
+
+class NoDraft(Exception):
+    """Confirm attempted with no draft to confirm (→ 400)."""
+
+
+class EmptyDraft(Exception):
+    """Confirm attempted on a draft with zero ingredients (→ 400)."""
+
+
+class DuplicateIngredient(Exception):
+    """Draft has two ingredients with the same normalized name (→ 400). They would
+    dedup to one inventory_item, producing two recipe_ingredients rows for that
+    item and a collision on the per-(recipe_version_id, inventory_item_id) base
+    idempotency key in the depletion engine. Rejected at the source."""
+
+
+class UnitTypeConflict(Exception):
+    """An existing units_of_measure row for the ingredient's unit has the wrong
+    unit_type (→ 409). UNIQUE(tenant_id, name) means there is no second-row escape,
+    so the confirm aborts entirely rather than silently attaching a mismatched unit
+    (which would corrupt every future conversion for the ingredient)."""
+
+
+class NotConfirmed(Exception):
+    """Un-confirm attempted on a recipe that is not confirmed (→ 409). Also the
+    two-un-confirms guard: the second, after the lock, re-reads status='draft' and
+    lands here — no second draft, no double-null of recipe_version_id."""
 
 
 def _as_list(value: Any) -> list[dict[str, Any]]:
@@ -36,6 +71,15 @@ def _as_list(value: Any) -> list[dict[str, Any]]:
     if isinstance(value, str):
         return list(json.loads(value))
     return list(value)
+
+
+def _norm(name: str) -> str:
+    """Normalize an ingredient name for dedup/duplicate detection — IDENTICAL to the
+    0019 index expression lower(btrim(name)). Draft names are pre-stripped by the
+    PATCH validator, so .strip().lower() coincides with lower(btrim(...)) for every
+    stored name; the duplicate-rejection here and the dedup index therefore agree on
+    what 'the same ingredient' means."""
+    return name.strip().lower()
 
 
 async def list_recipes(
@@ -280,4 +324,317 @@ async def get_progress(db: AsyncSession, tenant_id: UUID) -> dict[str, Any]:
         "skipped": skipped,
         "denominator": denominator,
         "percent": percent,
+    }
+
+
+async def _resolve_inventory_item(
+    db: AsyncSession, tenant_id: UUID, name: str, unit: str
+) -> UUID:
+    """Step 1 of confirm, per ingredient — resolve-or-create the storage unit and
+    dedup-or-create the inventory_item, race-safe via existing unique constraints.
+
+    inventory_items.storage_unit_id is NOT NULL (FK → units_of_measure). v5 §8 says
+    'create with Mode A default' but the schema forces a unit, so we resolve-or-create
+    a units_of_measure row from the ingredient's canonical unit (storage unit ==
+    recipe unit, storage_to_recipe_factor defaults 1.0). If a row for that unit name
+    already exists with a different unit_type (units_of_measure is dirty with test
+    residue), we abort the whole confirm — UNIQUE(tenant_id, name) leaves no second-row
+    escape, and silently reusing a mismatched unit corrupts every later conversion.
+
+    Then dedup-or-create the inventory_item on (tenant_id, lower(btrim(name))) via the
+    0019 unique index, so two concurrent confirms of a new ingredient converge on one
+    row instead of duplicating it."""
+    dimension = DIMENSION_OF[unit]  # unit is canonical (PATCH-validated); KeyError = bug
+
+    # resolve-or-create the storage unit (race-safe via UNIQUE(tenant_id, name))
+    await db.execute(
+        text("""
+            INSERT INTO units_of_measure (tenant_id, name, abbreviation, unit_type)
+            VALUES (:tid, :name, :name, :ut)
+            ON CONFLICT (tenant_id, name) DO NOTHING
+        """),
+        {"tid": tenant_id, "name": unit, "ut": dimension},
+    )
+    uom = (
+        await db.execute(
+            text(
+                "SELECT id, unit_type FROM units_of_measure"
+                " WHERE tenant_id = :tid AND name = :name"
+            ),
+            {"tid": tenant_id, "name": unit},
+        )
+    ).mappings().one()
+    if uom["unit_type"] != dimension:
+        raise UnitTypeConflict(
+            f"unit {unit!r} exists for this tenant with unit_type "
+            f"{uom['unit_type']!r}, expected {dimension!r}"
+        )
+    unit_id = uom["id"]
+
+    # dedup-or-create the inventory_item (race-safe via 0019 unique index). Store the
+    # display name TRIMMED but CASE-PRESERVED (btrim, not lower) — lower(btrim()) is the
+    # *matching* key, but the stored value should read 'Tomato', not 'tomato' or ' Tomato '.
+    # Self-defensive: the draft is already PATCH-stripped, but confirm shouldn't rely on it.
+    await db.execute(
+        text("""
+            INSERT INTO inventory_items
+                (tenant_id, name, inventory_mode, storage_unit_id, recipe_unit_id)
+            VALUES (:tid, btrim(:name), 'recipe_deducted', :uid, :uid)
+            ON CONFLICT (tenant_id, lower(btrim(name))) DO NOTHING
+        """),
+        {"tid": tenant_id, "name": name, "uid": unit_id},
+    )
+    item_id: UUID = (
+        await db.execute(
+            text(
+                "SELECT id FROM inventory_items"
+                " WHERE tenant_id = :tid AND lower(btrim(name)) = lower(btrim(:name))"
+            ),
+            {"tid": tenant_id, "name": name},
+        )
+    ).scalar_one()
+    return item_id
+
+
+async def confirm_recipe(
+    db: AsyncSession, tenant_id: UUID, menu_item_id: UUID
+) -> dict[str, Any]:
+    """Confirm a draft into an immutable recipe_version (v5 §7), as ONE transaction.
+
+    Locks the parent recipe row (FOR UPDATE) to serialize confirms of the *same*
+    recipe while leaving different recipes parallel, then RE-READS the locked state:
+    a confirm that loses the race (double-click, retry, replay) sees status changed
+    and returns 409 — one version is produced, never a duplicate version 2.
+
+    Six steps, all-or-nothing (caller commits once; any raise → full rollback,
+    leaving no orphan version, ingredients, inventory_items, or units):
+      1. per ingredient: resolve-or-create unit + dedup-or-create inventory_item
+      2. allocate version_number = MAX+1 (safe under the lock) → recipe_versions
+      3. recipe_ingredients (one row per ingredient)
+      4. menu_items.recipe_version_id → the new version
+      5. recipes.status → 'confirmed'
+      6. delete the recipe_draft
+
+    Raises MenuItemNotFound(404) / NoDraft(400) / EmptyDraft(400) /
+    DuplicateIngredient(400) / RecipeConfirmed(409) / RecipeSkipped(409) /
+    UnitTypeConflict(409)."""
+    mi = (
+        await db.execute(
+            text("SELECT id, name FROM menu_items WHERE id = :mid AND tenant_id = :tid"),
+            {"mid": menu_item_id, "tid": tenant_id},
+        )
+    ).mappings().fetchone()
+    if mi is None:
+        raise MenuItemNotFound
+
+    # Serialize same-recipe confirms; the value read here is authoritative.
+    rec = (
+        await db.execute(
+            text(
+                "SELECT id, status FROM recipes"
+                " WHERE tenant_id = :tid AND menu_item_id = :mid FOR UPDATE"
+            ),
+            {"tid": tenant_id, "mid": menu_item_id},
+        )
+    ).mappings().fetchone()
+    if rec is None:
+        raise NoDraft
+    if rec["status"] == "confirmed":
+        raise RecipeConfirmed
+    if rec["status"] == "skipped":
+        raise RecipeSkipped
+    recipe_id = rec["id"]
+
+    draft = (
+        await db.execute(
+            text(
+                "SELECT draft_ingredients FROM recipe_drafts"
+                " WHERE tenant_id = :tid AND recipe_id = :rid"
+            ),
+            {"tid": tenant_id, "rid": recipe_id},
+        )
+    ).scalar()
+    ingredients = _as_list(draft)
+    if not ingredients:  # authoritative ≥1-ingredient check, after the lock
+        raise EmptyDraft
+
+    norms = [_norm(str(ing["name"])) for ing in ingredients]
+    if len(set(norms)) != len(norms):
+        raise DuplicateIngredient
+
+    # step 1 — resolve units + inventory items (side effects roll back on any failure)
+    lines: list[tuple[UUID, float, str]] = []
+    for ing in ingredients:
+        item_id = await _resolve_inventory_item(
+            db, tenant_id, str(ing["name"]), str(ing["unit"])
+        )
+        lines.append((item_id, float(ing["quantity"]), str(ing["unit"])))
+
+    # step 2 — allocate version_number under the lock, insert the immutable version
+    version_number = (
+        await db.execute(
+            text(
+                "SELECT COALESCE(MAX(version_number), 0) + 1 FROM recipe_versions"
+                " WHERE tenant_id = :tid AND recipe_id = :rid"
+            ),
+            {"tid": tenant_id, "rid": recipe_id},
+        )
+    ).scalar_one()
+    rv_id = (
+        await db.execute(
+            text("""
+                INSERT INTO recipe_versions
+                    (tenant_id, recipe_id, version_number, yield_quantity, name)
+                VALUES (:tid, :rid, :vnum, 1, :name)
+                RETURNING id
+            """),
+            {"tid": tenant_id, "rid": recipe_id, "vnum": version_number, "name": mi["name"]},
+        )
+    ).scalar_one()
+
+    # step 3 — ingredients (explicit tenant_id; RLS depends on it)
+    for item_id, quantity, unit in lines:
+        await db.execute(
+            text("""
+                INSERT INTO recipe_ingredients
+                    (tenant_id, recipe_version_id, inventory_item_id, quantity, unit)
+                VALUES (:tid, :rv, :iid, :qty, :unit)
+            """),
+            {"tid": tenant_id, "rv": rv_id, "iid": item_id, "qty": quantity, "unit": unit},
+        )
+
+    # step 4 — link the menu item to the new version
+    await db.execute(
+        text(
+            "UPDATE menu_items SET recipe_version_id = :rv"
+            " WHERE id = :mid AND tenant_id = :tid"
+        ),
+        {"rv": rv_id, "mid": menu_item_id, "tid": tenant_id},
+    )
+
+    # step 5 — mark confirmed
+    await db.execute(
+        text("UPDATE recipes SET status = 'confirmed', updated_at = now() WHERE id = :rid"),
+        {"rid": recipe_id},
+    )
+
+    # step 6 — drop the draft (inside the txn, so a rollback restores it)
+    await db.execute(
+        text("DELETE FROM recipe_drafts WHERE tenant_id = :tid AND recipe_id = :rid"),
+        {"tid": tenant_id, "rid": recipe_id},
+    )
+
+    return {
+        "menu_item_id": menu_item_id,
+        "name": mi["name"],
+        "status": "confirmed",
+        "ingredients": [
+            {
+                "name": str(ing["name"]),
+                "quantity": float(ing["quantity"]),
+                "unit": str(ing["unit"]),
+                "inventory_item_id": str(item_id),
+            }
+            for ing, (item_id, _q, _u) in zip(ingredients, lines, strict=True)
+        ],
+    }
+
+
+async def unconfirm_recipe(
+    db: AsyncSession, tenant_id: UUID, menu_item_id: UUID, created_by: UUID
+) -> dict[str, Any]:
+    """Re-open a confirmed recipe for editing (v5 §7), as ONE transaction, WITHOUT
+    mutating any recipe_version.
+
+    Locks the recipe row and re-reads status (a second un-confirm sees 'draft' →
+    NotConfirmed). Then: read the confirmed version's ingredients → write a draft copy
+    whose parent_recipe_version_id points at that version → status='draft' and clear
+    menu_items.recipe_version_id. recipe_versions / recipe_ingredients are never
+    touched, so historical sale_line_items keep pointing at a byte-identical version.
+
+    Raises MenuItemNotFound(404) / NotConfirmed(409)."""
+    mi = (
+        await db.execute(
+            text(
+                "SELECT id, name, recipe_version_id FROM menu_items"
+                " WHERE id = :mid AND tenant_id = :tid"
+            ),
+            {"mid": menu_item_id, "tid": tenant_id},
+        )
+    ).mappings().fetchone()
+    if mi is None:
+        raise MenuItemNotFound
+
+    rec = (
+        await db.execute(
+            text(
+                "SELECT id, status FROM recipes"
+                " WHERE tenant_id = :tid AND menu_item_id = :mid FOR UPDATE"
+            ),
+            {"tid": tenant_id, "mid": menu_item_id},
+        )
+    ).mappings().fetchone()
+    if rec is None or rec["status"] != "confirmed":
+        raise NotConfirmed
+    recipe_id = rec["id"]
+    rv_id = mi["recipe_version_id"]
+
+    rows = (
+        await db.execute(
+            text("""
+                SELECT ii.name AS name, ri.quantity AS quantity, ri.unit AS unit,
+                       ri.inventory_item_id AS inventory_item_id
+                FROM recipe_ingredients ri
+                JOIN inventory_items ii ON ii.id = ri.inventory_item_id
+                WHERE ri.tenant_id = :tid AND ri.recipe_version_id = :rv
+                ORDER BY ii.name
+            """),
+            {"tid": tenant_id, "rv": rv_id},
+        )
+    ).mappings().all()
+    draft_ingredients = [
+        {
+            "name": r["name"],
+            "quantity": float(r["quantity"]),
+            "unit": r["unit"],
+            "inventory_item_id": str(r["inventory_item_id"]),
+        }
+        for r in rows
+    ]
+
+    await db.execute(
+        text("""
+            INSERT INTO recipe_drafts
+                (tenant_id, recipe_id, parent_recipe_version_id, draft_ingredients, created_by)
+            VALUES (:tid, :rid, :rv, CAST(:di AS jsonb), :uid)
+            ON CONFLICT (tenant_id, recipe_id) DO UPDATE
+                SET parent_recipe_version_id = :rv,
+                    draft_ingredients = CAST(:di AS jsonb),
+                    updated_at = now()
+        """),
+        {
+            "tid": tenant_id,
+            "rid": recipe_id,
+            "rv": rv_id,
+            "di": json.dumps(draft_ingredients),
+            "uid": created_by,
+        },
+    )
+    await db.execute(
+        text("UPDATE recipes SET status = 'draft', updated_at = now() WHERE id = :rid"),
+        {"rid": recipe_id},
+    )
+    await db.execute(
+        text(
+            "UPDATE menu_items SET recipe_version_id = NULL"
+            " WHERE id = :mid AND tenant_id = :tid"
+        ),
+        {"mid": menu_item_id, "tid": tenant_id},
+    )
+
+    return {
+        "menu_item_id": menu_item_id,
+        "name": mi["name"],
+        "status": "draft",
+        "ingredients": draft_ingredients,
     }

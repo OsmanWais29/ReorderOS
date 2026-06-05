@@ -39,6 +39,19 @@
 | **15** | Exit-gate sweep + fixture suite (§39) + e2e (§40). | all | gates 39, 40 |
 | **16** | **Frontend (Appendix F)**: onboarding `recipes.tsx`, post-onboarding `recipes/[menuItemId]`, components, `api/recipes.ts`, EN/FR. | §1,§3,§13 | FE-1…FE-9 |
 
+## Carried-forward tests (registered, not yet written)
+
+**Sale-line historical-pointer test → Phase 12 (gates 25 + 41).** Phase 4 proves
+version immutability *structurally* — un-confirm leaves the `recipe_versions` row and
+its `recipe_ingredients` byte-identical, and never touches the version `id`, so any FK
+to it survives. It does **not** seed a real `sale_line_items` row FK'd to v1 (that row
+has many NOT-NULL Clover columns and a real depletion linkage only exists once the
+engine runs). The full assertion belongs in the Phase 12 worker-e2e suite: process a
+real sale against v1 → un-confirm the recipe → assert the sale line still points at v1,
+v1 is byte-identical, and its ledger rows are unchanged. This is the runtime form of
+gate 25 ("recipe edits after a sale line is processed do not alter that sale's ledger
+rows") combined with the gate 41 un-confirm round-trip.
+
 ## Edit-specific rules (load-bearing detail)
 
 **Edit 3 — legacy-key guard (Phase 9).** Before writing a new-format base movement, the writer checks for an existing movement under **both**:

@@ -108,6 +108,59 @@ async def skip_recipe(
     return detail
 
 
+@router.post("/recipes/{menu_item_id}/confirm", response_model=RecipeDetail)
+async def confirm_recipe(
+    menu_item_id: UUID,
+    db: AsyncSession = Depends(get_rls_session),
+    principal: Principal = require_role("manager"),
+) -> dict[str, Any]:
+    """Confirm a draft into an immutable recipe_version (one atomic transaction)."""
+    try:
+        detail = await repo.confirm_recipe(db, UUID(principal.tenant_id), menu_item_id)
+    except repo.MenuItemNotFound:
+        raise HTTPException(status_code=404, detail="menu item not found") from None
+    except repo.NoDraft:
+        raise HTTPException(status_code=400, detail="no draft to confirm") from None
+    except repo.EmptyDraft:
+        raise HTTPException(
+            status_code=400, detail="draft has no ingredients to confirm"
+        ) from None
+    except repo.DuplicateIngredient:
+        raise HTTPException(
+            status_code=400,
+            detail="duplicate ingredient names in draft (they resolve to one item)",
+        ) from None
+    except repo.RecipeConfirmed:
+        raise HTTPException(status_code=409, detail="recipe is already confirmed") from None
+    except repo.RecipeSkipped:
+        raise HTTPException(
+            status_code=409, detail="recipe is skipped; un-skip before confirming"
+        ) from None
+    except repo.UnitTypeConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    await db.commit()
+    return detail
+
+
+@router.post("/recipes/{menu_item_id}/unconfirm", response_model=RecipeDetail)
+async def unconfirm_recipe(
+    menu_item_id: UUID,
+    db: AsyncSession = Depends(get_rls_session),
+    principal: Principal = require_role("manager"),
+) -> dict[str, Any]:
+    """Re-open a confirmed recipe into a draft copy, without mutating any version."""
+    try:
+        detail = await repo.unconfirm_recipe(
+            db, UUID(principal.tenant_id), menu_item_id, UUID(principal.user_id)
+        )
+    except repo.MenuItemNotFound:
+        raise HTTPException(status_code=404, detail="menu item not found") from None
+    except repo.NotConfirmed:
+        raise HTTPException(status_code=409, detail="recipe is not confirmed") from None
+    await db.commit()
+    return detail
+
+
 @router.get("/progress", response_model=Progress)
 async def progress(
     db: AsyncSession = Depends(get_rls_session),

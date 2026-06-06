@@ -25,7 +25,7 @@ from uuid6 import uuid7
 from app.core.encryption import TokenEncryption
 from app.core.logging import get_logger
 from app.core.service_db import get_service_sessionmaker
-from app.modules.inventory.services import record_sale_inventory_effect
+from app.modules.inventory.depletion import handler
 from app.modules.pos.clover_client import (
     CloverClient,
     OrderNotFoundError,
@@ -244,7 +244,7 @@ class InboxWorker:
                     is_refunded = bool(li.get("refunded", False))
                     is_voided = bool(li.get("exchanged", False))
                     if sli_id and not is_refunded and not is_voided:
-                        await self._emit_inventory_effects(
+                        await handler.emit_inventory_effects(
                             session, tenant_id, sli_id, vendor_ts
                         )
         except Exception as exc:
@@ -493,43 +493,6 @@ class InboxWorker:
             )
         ).fetchone()
         return str(existing.id)
-
-    # ── Inventory effect dispatch ─────────────────────────────────────────────
-
-    async def _emit_inventory_effects(
-        self,
-        session: Any,
-        tenant_id: str,
-        sale_line_item_id: str,
-        vendor_ts: datetime | None,
-    ) -> None:
-        """Call record_sale_inventory_effect for every recipe ingredient on the line.
-
-        Skips gracefully when the sale line has no recipe (menu_item not yet
-        catalogued, or item not linked to any recipe version).  Each call is
-        idempotent, so safe to retry on a replay.
-        """
-        rows = (
-            await session.execute(
-                text("""
-                    SELECT ri.inventory_item_id
-                      FROM sale_line_items s
-                      JOIN recipe_ingredients ri
-                        ON ri.recipe_version_id = s.recipe_version_id
-                     WHERE s.tenant_id = :tid AND s.id = :sli
-                """),
-                {"tid": tenant_id, "sli": sale_line_item_id},
-            )
-        ).fetchall()
-
-        for row in rows:
-            await record_sale_inventory_effect(
-                session,
-                tenant_id=UUID(tenant_id),
-                sale_line_item_id=UUID(sale_line_item_id),
-                inventory_item_id=UUID(str(row[0])),
-                recorded_at=vendor_ts,
-            )
 
     # ── State transitions ─────────────────────────────────────────────────────
 

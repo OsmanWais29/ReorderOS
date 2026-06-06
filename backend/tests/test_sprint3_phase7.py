@@ -29,13 +29,13 @@ from sqlalchemy import text
 from app.core.database import engine, get_db_session, make_bound_session
 from app.core.security import Principal, get_principal
 from app.main import create_app
+from app.modules.inventory.depletion.writer import record_sale_inventory_effect
 from app.modules.inventory.services import (
     add_receipt_line,
     commit_receipt,
     create_receipt,
     record_count_event,
     record_opening_balance,
-    record_sale_inventory_effect,
 )
 from tests.conftest import seed_tenant
 from tests.helpers.sprint5 import seed_recipe_version_session

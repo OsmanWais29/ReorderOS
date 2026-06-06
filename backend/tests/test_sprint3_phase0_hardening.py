@@ -25,12 +25,14 @@ import asyncpg
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.inventory.depletion.writer import (
+    record_sale_inventory_effect,
+    record_sale_reversal,
+)
 from app.modules.inventory.services import (
     on_hand,
     record_count_event,
     record_opening_balance,
-    record_sale_inventory_effect,
-    record_sale_reversal,
 )
 from tests.conftest import seed_tenant
 from tests.helpers.sprint5 import seed_recipe_version

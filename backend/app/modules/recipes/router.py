@@ -13,13 +13,31 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.deps import get_rls_session
 from app.core.security import Principal, require_role
 from app.modules.inventory.depletion.units import is_canonical
 from app.modules.recipes import repo
-from app.modules.recipes.schemas import Progress, RecipeDetail, RecipeListItem, RecipePatch
+from app.modules.recipes.llm_client import AnthropicLLMClient, LLMClient, LLMUnavailable
+from app.modules.recipes.schemas import (
+    Progress,
+    RecipeDetail,
+    RecipeListItem,
+    RecipePatch,
+    SuggestResponse,
+)
+from app.modules.recipes.suggest import suggest_recipe
 
 router = APIRouter(prefix="/onboarding", tags=["recipes"])
+
+
+def get_llm_client() -> LLMClient:
+    """Provide the Anthropic-backed client, or 503 if no key is configured. Tests
+    override this dependency with a fake — no network, no SDK key needed."""
+    settings = get_settings()
+    if not settings.anthropic_api_key:
+        raise HTTPException(status_code=503, detail="LLM suggestion service not configured")
+    return AnthropicLLMClient(settings.anthropic_api_key, settings.anthropic_model)
 
 
 def _validate_ingredients(body: RecipePatch) -> list[dict[str, Any]]:
@@ -159,6 +177,28 @@ async def unconfirm_recipe(
         raise HTTPException(status_code=409, detail="recipe is not confirmed") from None
     await db.commit()
     return detail
+
+
+@router.post("/recipes/{menu_item_id}/suggest", response_model=SuggestResponse)
+async def suggest(
+    menu_item_id: UUID,
+    db: AsyncSession = Depends(get_rls_session),
+    principal: Principal = require_role("manager"),
+    llm: LLMClient = Depends(get_llm_client),
+) -> dict[str, Any]:
+    """Infer base + modifier ingredients via Claude and store them append-only. Does
+    NOT write recipe_drafts/recipe_versions — promotion to a draft is the operator's
+    separate PATCH. An LLM failure (503) cannot corrupt a draft or version."""
+    try:
+        result = await suggest_recipe(db, llm, UUID(principal.tenant_id), menu_item_id)
+    except repo.MenuItemNotFound:
+        raise HTTPException(status_code=404, detail="menu item not found") from None
+    except LLMUnavailable:
+        raise HTTPException(
+            status_code=503, detail="recipe suggestion is temporarily unavailable"
+        ) from None
+    await db.commit()
+    return result
 
 
 @router.get("/progress", response_model=Progress)

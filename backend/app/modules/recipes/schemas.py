@@ -45,3 +45,30 @@ class Progress(BaseModel):
     skipped: int
     denominator: int  # total - skipped
     percent: float | None  # null when denominator is 0
+
+
+# ── LLM suggestion (Phase 5) — append-only suggestion layer, never a draft ───
+
+
+class SuggestionIngredient(BaseModel):
+    name: str
+    quantity: float
+    unit: str
+    valid: bool  # false when unit non-canonical / name empty / qty<=0 — operator fixes
+    issue: str | None = None
+
+
+class ModifierSuggestionOut(BaseModel):
+    modifier_id: UUID | None  # null when the model echoed an unknown id
+    name: str
+    confidence: str  # confident | likely | uncertain
+    ingredients: list[SuggestionIngredient]
+
+
+class SuggestResponse(BaseModel):
+    suggestion_id: UUID
+    menu_item_id: UUID
+    base_ingredients: list[SuggestionIngredient]
+    confidence: str
+    modifiers: list[ModifierSuggestionOut]
+    model_version: str

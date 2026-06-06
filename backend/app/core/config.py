@@ -76,6 +76,10 @@ class Settings(BaseSettings):
         alias="CLOVER_POST_CONNECT_REDIRECT",
     )
 
+    # ── Anthropic (Sprint 5 recipe LLM suggestion — quarantined to recipes/) ─────
+    anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
+    anthropic_model: str = Field(default="claude-sonnet-4-6", alias="ANTHROPIC_MODEL")
+
     # ── Token encryption (Fernet; supports key rotation via _previous) ───────────
     token_encryption_key: str | None = Field(default=None, alias="TOKEN_ENCRYPTION_KEY")
     token_encryption_key_previous: str | None = Field(

@@ -16,7 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.deps import get_rls_session
 from app.core.security import Principal, require_role
-from app.modules.inventory.depletion.units import is_canonical
 from app.modules.recipes import repo
 from app.modules.recipes.llm_client import AnthropicLLMClient, LLMClient, LLMUnavailable
 from app.modules.recipes.schemas import (
@@ -27,6 +26,7 @@ from app.modules.recipes.schemas import (
     SuggestResponse,
 )
 from app.modules.recipes.suggest import suggest_recipe
+from app.modules.recipes.validators import validate_ingredients
 
 router = APIRouter(prefix="/onboarding", tags=["recipes"])
 
@@ -38,33 +38,6 @@ def get_llm_client() -> LLMClient:
     if not settings.anthropic_api_key:
         raise HTTPException(status_code=503, detail="LLM suggestion service not configured")
     return AnthropicLLMClient(settings.anthropic_api_key, settings.anthropic_model)
-
-
-def _validate_ingredients(body: RecipePatch) -> list[dict[str, Any]]:
-    """Business validation → 400 (exit gate 12 / fail gate 5): canonical unit,
-    quantity > 0, non-empty name. Returns the normalized list for JSONB storage."""
-    out: list[dict[str, Any]] = []
-    for ing in body.ingredients:
-        name = ing.name.strip()
-        if not name:
-            raise HTTPException(status_code=400, detail="ingredient name must not be empty")
-        if ing.quantity <= 0:
-            raise HTTPException(
-                status_code=400, detail=f"quantity must be > 0 (got {ing.quantity})"
-            )
-        if not is_canonical(ing.unit):
-            raise HTTPException(status_code=400, detail=f"non-canonical unit: {ing.unit!r}")
-        out.append(
-            {
-                "name": name,
-                "quantity": ing.quantity,
-                "unit": ing.unit,
-                "inventory_item_id": (
-                    str(ing.inventory_item_id) if ing.inventory_item_id else None
-                ),
-            }
-        )
-    return out
 
 
 @router.get("/recipes", response_model=list[RecipeListItem])
@@ -97,7 +70,7 @@ async def patch_recipe(
     db: AsyncSession = Depends(get_rls_session),
     principal: Principal = require_role("manager"),
 ) -> dict[str, Any]:
-    ingredients = _validate_ingredients(body)
+    ingredients = validate_ingredients(body.ingredients)
     try:
         detail = await repo.save_draft(
             db, UUID(principal.tenant_id), menu_item_id, ingredients, UUID(principal.user_id)
@@ -122,6 +95,10 @@ async def skip_recipe(
         detail = await repo.skip_recipe(db, UUID(principal.tenant_id), menu_item_id)
     except repo.MenuItemNotFound:
         raise HTTPException(status_code=404, detail="menu item not found") from None
+    except repo.RecipeConfirmed:
+        raise HTTPException(
+            status_code=409, detail="recipe is confirmed; un-confirm before skipping"
+        ) from None
     await db.commit()
     return detail
 

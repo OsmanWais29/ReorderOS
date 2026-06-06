@@ -491,6 +491,26 @@ async def test_double_unconfirm_409(app_instance, conn, client) -> None:
 
 
 @pytest.mark.integration
+async def test_skip_on_confirmed_409(app_instance, conn, client) -> None:
+    """Skip is for un-configured recipes; a confirmed one must be un-confirmed first,
+    else 'skipped' would coexist with a live menu_items.recipe_version_id (read by
+    Phase 9 base depletion)."""
+    tid, uid = await _seed_tenant_user(conn)
+    mid = await _menu_item(conn, tid)
+    _as(app_instance, tid, uid, "manager")
+    await _patch_draft(client, mid, _TWO)
+    assert (await client.post(f"{R}/recipes/{mid}/confirm")).status_code == 200
+    assert (await client.post(f"{R}/recipes/{mid}/skip")).status_code == 409
+    # link intact, still confirmed (skip rejected, not half-applied)
+    assert await _count(
+        conn,
+        "SELECT count(*) FROM recipes r JOIN menu_items mi ON mi.id=r.menu_item_id"
+        " WHERE r.menu_item_id=:m AND r.status='confirmed' AND mi.recipe_version_id IS NOT NULL",
+        {"m": mid},
+    ) == 1
+
+
+@pytest.mark.integration
 async def test_confirm_unconfirm_staff_403(app_instance, conn, client) -> None:
     tid, uid = await _seed_tenant_user(conn)
     mid = await _menu_item(conn, tid)

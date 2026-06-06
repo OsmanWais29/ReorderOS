@@ -72,3 +72,22 @@ class SuggestResponse(BaseModel):
     confidence: str
     modifiers: list[ModifierSuggestionOut]
     model_version: str
+
+
+# ── modifier config (Phase 6) ────────────────────────────────────────────────
+
+
+class ModifierListItem(BaseModel):
+    modifier_id: UUID
+    name: str
+    modifier_type: str  # additive | subtractive | substitution
+    status: str  # draft | confirmed | skipped
+    ingredient_count: int
+
+
+class ModifierDetail(BaseModel):
+    modifier_id: UUID
+    name: str
+    modifier_type: str
+    status: str
+    ingredients: list[dict[str, Any]]

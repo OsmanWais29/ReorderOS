@@ -245,7 +245,10 @@ async def skip_recipe(
 ) -> dict[str, Any]:
     """Move a recipe to skipped, preserving any existing draft. Creates the recipe
     row if none exists. Returns the resulting detail (no post-commit re-query).
-    Caller commits. Raises MenuItemNotFound (404)."""
+    Caller commits. Skip is for UN-configured items; a confirmed recipe must be
+    un-confirmed first (else 'skipped' would coexist with a live
+    menu_items.recipe_version_id, which Phase 9 base depletion reads). Raises
+    MenuItemNotFound (404) / RecipeConfirmed (409)."""
     mi = (
         await db.execute(
             text("SELECT id, name FROM menu_items WHERE id = :mid AND tenant_id = :tid"),
@@ -258,10 +261,10 @@ async def skip_recipe(
     # Upsert recipe status to skipped; recipe_drafts is left untouched (preserved).
     rec = (
         await db.execute(
-            text("SELECT id FROM recipes WHERE tenant_id = :tid AND menu_item_id = :mid"),
+            text("SELECT id, status FROM recipes WHERE tenant_id = :tid AND menu_item_id = :mid"),
             {"tid": tenant_id, "mid": menu_item_id},
         )
-    ).scalar()
+    ).mappings().fetchone()
     if rec is None:
         await db.execute(
             text(
@@ -271,9 +274,11 @@ async def skip_recipe(
             {"tid": tenant_id, "mid": menu_item_id},
         )
     else:
+        if rec["status"] == "confirmed":
+            raise RecipeConfirmed
         await db.execute(
             text("UPDATE recipes SET status = 'skipped', updated_at = now() WHERE id = :rid"),
-            {"rid": rec},
+            {"rid": rec["id"]},
         )
 
     # Preserved draft (if any) for the response — read within the same txn.

@@ -39,6 +39,18 @@
 | **15** | Exit-gate sweep + fixture suite (§39) + e2e (§40). | all | gates 39, 40 |
 | **16** | **Frontend (Appendix F)**: onboarding `recipes.tsx`, post-onboarding `recipes/[menuItemId]`, components, `api/recipes.ts`, EN/FR. | §1,§3,§13 | FE-1…FE-9 |
 
+## Invariants for later phases (registered during build)
+
+**`*_version` pointer set IFF status='confirmed' (Phase 6 close).** Confirm sets the
+pointer + status='confirmed'; un-confirm clears both; **skip-on-confirmed is rejected
+409** (skip is the disposition for un-configured items; un-confirm is the undo). This
+holds for both recipes (`menu_items.recipe_version_id`) and modifiers
+(`modifiers.current_version_id`). **Phase 9/10 defense-in-depth:** base depletion finds
+the version *through* `menu_items.recipe_version_id`, so the walker/resolver must ALSO
+gate on `recipes.status='confirmed'` (don't rely on the pointer alone) — belt and
+suspenders against any future path that could leave a stale pointer. Modifier depletion
+already gates on `modifiers.status='confirmed'` per edit 6.
+
 ## Carried-forward tests (registered, not yet written)
 
 **Sale-line historical-pointer test → Phase 12 (gates 25 + 41).** Phase 4 proves

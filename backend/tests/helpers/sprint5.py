@@ -23,9 +23,12 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterable, Sequence
+from decimal import Decimal
 from typing import Any, NamedTuple
 
 from sqlalchemy import text
+
+from app.modules.inventory.depletion.writer import write_movement
 
 # Canonical default unit — must be in the 0016 recipe_ingredients CHECK allowlist.
 DEFAULT_UNIT = "g"
@@ -206,3 +209,65 @@ async def seed_recipe_version_session(
         )
     await session.flush()
     return SeededRecipe(str(rv_id), str(recipe_id), str(mi_id), ingredient_ids)
+
+
+async def seed_sale_effect_session(
+    session: Any,
+    *,
+    tenant_id: Any,
+    sale_line_item_id: Any,
+    inventory_item_id: Any,
+    recorded_at: Any | None = None,
+) -> Any:
+    """TEST-ONLY drop-in for the retired record_sale_inventory_effect.
+
+    Reproduces its forward sale movement (old formula = sale_qty*recipe_qty/factor, old key
+    sale_line:{sli}:{ii}, yield_factor snapshot) via write_movement — for tests that need a
+    sale movement as SETUP to exercise surviving behavior (reversal, yield snapshot,
+    watermark, on_hand). Late-signal is intentionally NOT here (it now lives in the handler;
+    H0.9/H0.10 drive process_line instead). Returns the movement id (None on replay/conflict).
+    """
+    tid, sli, iid = _u(tenant_id), _u(sale_line_item_id), _u(inventory_item_id)
+    row = (
+        await session.execute(
+            text("""
+                SELECT s.quantity AS sq, ri.quantity AS rq,
+                       ii.storage_to_recipe_factor AS f, ii.inventory_mode AS m
+                FROM sale_line_items s
+                JOIN recipe_ingredients ri
+                  ON ri.recipe_version_id = s.recipe_version_id
+                 AND ri.inventory_item_id = :iid AND ri.tenant_id = :tid
+                JOIN inventory_items ii ON ii.id = :iid AND ii.tenant_id = :tid
+                WHERE s.id = :sli AND s.tenant_id = :tid
+            """),
+            {"tid": tid, "sli": sli, "iid": iid},
+        )
+    ).mappings().one()
+    theoretical = Decimal(str(row["sq"])) * Decimal(str(row["rq"])) / Decimal(str(row["f"]))
+    yf = (
+        await session.execute(
+            text(
+                "SELECT yield_factor FROM inventory_yield_factors"
+                " WHERE tenant_id = :t AND inventory_item_id = :i"
+            ),
+            {"t": tid, "i": iid},
+        )
+    ).scalar()
+    yield_factor = Decimal(str(yf)) if yf is not None else Decimal("1.0")
+    if row["m"] == "recipe_deducted":
+        mtype, delta = "sale_depletion", -theoretical
+    else:
+        mtype, delta = "sale_signal", theoretical
+    return await write_movement(
+        session,
+        tenant_id=tid,
+        idempotency_key=f"sale_line:{sli}:{iid}",
+        legacy_key=None,
+        inventory_item_id=iid,
+        movement_type=mtype,
+        delta=delta,
+        yield_factor_applied=yield_factor,
+        source_type="sale_line_item",
+        source_id=sli,
+        recorded_at=recorded_at,
+    )

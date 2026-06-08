@@ -8,7 +8,6 @@ Groups:
   7.3-7.5   OB       — opening balance constraints
   7.6-7.9   ON_HAND  — on_hand() SQL function correctness (asyncpg)
   7.10-7.14 TRIGGER  — count event trigger / mode branching (asyncpg)
-  7.15-7.17 SALE     — record_sale_inventory_effect() (service layer)
   7.18-7.20 RECEIPT  — commit_receipt() (service layer)
   7.21-7.23 IDEM     — idempotency middleware (HTTP)
   7.24-7.26 MONITOR  — monitoring_alerts UPSERT and thresholds (service layer)
@@ -29,7 +28,6 @@ from sqlalchemy import text
 from app.core.database import engine, get_db_session, make_bound_session
 from app.core.security import Principal, get_principal
 from app.main import create_app
-from app.modules.inventory.depletion.writer import record_sale_inventory_effect
 from app.modules.inventory.services import (
     add_receipt_line,
     commit_receipt,
@@ -819,107 +817,6 @@ async def test_7_14_predicted_captured_before_trigger(session) -> None:
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 7.15-7.17  SALE TESTS
-# ═════════════════════════════════════════════════════════════════════════════
-
-
-@pytest.mark.asyncio
-async def test_7_15_mode_a_sale_emits_sale_depletion(session) -> None:
-    """Mode A: record_sale_inventory_effect() emits a negative sale_depletion movement.
-
-    Theoretical qty = sale_qty * recipe_qty / storage_to_recipe_factor
-                    = 5 * 4 / 2.0 = 10
-    Delta = -10  (Mode A subtracts from ledger)
-    """
-    item_id = uuid.uuid4()
-    await _seed_item(session, item_id, "recipe_deducted", factor=2.0)
-    await _seed_movement(session, item_id, "opening_balance", 100)
-
-    rv_id = await _seed_recipe(session, T7_TENANT_ID, item_id, recipe_qty=4.0)
-    slid = await _seed_sale_line(session, T7_TENANT_ID, rv_id, sale_qty=5.0)
-
-    mv_id = await record_sale_inventory_effect(
-        session,
-        tenant_id=T7_TENANT_ID,
-        sale_line_item_id=slid,
-        inventory_item_id=item_id,
-    )
-    assert mv_id is not None
-
-    row = await session.execute(
-        text("SELECT movement_type, delta FROM inventory_movements WHERE id = :id"),
-        {"id": mv_id},
-    )
-    r = row.fetchone()
-    assert r[0] == "sale_depletion", f"expected sale_depletion, got {r[0]}"
-    assert r[1] == Decimal("-10"), f"expected delta=-10, got {r[1]}"
-
-
-@pytest.mark.asyncio
-async def test_7_16_mode_b_sale_emits_sale_signal(session) -> None:
-    """Mode B: record_sale_inventory_effect() emits a positive sale_signal movement.
-
-    Theoretical qty = 3 * 2 / 1.0 = 6
-    Delta = +6  (Mode B records signal, on_hand() subtracts it with yield factor)
-    """
-    item_id = uuid.uuid4()
-    t0 = datetime(2026, 1, 1, tzinfo=UTC_TZ)
-    await _seed_item(session, item_id, "count_anchored", lca=t0, lcq=200)
-
-    rv_id = await _seed_recipe(session, T7_TENANT_ID, item_id, recipe_qty=2.0)
-    slid = await _seed_sale_line(session, T7_TENANT_ID, rv_id, sale_qty=3.0)
-
-    mv_id = await record_sale_inventory_effect(
-        session,
-        tenant_id=T7_TENANT_ID,
-        sale_line_item_id=slid,
-        inventory_item_id=item_id,
-    )
-    assert mv_id is not None
-
-    row = await session.execute(
-        text("SELECT movement_type, delta FROM inventory_movements WHERE id = :id"),
-        {"id": mv_id},
-    )
-    r = row.fetchone()
-    assert r[0] == "sale_signal", f"expected sale_signal, got {r[0]}"
-    assert r[1] == Decimal("6"), f"expected delta=+6, got {r[1]}"
-
-
-@pytest.mark.asyncio
-async def test_7_17_sale_is_idempotent(session) -> None:
-    """Second call with same sale_line_item_id + inventory_item_id returns None (replay)."""
-    item_id = uuid.uuid4()
-    await _seed_item(session, item_id, "recipe_deducted")
-    await _seed_movement(session, item_id, "opening_balance", 100)
-
-    rv_id = await _seed_recipe(session, T7_TENANT_ID, item_id, recipe_qty=1.0)
-    slid = await _seed_sale_line(session, T7_TENANT_ID, rv_id, sale_qty=10.0)
-
-    first = await record_sale_inventory_effect(
-        session,
-        tenant_id=T7_TENANT_ID,
-        sale_line_item_id=slid,
-        inventory_item_id=item_id,
-    )
-    second = await record_sale_inventory_effect(
-        session,
-        tenant_id=T7_TENANT_ID,
-        sale_line_item_id=slid,
-        inventory_item_id=item_id,
-    )
-
-    assert first is not None, "first call must return a movement id"
-    assert second is None, "second call must return None (idempotent replay)"
-
-    cnt = await session.execute(
-        text("SELECT COUNT(*) FROM inventory_movements WHERE id = :id"),
-        {"id": first},
-    )
-    assert cnt.scalar() == 1, "only one movement must exist"
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# 7.18-7.20  RECEIPT TESTS
 # ═════════════════════════════════════════════════════════════════════════════
 
 

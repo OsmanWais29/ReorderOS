@@ -18,24 +18,21 @@ service-layer changes in app/modules/inventory/services.py:
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import asyncpg
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.inventory.depletion.writer import (
-    record_sale_inventory_effect,
-    record_sale_reversal,
-)
+from app.modules.inventory.depletion.writer import record_sale_reversal
 from app.modules.inventory.services import (
     on_hand,
     record_count_event,
     record_opening_balance,
 )
 from tests.conftest import seed_tenant
-from tests.helpers.sprint5 import seed_recipe_version
+from tests.helpers.sprint5 import seed_recipe_version, seed_sale_effect_session
 
 pytestmark = pytest.mark.integration
 
@@ -185,7 +182,7 @@ async def test_h0_1_yield_factor_applied_stored(
 
     rv_id, _ = await _mk_recipe(admin_conn, tid, item, recipe_qty=100)
     sl_id = await _mk_sale_line(admin_conn, tid, rv_id, qty=1)
-    await record_sale_inventory_effect(
+    await seed_sale_effect_session(
         db_session,
         tenant_id=uuid.UUID(tid),
         sale_line_item_id=uuid.UUID(sl_id),
@@ -258,7 +255,7 @@ async def test_h0_2_yield_mutation_no_effect_on_watermark(
     # Post-count signal — yield_factor_applied = 0.80 stored on the row
     rv_id, _ = await _mk_recipe(admin_conn, tid, item, recipe_qty=100)
     sl_id = await _mk_sale_line(admin_conn, tid, rv_id, qty=1)
-    await record_sale_inventory_effect(
+    await seed_sale_effect_session(
         db_session,
         tenant_id=uuid.UUID(tid),
         sale_line_item_id=uuid.UUID(sl_id),
@@ -369,7 +366,7 @@ async def test_h0_4_mode_a_full_ledger_under_watermark(
 
     rv_id, _ = await _mk_recipe(admin_conn, tid, item, recipe_qty=100)
     sl_id = await _mk_sale_line(admin_conn, tid, rv_id, qty=1)
-    await record_sale_inventory_effect(
+    await seed_sale_effect_session(
         db_session,
         tenant_id=uuid.UUID(tid),
         sale_line_item_id=uuid.UUID(sl_id),
@@ -417,7 +414,7 @@ async def test_h0_5_reversal_mode_a_zeros_depletion(
 
     rv_id, _ = await _mk_recipe(admin_conn, tid, item, recipe_qty=200)
     sl_id = await _mk_sale_line(admin_conn, tid, rv_id, qty=1)
-    mv_id = await record_sale_inventory_effect(
+    mv_id = await seed_sale_effect_session(
         db_session,
         tenant_id=uuid.UUID(tid),
         sale_line_item_id=uuid.UUID(sl_id),
@@ -481,7 +478,7 @@ async def test_h0_6_reversal_mode_b_zeros_signal(
 
     rv_id, _ = await _mk_recipe(admin_conn, tid, item, recipe_qty=100)
     sl_id = await _mk_sale_line(admin_conn, tid, rv_id, qty=1)
-    mv_id = await record_sale_inventory_effect(
+    mv_id = await seed_sale_effect_session(
         db_session,
         tenant_id=uuid.UUID(tid),
         sale_line_item_id=uuid.UUID(sl_id),
@@ -540,7 +537,7 @@ async def test_h0_7_reversal_idempotent(
 
     rv_id, _ = await _mk_recipe(admin_conn, tid, item, recipe_qty=50)
     sl_id = await _mk_sale_line(admin_conn, tid, rv_id, qty=1)
-    mv_id = await record_sale_inventory_effect(
+    mv_id = await seed_sale_effect_session(
         db_session,
         tenant_id=uuid.UUID(tid),
         sale_line_item_id=uuid.UUID(sl_id),
@@ -612,108 +609,3 @@ async def test_h0_8_reversal_rejects_wrong_type(
 # ═════════════════════════════════════════════════════════════════════════════
 # H0.9 — late_signal_reconciliation alert fires when boundary is crossed
 # ═════════════════════════════════════════════════════════════════════════════
-
-
-@pytest.mark.asyncio
-async def test_h0_9_late_signal_alert_fires(
-    admin_conn: asyncpg.Connection,
-    db_session: AsyncSession,
-) -> None:
-    """A sale signal whose recorded_at is >30 min before ingestion, and which
-    crosses a count reconciliation boundary, must create a
-    late_signal_reconciliation alert at severity warn.
-    """
-    t = await seed_tenant(admin_conn)
-    tid = str(t["id"])
-    uom = await _mk_uom(admin_conn, tid)
-    item = await _mk_item(admin_conn, tid, uom, mode="count_anchored", factor=1.0)
-
-    await record_opening_balance(
-        db_session,
-        tenant_id=uuid.UUID(tid),
-        inventory_item_id=uuid.UUID(item),
-        quantity=Decimal("500"),
-    )
-    await db_session.commit()
-
-    # Count establishes reconciliation boundary ≈ NOW()
-    await record_count_event(
-        db_session,
-        tenant_id=uuid.UUID(tid),
-        inventory_item_id=uuid.UUID(item),
-        counted_quantity=Decimal("500"),
-    )
-    await db_session.commit()
-
-    # Late signal: recorded_at 2 hours before ingestion, crossing the boundary
-    late_recorded_at = datetime.now(UTC) - timedelta(hours=2)
-    rv_id, _ = await _mk_recipe(admin_conn, tid, item, recipe_qty=50)
-    sl_id = await _mk_sale_line(admin_conn, tid, rv_id, qty=1)
-    await record_sale_inventory_effect(
-        db_session,
-        tenant_id=uuid.UUID(tid),
-        sale_line_item_id=uuid.UUID(sl_id),
-        inventory_item_id=uuid.UUID(item),
-        recorded_at=late_recorded_at,
-    )
-    await db_session.commit()
-
-    alert_row = await admin_conn.fetchrow(
-        "SELECT severity FROM monitoring_alerts"
-        " WHERE tenant_id = $1 AND monitor_name = 'late_signal_reconciliation'"
-        " AND resolved_at IS NULL",
-        uuid.UUID(tid),
-    )
-    assert alert_row is not None, "late_signal_reconciliation alert must be created"
-    assert alert_row["severity"] == "warn"
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# H0.10 — no alert fires when no count boundary exists
-# ═════════════════════════════════════════════════════════════════════════════
-
-
-@pytest.mark.asyncio
-async def test_h0_10_no_late_alert_without_boundary(
-    admin_conn: asyncpg.Connection,
-    db_session: AsyncSession,
-) -> None:
-    """A sale signal with recorded_at >30 min before ingestion must NOT fire
-    the late_signal_reconciliation alert when no count boundary exists for
-    the item in that time window.
-    """
-    t = await seed_tenant(admin_conn)
-    tid = str(t["id"])
-    uom = await _mk_uom(admin_conn, tid)
-    item = await _mk_item(admin_conn, tid, uom, mode="count_anchored", factor=1.0)
-
-    await record_opening_balance(
-        db_session,
-        tenant_id=uuid.UUID(tid),
-        inventory_item_id=uuid.UUID(item),
-        quantity=Decimal("500"),
-    )
-    await db_session.commit()
-
-    # No count event — no reconciliation boundary exists
-    late_recorded_at = datetime.now(UTC) - timedelta(hours=2)
-    rv_id, _ = await _mk_recipe(admin_conn, tid, item, recipe_qty=50)
-    sl_id = await _mk_sale_line(admin_conn, tid, rv_id, qty=1)
-    await record_sale_inventory_effect(
-        db_session,
-        tenant_id=uuid.UUID(tid),
-        sale_line_item_id=uuid.UUID(sl_id),
-        inventory_item_id=uuid.UUID(item),
-        recorded_at=late_recorded_at,
-    )
-    await db_session.commit()
-
-    alert_row = await admin_conn.fetchrow(
-        "SELECT 1 FROM monitoring_alerts"
-        " WHERE tenant_id = $1 AND monitor_name = 'late_signal_reconciliation'"
-        " AND resolved_at IS NULL",
-        uuid.UUID(tid),
-    )
-    assert alert_row is None, (
-        "late_signal_reconciliation alert must NOT fire when no count boundary exists"
-    )

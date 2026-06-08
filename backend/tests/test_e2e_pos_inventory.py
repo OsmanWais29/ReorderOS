@@ -28,15 +28,13 @@ These tests verify the full pipeline that was assembled across Sprint 3/4:
 
 from __future__ import annotations
 
-import json
 import uuid
 from decimal import Decimal
 
-import asyncpg  # noqa: F401
+import asyncpg
 import httpx
 import pytest
 import respx
-from uuid6 import uuid7
 
 from app.modules.pos.worker import InboxWorker
 from tests.helpers.phase7 import make_clover_order, seed_worker_prereqs
@@ -48,14 +46,19 @@ pytestmark = pytest.mark.integration
 # ── seed helpers ───────────────────────────────────────────────────────────────
 
 
-async def _seed_uom(conn: asyncpg.Connection, tenant_id: str) -> str:
-    name = f"uom-{uuid.uuid4().hex[:6]}"
+async def _seed_uom(conn: asyncpg.Connection, tenant_id: str, name: str = "g") -> str:
+    # Phase 9 walker converts recipe-unit -> storage-unit via convert(), so the storage unit
+    # must be CANONICAL. Default 'g' matches the recipe ingredient unit 'g' (identity
+    # convert); pass name='kg' to exercise a real conversion. The old path used
+    # storage_to_recipe_factor and never converted, so it used arbitrary uom names.
+    # Idempotent per tenant (units_of_measure UNIQUE(tenant_id, name)).
     row = await conn.fetchrow(
         "INSERT INTO units_of_measure (tenant_id, name, abbreviation, unit_type)"
-        " VALUES ($1, $2, $3, 'weight') RETURNING id",
+        " VALUES ($1, $2, $2, 'weight')"
+        " ON CONFLICT (tenant_id, name) DO UPDATE SET name = EXCLUDED.name"
+        " RETURNING id",
         uuid.UUID(tenant_id),
         name,
-        name[:3],
     )
     return str(row["id"])
 
@@ -206,10 +209,12 @@ async def test_e2e_2_delta_formula(admin_conn):
     seed = await seed_worker_prereqs(admin_conn)
     tid = seed["tenant_id"]
 
-    uom_id = await _seed_uom(admin_conn, tid)
-    # factor = 4.0 → stored in storage units, recipe in recipe units
+    # New model (v5 §11): the delta comes from a UNIT CONVERSION, not storage_to_recipe_factor.
+    # Storage unit 'kg', recipe unit 'g' → convert(g→kg)=0.001. factor=4.0 is set DELIBERATELY
+    # and must be IGNORED — if depletion still divided by it, the delta would differ.
+    uom_id = await _seed_uom(admin_conn, tid, name="kg")
     inv_id = await _seed_inventory_item(admin_conn, tid, uom_id, mode="recipe_deducted", factor=4.0)
-    rv_id = await _seed_recipe(admin_conn, tid, (inv_id, 3.0))  # recipe_qty = 3
+    rv_id = await _seed_recipe(admin_conn, tid, (inv_id, 3.0))  # recipe_qty = 3 (in 'g')
     pos_item_id = f"POS_{uuid.uuid4().hex[:8]}"
     await _seed_menu_item(admin_conn, tid, pos_item_id, recipe_version_id=rv_id)
 
@@ -217,6 +222,7 @@ async def test_e2e_2_delta_formula(admin_conn):
     clover_order = make_clover_order(
         order_id=seed["vendor_event_id"],
         state="locked",
+        payment_state="PAID",
         line_items=[li],
     )
     respx.get(url__regex=f".*/orders/{seed['vendor_event_id']}.*").mock(
@@ -232,8 +238,10 @@ async def test_e2e_2_delta_formula(admin_conn):
         uuid.UUID(tid),
         uuid.UUID(inv_id),
     )
-    # expected = -(2 * 3.0 / 4.0) = -1.5
-    assert Decimal(str(delta)) == Decimal("-1.5")
+    # New model: delta = -(sale_qty * convert(recipe_qty g->kg)) / yield
+    #                  = -(2 * (3.0 * 0.001) / 1) = -0.006   — uses the conversion, IGNORES factor=4.0.
+    # (Old model would have been -(2*3/4) = -1.5; asserting -0.006 proves the factor is not consulted.)
+    assert Decimal(str(delta)) == Decimal("-0.006")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -257,6 +265,7 @@ async def test_e2e_3_mode_b_writes_signal(admin_conn):
     clover_order = make_clover_order(
         order_id=seed["vendor_event_id"],
         state="locked",
+        payment_state="PAID",
         line_items=[li],
     )
     respx.get(url__regex=f".*/orders/{seed['vendor_event_id']}.*").mock(
@@ -302,6 +311,7 @@ async def test_e2e_4_recipe_version_frozen(admin_conn):
     clover_order = make_clover_order(
         order_id=seed["vendor_event_id"],
         state="locked",
+        payment_state="PAID",
         line_items=[li],
     )
     respx.get(url__regex=f".*/orders/{seed['vendor_event_id']}.*").mock(
@@ -351,8 +361,9 @@ async def test_e2e_4_recipe_version_frozen(admin_conn):
 @pytest.mark.asyncio
 @respx.mock
 async def test_e2e_5_replay_idempotent(admin_conn):
-    from tests.helpers.phase7 import seed_inbox_event
     import time
+
+    from tests.helpers.phase7 import seed_inbox_event
 
     seed = await seed_worker_prereqs(admin_conn)
     tid = seed["tenant_id"]
@@ -368,6 +379,7 @@ async def test_e2e_5_replay_idempotent(admin_conn):
     clover_order = make_clover_order(
         order_id=order_id,
         state="locked",
+        payment_state="PAID",
         line_items=[li],
     )
     respx.get(url__regex=f".*/orders/{order_id}.*").mock(
@@ -424,6 +436,7 @@ async def test_e2e_6_refunded_line_no_movement(admin_conn):
     clover_order = make_clover_order(
         order_id=seed["vendor_event_id"],
         state="locked",
+        payment_state="PAID",
         line_items=[li],
     )
     respx.get(url__regex=f".*/orders/{seed['vendor_event_id']}.*").mock(
@@ -463,6 +476,7 @@ async def test_e2e_7_voided_line_no_movement(admin_conn):
     clover_order = make_clover_order(
         order_id=seed["vendor_event_id"],
         state="locked",
+        payment_state="PAID",
         line_items=[li],
     )
     respx.get(url__regex=f".*/orders/{seed['vendor_event_id']}.*").mock(
@@ -500,6 +514,7 @@ async def test_e2e_8_no_recipe_no_movement(admin_conn):
     clover_order = make_clover_order(
         order_id=seed["vendor_event_id"],
         state="locked",
+        payment_state="PAID",
         line_items=[li],
     )
     respx.get(url__regex=f".*/orders/{seed['vendor_event_id']}.*").mock(
@@ -544,6 +559,7 @@ async def test_e2e_9_multi_ingredient(admin_conn):
     clover_order = make_clover_order(
         order_id=seed["vendor_event_id"],
         state="locked",
+        payment_state="PAID",
         line_items=[li],
     )
     respx.get(url__regex=f".*/orders/{seed['vendor_event_id']}.*").mock(
@@ -564,3 +580,181 @@ async def test_e2e_9_multi_ingredient(admin_conn):
     deltas = {str(r["inventory_item_id"]): Decimal(str(r["delta"])) for r in rows}
     assert deltas[inv_a] == Decimal("-1")
     assert deltas[inv_b] == Decimal("-2")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# E2E.10 — confirmed additive modifier depletes (real worker extraction, real role)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+async def _seed_confirmed_modifier(
+    conn: asyncpg.Connection,
+    tenant_id: str,
+    menu_item_id: str,
+    inv_item_id: str,
+    *,
+    mod_qty: float,
+    modifier_type: str = "additive",
+    confirmed: bool = True,
+) -> str:
+    """Create a modifier (+ confirmed version + ingredient if confirmed). Returns its
+    pos_modifier_id. Confirmed-ness is the current_version_id pointer the worker reads."""
+    tid = uuid.UUID(tenant_id)
+    pos_mod_id = f"POSMOD_{uuid.uuid4().hex[:8]}"
+    mod_id = await conn.fetchval(
+        "INSERT INTO modifiers (tenant_id, menu_item_id, pos_modifier_id, name,"
+        " modifier_type, status) VALUES ($1,$2,$3,'Extra shot',$4,$5) RETURNING id",
+        tid, uuid.UUID(menu_item_id), pos_mod_id, modifier_type,
+        "confirmed" if confirmed else "draft",
+    )
+    if confirmed:
+        mv_id = await conn.fetchval(
+            "INSERT INTO modifier_versions (tenant_id, modifier_id, version_number,"
+            " yield_quantity) VALUES ($1,$2,1,1.0) RETURNING id",
+            tid, mod_id,
+        )
+        await conn.execute(
+            "UPDATE modifiers SET current_version_id=$1 WHERE id=$2", mv_id, mod_id
+        )
+        await conn.execute(
+            "INSERT INTO modifier_ingredients (tenant_id, modifier_version_id,"
+            " inventory_item_id, quantity, unit) VALUES ($1,$2,$3,$4,'g')",
+            tid, mv_id, uuid.UUID(inv_item_id), mod_qty,
+        )
+    return pos_mod_id
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_e2e_10_confirmed_modifier_depletes(admin_conn):
+    seed = await seed_worker_prereqs(admin_conn)
+    tid = seed["tenant_id"]
+    uom_id = await _seed_uom(admin_conn, tid)
+    base_item = await _seed_inventory_item(admin_conn, tid, uom_id, mode="recipe_deducted")
+    mod_item = await _seed_inventory_item(admin_conn, tid, uom_id, mode="recipe_deducted")
+    rv_id = await _seed_recipe(admin_conn, tid, (base_item, 2.0))
+    pos_item_id = f"POS_{uuid.uuid4().hex[:8]}"
+    menu_item_id = await _seed_menu_item(admin_conn, tid, pos_item_id, recipe_version_id=rv_id)
+    pos_mod_id = await _seed_confirmed_modifier(admin_conn, tid, menu_item_id, mod_item, mod_qty=5.0)
+
+    li = _make_li_with_item(pos_item_id, qty=3)
+    li["modifications"] = {"elements": [{"modifier": {"id": pos_mod_id}, "quantity": 2}]}
+    clover_order = make_clover_order(
+        order_id=seed["vendor_event_id"], state="locked", payment_state="PAID", line_items=[li]
+    )
+    respx.get(url__regex=f".*/orders/{seed['vendor_event_id']}.*").mock(
+        return_value=httpx.Response(200, json=clover_order)
+    )
+
+    worker = InboxWorker()
+    await worker.process_event((await worker.claim_batch(batch_size=1))[0])
+
+    base_delta = await admin_conn.fetchval(
+        "SELECT delta FROM inventory_movements WHERE tenant_id=$1 AND inventory_item_id=$2",
+        uuid.UUID(tid), uuid.UUID(base_item),
+    )
+    assert Decimal(str(base_delta)) == Decimal("-6")  # base: 3*2
+    mod_delta = await admin_conn.fetchval(
+        "SELECT delta FROM inventory_movements WHERE tenant_id=$1 AND inventory_item_id=$2",
+        uuid.UUID(tid), uuid.UUID(mod_item),
+    )
+    assert Decimal(str(mod_delta)) == Decimal("-30")  # modifier: 3 * 2(mult) * 5(qty) / 1
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_e2e_11_unconfirmed_modifier_no_movement(admin_conn):
+    """edit 6: an unconfirmed (or non-additive) modifier gets no slim row → no depletion."""
+    seed = await seed_worker_prereqs(admin_conn)
+    tid = seed["tenant_id"]
+    uom_id = await _seed_uom(admin_conn, tid)
+    base_item = await _seed_inventory_item(admin_conn, tid, uom_id, mode="recipe_deducted")
+    mod_item = await _seed_inventory_item(admin_conn, tid, uom_id, mode="recipe_deducted")
+    rv_id = await _seed_recipe(admin_conn, tid, (base_item, 2.0))
+    pos_item_id = f"POS_{uuid.uuid4().hex[:8]}"
+    menu_item_id = await _seed_menu_item(admin_conn, tid, pos_item_id, recipe_version_id=rv_id)
+    # NOT confirmed → no current_version_id pointer → worker skips it
+    pos_mod_id = await _seed_confirmed_modifier(
+        admin_conn, tid, menu_item_id, mod_item, mod_qty=5.0, confirmed=False
+    )
+
+    li = _make_li_with_item(pos_item_id, qty=3)
+    li["modifications"] = {"elements": [{"modifier": {"id": pos_mod_id}, "quantity": 2}]}
+    clover_order = make_clover_order(
+        order_id=seed["vendor_event_id"], state="locked", payment_state="PAID", line_items=[li]
+    )
+    respx.get(url__regex=f".*/orders/{seed['vendor_event_id']}.*").mock(
+        return_value=httpx.Response(200, json=clover_order)
+    )
+
+    worker = InboxWorker()
+    await worker.process_event((await worker.claim_batch(batch_size=1))[0])
+
+    assert await admin_conn.fetchval(  # base still depletes
+        "SELECT delta FROM inventory_movements WHERE tenant_id=$1 AND inventory_item_id=$2",
+        uuid.UUID(tid), uuid.UUID(base_item),
+    ) is not None
+    assert await admin_conn.fetchval(  # modifier item: no movement
+        "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id=$1 AND inventory_item_id=$2",
+        uuid.UUID(tid), uuid.UUID(mod_item),
+    ) == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# E2E.12 — Replay with a modifier: no second slim row, no double modifier depletion
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_e2e_12_modifier_replay_no_duplicate_slim_or_movement(admin_conn):
+    """The frozen-slim guard: re-ingesting a modifier-bearing event must NOT create a
+    second sale_line_item_modifiers row. A second slim would get a new slim_id → a modifier
+    movement under a DIFFERENT key → not deduped by the movement key → double modifier
+    depletion. Only _insert_line_item returning None on replay (skip _snapshot_modifiers)
+    prevents it. A base-only replay (e2e_5) can't detect this — there's no slim."""
+    import time
+
+    from tests.helpers.phase7 import seed_inbox_event
+
+    seed = await seed_worker_prereqs(admin_conn)
+    tid = seed["tenant_id"]
+    order_id = seed["vendor_event_id"]
+    uom_id = await _seed_uom(admin_conn, tid)
+    base_item = await _seed_inventory_item(admin_conn, tid, uom_id, mode="recipe_deducted")
+    mod_item = await _seed_inventory_item(admin_conn, tid, uom_id, mode="recipe_deducted")
+    rv_id = await _seed_recipe(admin_conn, tid, (base_item, 2.0))
+    pos_item_id = f"POS_{uuid.uuid4().hex[:8]}"
+    menu_item_id = await _seed_menu_item(admin_conn, tid, pos_item_id, recipe_version_id=rv_id)
+    pos_mod_id = await _seed_confirmed_modifier(admin_conn, tid, menu_item_id, mod_item, mod_qty=5.0)
+
+    li = _make_li_with_item(pos_item_id, qty=3)
+    li["modifications"] = {"elements": [{"modifier": {"id": pos_mod_id}, "quantity": 2}]}
+    clover_order = make_clover_order(
+        order_id=order_id, state="locked", payment_state="PAID", line_items=[li]
+    )
+    respx.get(url__regex=f".*/orders/{order_id}.*").mock(
+        return_value=httpx.Response(200, json=clover_order)
+    )
+
+    worker = InboxWorker()
+    await worker.process_event((await worker.claim_batch(batch_size=1))[0])
+
+    # replay: a second inbox event for the same order
+    await seed_inbox_event(
+        admin_conn, seed, vendor_event_id=order_id, vendor_ts=int(time.time() * 1000) + 5000
+    )
+    claimed2 = await worker.claim_batch(batch_size=1)
+    if claimed2:
+        await worker.process_event(claimed2[0])
+
+    slim_count = await admin_conn.fetchval(
+        "SELECT COUNT(*) FROM sale_line_item_modifiers WHERE tenant_id = $1", uuid.UUID(tid)
+    )
+    assert slim_count == 1, f"replay must not duplicate the slim row, got {slim_count}"
+    mod_mv_count = await admin_conn.fetchval(
+        "SELECT COUNT(*) FROM inventory_movements"
+        " WHERE tenant_id = $1 AND inventory_item_id = $2",
+        uuid.UUID(tid), uuid.UUID(mod_item),
+    )
+    assert mod_mv_count == 1, f"replay must not double-deplete the modifier, got {mod_mv_count}"

@@ -238,19 +238,66 @@ class InboxWorker:
                             tenant_id=tenant_id,
                         )
                         continue
-                    sli_id = await self._insert_line_item(
-                        session, tenant_id, order_row_id, li
-                    )
-                    is_refunded = bool(li.get("refunded", False))
-                    is_voided = bool(li.get("exchanged", False))
-                    if sli_id and not is_refunded and not is_voided:
-                        await handler.emit_inventory_effects(
-                            session, tenant_id, sli_id, vendor_ts
-                        )
+                    # Insert as pending (rv frozen, confirmed-gated). No pre-filter:
+                    # every line is processed by the resolver in T2 and reaches a terminal
+                    # status — refunded/voided become failed/<reason>, not silent drops.
+                    sli_id = await self._insert_line_item(session, tenant_id, order_row_id, li)
+                    # Only a NEW line (non-None) snapshots its modifiers — frozen at first
+                    # ingestion, so a later modifier re-confirm can't retroactively change it.
+                    if sli_id:
+                        await self._snapshot_modifiers(session, tenant_id, sli_id, li)
         except Exception as exc:
-            await self.mark_failed(event, f"{type(exc).__name__}: {exc!s}")
+            await self.mark_failed(event, f"ingest: {type(exc).__name__}: {exc!s}")
             return
 
+        # T1 committed → pending rows are observable to the stuck-pending monitor.
+        # T2 — depletion: each NULL/pending line in its OWN transaction, so one line's
+        # failure can't roll back another's. Committed depletions persist; a failed line
+        # stays pending and reprocesses idempotently (terminal lines are a no-op on replay).
+        try:
+            async with sm3() as q, q.begin():
+                await q.execute(
+                    text("SELECT set_config('app.tenant_id', :tid, true)"),
+                    {"tid": tenant_id},
+                )
+                pending_ids = (
+                    await q.execute(
+                        text(
+                            "SELECT id FROM sale_line_items"
+                            " WHERE tenant_id = :tid AND order_id = :oid"
+                            "   AND (depletion_status IS NULL OR depletion_status = 'pending')"
+                        ),
+                        {"tid": tenant_id, "oid": order_row_id},
+                    )
+                ).scalars().all()
+        except Exception as exc:
+            await self.mark_failed(event, f"depletion-scan: {type(exc).__name__}: {exc!s}")
+            return
+
+        any_line_failed = False
+        for sli_id in pending_ids:
+            try:
+                async with sm3() as ds, ds.begin():
+                    await ds.execute(
+                        text("SELECT set_config('app.tenant_id', :tid, true)"),
+                        {"tid": tenant_id},
+                    )
+                    await handler.process_line(
+                        ds, UUID(tenant_id), sli_id, recorded_at=vendor_ts
+                    )
+            except Exception as exc:  # isolate: leave this line pending, keep going
+                any_line_failed = True
+                log.error(
+                    "worker.depletion_line_failed",
+                    sale_line_item_id=str(sli_id),
+                    tenant_id=tenant_id,
+                    error=f"{type(exc).__name__}: {exc!s}",
+                )
+
+        if any_line_failed:
+            # committed lines persist; the event retries to reprocess still-pending lines
+            await self.mark_failed(event, "one or more depletion lines failed")
+            return
         await self.mark_processed(event)
 
     # ── Order upsert ──────────────────────────────────────────────────────────
@@ -403,7 +450,7 @@ class InboxWorker:
         tenant_id: str,
         order_id: str,
         li: dict[str, Any],
-    ) -> str:
+    ) -> str | None:
         """Insert a sale_line_item and return its UUID string.
 
         ON CONFLICT DO NOTHING (idempotent on clover_line_item_id).  If the row
@@ -442,6 +489,12 @@ class InboxWorker:
             ).fetchone()
             if mi_row:
                 menu_item_id = str(mi_row.id)
+                # The confirmed-status invariant is enforced on the WRITE side (Phase 6):
+                # menu_items.recipe_version_id is non-null IFF the recipe is confirmed —
+                # confirm sets it, un-confirm clears it, skip-on-confirmed is rejected (409).
+                # The worker reads only this column; it deliberately does NOT join recipes,
+                # which is operator-owned and not granted to the service_worker role. So the
+                # snapshot trusts the pointer, which the write side guarantees.
                 if mi_row.recipe_version_id is not None:
                     recipe_version_id = str(mi_row.recipe_version_id)
 
@@ -451,12 +504,12 @@ class InboxWorker:
                     id, tenant_id, order_id, clover_line_item_id, menu_item_id,
                     name_at_sale, quantity, price_cents_at_sale,
                     discount_amount_cents, net_revenue_cents,
-                    is_refunded, is_voided, recipe_version_id
+                    is_refunded, is_voided, recipe_version_id, depletion_status
                 ) VALUES (
                     :id, :tid, :order_id, :li_id, :menu_item_id,
                     :name, :qty, :price,
                     :discount, :net,
-                    :refunded, :voided, :rvid
+                    :refunded, :voided, :rvid, 'pending'
                 )
                 ON CONFLICT ON CONSTRAINT uq_sli_clover DO NOTHING
                 RETURNING id
@@ -477,22 +530,67 @@ class InboxWorker:
                 "rvid": recipe_version_id,
             },
         )
+        # RETURNING yields a row only on a NEW insert; ON CONFLICT (replay) → None.
+        # Returning None on replay is what makes the modifier snapshot frozen-at-first-
+        # ingestion (the caller only snapshots modifiers for a non-None / new line). T2
+        # finds pending lines by order_id, so it never needs the existing id here.
         row = result.fetchone()
-        if row:
-            return str(row.id)
+        return str(row.id) if row else None
 
-        # Conflict: row exists from a prior attempt — fetch existing id.
-        existing = (
+    async def _snapshot_modifiers(
+        self, session: Any, tenant_id: str, sale_line_item_id: str, li: dict[str, Any]
+    ) -> None:
+        """Freeze confirmed additive modifiers for a NEW sale line into
+        sale_line_item_modifiers (Sprint 5 Phase 10, edit 6). Frozen at first ingestion
+        (called only for new lines), mirroring the recipe_version_id snapshot.
+
+        Confirmed-ness is POINTER-based — modifiers.current_version_id IS NOT NULL (the
+        Phase 6 confirm pointer, mirror of menu_items.recipe_version_id) — never an operator
+        status read. Additive-only per edit 6 (subtractive/substitution get no row). The
+        worker reads modifiers (its catalog table); it never reads operator-owned state.
+        """
+        mods = (li.get("modifications") or {}).get("elements") or []
+        # Multiplier = sum of per-element quantity (default 1) grouped by pos modifier id,
+        # so "Extra shot x2" -> 2 whether Clover sends one element qty=2 or two elements.
+        counts: dict[str, float] = {}
+        for m in mods:
+            if not isinstance(m, dict):
+                continue
+            pos_mid = (m.get("modifier") or {}).get("id")
+            if not pos_mid:
+                continue
+            counts[pos_mid] = counts.get(pos_mid, 0.0) + float(m.get("quantity") or 1)
+
+        for pos_mid, qty in counts.items():
+            mod = (
+                await session.execute(
+                    text("""
+                        SELECT id, current_version_id FROM modifiers
+                        WHERE tenant_id = :tid AND pos_modifier_id = :pid
+                          AND modifier_type = 'additive'
+                          AND current_version_id IS NOT NULL
+                    """),
+                    {"tid": tenant_id, "pid": pos_mid},
+                )
+            ).fetchone()
+            if mod is None:
+                continue  # unconfirmed or non-additive → no slim row (edit 6)
             await session.execute(
                 text("""
-                    SELECT id FROM sale_line_items
-                    WHERE tenant_id = :tid AND clover_line_item_id = :li_id
-                    LIMIT 1
+                    INSERT INTO sale_line_item_modifiers
+                        (id, tenant_id, sale_line_item_id, modifier_id, modifier_version_id,
+                         quantity, pos_modifier_id)
+                    VALUES (gen_random_uuid(), :tid, :sli, :mid, :mv, :qty, :pid)
                 """),
-                {"tid": tenant_id, "li_id": li_id},
+                {
+                    "tid": tenant_id,
+                    "sli": sale_line_item_id,
+                    "mid": mod.id,
+                    "mv": mod.current_version_id,
+                    "qty": qty,
+                    "pid": pos_mid,
+                },
             )
-        ).fetchone()
-        return str(existing.id)
 
     # ── State transitions ─────────────────────────────────────────────────────
 

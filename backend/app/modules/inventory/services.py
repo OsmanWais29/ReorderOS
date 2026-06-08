@@ -239,8 +239,8 @@ async def record_opening_balance(
     return mv_id
 
 
-# Sale depletion writers (record_sale_inventory_effect / record_sale_reversal) live in
-# app.modules.inventory.depletion.writer (moved in Sprint 5 Phase 7).
+# Sale depletion writers live in app.modules.inventory.depletion.writer
+# (write_movement, record_sale_reversal) — moved/rewritten in Sprint 5 Phase 7/9.
 
 
 # ═════════════════════════════════════════════════════════════════════════════

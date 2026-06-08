@@ -44,7 +44,7 @@ from sqlalchemy import text
 from app.core.database import engine, get_db_session, make_bound_session
 from app.core.security import Principal, get_principal
 from app.main import create_app
-from app.modules.inventory.depletion.writer import record_sale_inventory_effect
+from tests.helpers.sprint5 import seed_sale_effect_session
 from tests.helpers.sprint5 import seed_recipe_version_session
 
 pytestmark = pytest.mark.integration
@@ -452,7 +452,7 @@ async def test_scenario_a_mode_a_full_lifecycle(session, client):
     for _ in range(3):
         sl_id = uuid.uuid4()
         await create_sale_line(session, sl_id, RECIPE_A, qty_sold=1)
-        await record_sale_inventory_effect(
+        await seed_sale_effect_session(
             session,
             tenant_id=TENANT_ID,
             sale_line_item_id=sl_id,
@@ -608,7 +608,7 @@ async def test_scenario_b_mode_b_full_lifecycle(session, client):
     # Steps 3-4: Sale signals via service (200 g + 350 g)
     sl1 = uuid.uuid4()
     await create_sale_line(session, sl1, RECIPE_B, qty_sold=1)
-    await record_sale_inventory_effect(
+    await seed_sale_effect_session(
         session,
         tenant_id=TENANT_ID,
         sale_line_item_id=sl1,
@@ -617,7 +617,7 @@ async def test_scenario_b_mode_b_full_lifecycle(session, client):
 
     sl2 = uuid.uuid4()
     await create_sale_line(session, sl2, RECIPE_B, qty_sold=Decimal("1.75"))
-    await record_sale_inventory_effect(
+    await seed_sale_effect_session(
         session,
         tenant_id=TENANT_ID,
         sale_line_item_id=sl2,
@@ -683,12 +683,12 @@ async def test_scenario_b_mode_b_full_lifecycle(session, client):
     assert await read_on_hand(session, ITEM_B) == 2700
 
     # Step 8: Post-recount signal via service (0.5 x 200g = 100g).
-    # record_sale_inventory_effect computes the delta and inserts the movement.
+    # seed_sale_effect_session writes the forward sale movement (test helper).
     # We then update recorded_at via clock_timestamp() to ensure it lands
     # strictly AFTER the recount anchor (T_wall), so on_hand() includes it.
     sl3 = uuid.uuid4()
     await create_sale_line(session, sl3, RECIPE_B, qty_sold=Decimal("0.5"))
-    mv_id3 = await record_sale_inventory_effect(
+    mv_id3 = await seed_sale_effect_session(
         session,
         tenant_id=TENANT_ID,
         sale_line_item_id=sl3,

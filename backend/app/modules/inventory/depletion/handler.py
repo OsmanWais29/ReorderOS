@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.inventory.depletion import walker
 from app.modules.inventory.depletion.resolver import resolve_eligibility
-from app.modules.inventory.depletion.writer import write_movement
+from app.modules.inventory.depletion.writer import record_sale_reversal, write_movement
 
 
 async def _maybe_late_signal_alert(
@@ -190,3 +190,54 @@ async def process_line(
             )
     await _set_status(session, tenant_id, sale_line_item_id, "depleted", None)
     return "depleted", None
+
+
+async def reverse_line(
+    session: AsyncSession,
+    tenant_id: UUID,
+    sale_line_item_id: UUID,
+) -> int:
+    """Reverse ALL forward depletion movements for one sale line (Sprint 5 Phase 11,
+    ADR 0001 D2/D3/D4). A PURE LEDGER OPERATION — it reverses the forward movements that
+    actually exist; it does NOT decide whether the line is refunded and it does NOT write
+    is_refunded (the worker owns refund detection + that write, per ADR D2). It never walks
+    recipes/modifiers (the guardrail): reversal negates the rows that were written against the
+    version frozen at sale time, never recomputes from current state.
+
+    Reads every forward movement for the line — base AND modifier, plus legacy-format keys —
+    via the shared ``sale_line:{sli}:`` idempotency-key prefix, filtered to the forward sale
+    types, and emits an arithmetic-negation reversal for each (record_sale_reversal: type-
+    specific reversal movement_type, source linkage, yield_factor preserved, ON CONFLICT
+    idempotent). Writes within the CALLER's transaction; does not commit — the worker calls
+    this in the SAME per-line transaction as its is_refunded write, so a crash can never leave
+    a line marked-but-unreversed or reversed-but-unmarked.
+
+    Driven by movement EXISTENCE, not line status (ADR D4): a line that never depleted
+    (unmapped/skipped/failed/pending) has no forward movements, so this is a no-op by
+    construction — no error, no status change. A refunded 'depleted' line keeps its 'depleted'
+    status (ADR D5); the reversal rows net it to zero. Returns the count of NEW reversal rows
+    written (0 on replay or no forward movement)."""
+    forward = (
+        await session.execute(
+            text("""
+                SELECT id, inventory_item_id
+                FROM inventory_movements
+                WHERE tenant_id = :tid
+                  AND movement_type IN ('sale_depletion', 'sale_signal')
+                  AND idempotency_key LIKE 'sale_line:' || :sli || ':%'
+            """),
+            {"tid": tenant_id, "sli": str(sale_line_item_id)},
+        )
+    ).mappings().all()
+
+    reversed_count = 0
+    for mv in forward:
+        new_id = await record_sale_reversal(
+            session,
+            tenant_id=tenant_id,
+            original_movement_id=mv["id"],
+            inventory_item_id=mv["inventory_item_id"],
+        )
+        if new_id is not None:
+            reversed_count += 1
+    return reversed_count

@@ -251,6 +251,63 @@ class InboxWorker:
             return
 
         # T1 committed → pending rows are observable to the stuck-pending monitor.
+
+        # ── T1.5 — refund reconciliation (Sprint 5 Phase 11, ADR 0001 D2/D5/D8) ──────────
+        # A refund webhook re-ingests the order with per-line `refunded` flags. For each
+        # newly-refunded line, the WORKER marks is_refunded=true and reverses any prior
+        # depletion (reverse_line: base + modifier + legacy keys, idempotent). Both writes
+        # share ONE per-line transaction (D2 crash-safety: never marked-but-unreversed or
+        # reversed-but-unmarked). Runs BEFORE T2 (D5) so a now-refunded *pending* line is
+        # failed ('line_refunded') by T2 instead of being depleted; reverse is a SEPARATE
+        # path from process_line, so it acts on the 'depleted' lines T2's terminal-no-op skips.
+        #
+        # Detection keys off the REFUND field ONLY (li["refunded"]) — NEVER the void/exchange
+        # field (D8b). A line voided AFTER depletion is out of scope for Sprint 5 (ADR D8,
+        # physical-ambiguity rationale): it keeps its forward movements and 'depleted' status.
+        # Per-line failure isolation mirrors T2.
+        refunded_clover_ids = [
+            li["id"]
+            for li in line_items
+            if isinstance(li, dict) and li.get("id") and bool(li.get("refunded", False))
+        ]
+        for clover_li_id in refunded_clover_ids:
+            try:
+                async with sm3() as rs, rs.begin():
+                    await rs.execute(
+                        text("SELECT set_config('app.tenant_id', :tid, true)"),
+                        {"tid": tenant_id},
+                    )
+                    sli_id = (
+                        await rs.execute(
+                            text(
+                                "SELECT id FROM sale_line_items"
+                                " WHERE tenant_id = :tid AND order_id = :oid"
+                                "   AND clover_line_item_id = :cid"
+                            ),
+                            {"tid": tenant_id, "oid": order_row_id, "cid": clover_li_id},
+                        )
+                    ).scalar()
+                    if sli_id is not None:
+                        # Worker owns the is_refunded write (D2); reverse_line owns the ledger
+                        # negation. Same txn — both commit together or neither does.
+                        await rs.execute(
+                            text(
+                                "UPDATE sale_line_items SET is_refunded = true"
+                                " WHERE id = :sli AND tenant_id = :tid"
+                            ),
+                            {"sli": sli_id, "tid": tenant_id},
+                        )
+                        await handler.reverse_line(rs, UUID(tenant_id), sli_id)
+            except Exception as exc:  # isolate; a reversal failure retries the event
+                log.error(
+                    "worker.refund_reversal_failed",
+                    clover_line_item_id=str(clover_li_id),
+                    tenant_id=tenant_id,
+                    error=f"{type(exc).__name__}: {exc!s}",
+                )
+                await self.mark_failed(event, f"refund-reversal: {type(exc).__name__}: {exc!s}")
+                return
+
         # T2 — depletion: each NULL/pending line in its OWN transaction, so one line's
         # failure can't roll back another's. Committed depletions persist; a failed line
         # stays pending and reprocesses idempotently (terminal lines are a no-op on replay).
@@ -282,8 +339,13 @@ class InboxWorker:
                         text("SELECT set_config('app.tenant_id', :tid, true)"),
                         {"tid": tenant_id},
                     )
+                    # partial_refunds_enabled=True (Phase 11, ADR D6): PARTIALLY_REFUNDED
+                    # orders now deplete their non-refunded lines. Safe ONLY because the T1.5
+                    # reconcile pass above reliably flips is_refunded on refunded lines first —
+                    # the gate and its is_refunded precondition move together, lockstep (edit 4).
                     await handler.process_line(
-                        ds, UUID(tenant_id), sli_id, recorded_at=vendor_ts
+                        ds, UUID(tenant_id), sli_id,
+                        recorded_at=vendor_ts, partial_refunds_enabled=True,
                     )
             except Exception as exc:  # isolate: leave this line pending, keep going
                 any_line_failed = True

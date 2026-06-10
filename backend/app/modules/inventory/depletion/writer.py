@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -96,28 +96,33 @@ async def record_sale_reversal(
     original_movement_id: UUID,
     inventory_item_id: UUID,
 ) -> UUID | None:
-    """Reverse a sale_depletion or sale_signal movement.  Idempotent.
+    """Reverse a sale_depletion or sale_signal movement.  Idempotent and race-safe.
 
-    Emits sale_depletion_reversal or sale_signal_reversal with the exact
-    arithmetic negation of the original delta.  The original row is never
-    touched — append-only ledger semantics are preserved.
+    Emits the TYPE-SPECIFIC reversal (sale_depletion_reversal for Mode A,
+    sale_signal_reversal for Mode B) with the exact arithmetic negation of the original
+    delta, carrying the original's yield_factor_applied and linked back via
+    source_type='reversal' + source_id=<original id>. The original row is never touched —
+    append-only ledger semantics (accounting §9). A reversal ADDS a canceling row.
 
-    Idempotency key: ``reversal:{original_movement_id}:{inventory_item_id}``
-    Returns None if the reversal already existed (replay).
-    """
+    ADR 0001 D7: the type-specific movement_type is accounting semantics, NOT just a label —
+    Mode B's observed-consumption math nets sale_signal against sale_signal_reversal, never
+    against depletions. yield_factor_applied must equal the original's (§9 line 374) or the
+    Mode B on_hand() pair would not net to zero.
+
+    Concurrency (ADR 0001 D1): the write is ``INSERT ... ON CONFLICT (tenant_id,
+    idempotency_key) DO NOTHING`` — the doc-mandated mechanism (accounting §6 line 249), NOT
+    the old check-then-insert (a TOCTOU race: two duplicate refund webhooks could both pass a
+    SELECT and the second INSERT throw a unique violation). The UNIQUE(tenant_id,
+    idempotency_key) constraint is the arbiter, so a replayed/concurrent refund event writes
+    exactly one reversal, never two.
+
+    Idempotency key (accounting §6 line 246 / §9 line 372):
+    ``reversal:{original_movement_id}:{inventory_item_id}`` — deterministic from the forward
+    movement, distinct from forward keys, unique-constrained. Returns the new id, or None on
+    conflict (replay)."""
     idem_key = f"reversal:{original_movement_id}:{inventory_item_id}"
 
-    # ── idempotency check ─────────────────────────────────────────────────────
-    existing = await session.execute(
-        text(
-            "SELECT id FROM inventory_movements WHERE tenant_id = :tid AND idempotency_key = :key"
-        ),
-        {"tid": tenant_id, "key": idem_key},
-    )
-    if existing.fetchone():
-        return None
-
-    # ── read original movement ────────────────────────────────────────────────
+    # ── read the original movement (the row we negate; never recompute from recipe) ─────
     orig_res = await session.execute(
         text("""
             SELECT delta, movement_type, yield_factor_applied FROM inventory_movements
@@ -145,17 +150,17 @@ async def record_sale_reversal(
             "only sale_depletion and sale_signal can be reversed via this function"
         )
 
-    mv_id = uuid4()
-    await session.execute(
+    res = await session.execute(
         text("""
             INSERT INTO inventory_movements
                 (id, tenant_id, inventory_item_id, movement_type, delta,
                  source_type, source_id, idempotency_key, yield_factor_applied)
-            VALUES (:id, :tid, :iid, :mtype, :delta,
+            VALUES (gen_random_uuid(), :tid, :iid, :mtype, :delta,
                     'reversal', :orig_id, :key, :yf)
+            ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
+            RETURNING id
         """),
         {
-            "id": mv_id,
             "tid": tenant_id,
             "iid": inventory_item_id,
             "mtype": reversal_type,
@@ -165,6 +170,5 @@ async def record_sale_reversal(
             "yf": orig_yield,
         },
     )
-
-    await session.flush()
-    return mv_id
+    row = res.first()
+    return row[0] if row is not None else None

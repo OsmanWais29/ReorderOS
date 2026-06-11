@@ -15,7 +15,11 @@ type Ctx = {
   lang: Lang;
   setLang: (l: Lang) => void;
   toggle: () => void;
-  t: (typeof STRINGS)['en'];
+  // Indexed by Lang (not pinned to 'en'): STRINGS[lang] is STRINGS['en'] | STRINGS['fr'],
+  // whose per-key value type is a union of the EN/FR string literals → `string` to consumers.
+  // Pinning to 'en' made the 'fr' literals unassignable (TS2322). Per-key completeness across
+  // locales is enforced separately by the i18n completeness check, not by this type.
+  t: (typeof STRINGS)[Lang];
 };
 
 const LangContext = createContext<Ctx | null>(null);

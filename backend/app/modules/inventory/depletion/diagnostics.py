@@ -9,6 +9,13 @@ are import-isolated from the LLM layer like the rest of `depletion/` (the Phase 
   worker-health signal) — NOT `recorded_at`, which would conflate worker lag with webhook
   delivery lag (that gap is the late-signal monitor's job).
 
+  failed_reason_breakdown — failed lines grouped by reason within a time window (exit-gate 30
+  support / operational-concern 6, the refund-pattern monitor). See phase-13 notes: WINDOWED
+  on created_at (op-concern 6 is about SPIKES — a rate — and an all-time count swamps any
+  recent spike under months of accumulated base), and a NULL reason surfaces as 'unknown'
+  rather than being filtered out (the consistency CHECK makes failed-with-NULL-reason
+  impossible, so if one exists it's a violation the diagnostic must show LOUDLY).
+
 Accepts an explicit tenant_id (the caller scopes per tenant); does NOT rely on RLS, so it
 works from any role with SELECT on sale_line_items (service_worker has it since 0006).
 """
@@ -60,3 +67,34 @@ async def stuck_pending_lines(
         )
         for r in rows
     ]
+
+
+async def failed_reason_breakdown(
+    session: AsyncSession,
+    *,
+    tenant_id: UUID,
+    window_days: int = 30,
+) -> dict[str, int]:
+    """Return {depletion_reason: count} over failed lines in the last ``window_days``
+    (operational-concern 6, refund-pattern monitoring). 'line_refunded' spikes are expected;
+    'sale_ineligible' / 'missing_conversion' spikes indicate a Clover-state or config problem.
+
+    Windowed on created_at because the signal is a SPIKE (a rate): an all-time count would
+    swamp a recent spike under months of accumulated base. A NULL reason is surfaced as
+    'unknown' (not excluded): the depletion_status_reason_consistency CHECK makes a failed
+    line with a NULL reason impossible, so an 'unknown' with a nonzero count is a loud signal
+    that the invariant was violated/bypassed — exactly what a diagnostic should show."""
+    rows = (
+        await session.execute(
+            text("""
+                SELECT COALESCE(depletion_reason, 'unknown') AS reason, COUNT(*) AS n
+                FROM sale_line_items
+                WHERE tenant_id = :tid
+                  AND depletion_status = 'failed'
+                  AND created_at > now() - make_interval(days => :days)
+                GROUP BY COALESCE(depletion_reason, 'unknown')
+            """),
+            {"tid": tenant_id, "days": window_days},
+        )
+    ).mappings().all()
+    return {r["reason"]: int(r["n"]) for r in rows}

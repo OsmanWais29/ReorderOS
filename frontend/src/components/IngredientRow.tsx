@@ -6,6 +6,7 @@
 import React from 'react';
 import { View, Text, TextInput, Pressable, StyleSheet, ScrollView } from 'react-native';
 import { T } from '../theme/tokens';
+import { useLang } from '../i18n/LangProvider';
 import {
   CANONICAL_UNITS_BY_DIMENSION,
   isCanonical,
@@ -50,20 +51,18 @@ export function validateDraft(rows: IngredientDraft[]): DraftError {
   return null;
 }
 
-const ERROR_TEXT: Record<NonNullable<IngredientError>, string> = {
-  empty_name: 'Name required',
-  bad_quantity: 'Quantity must be greater than 0',
-  non_canonical_unit: 'Pick a unit',
-};
-
 type Props = {
   value: IngredientDraft;
   onChange: (next: IngredientDraft) => void;
+  /** Fired when a field is committed (text blur or a unit selection) — the screen debounces
+   * a draft PATCH off this (FE-5 field-blur auto-save). */
+  onBlur?: () => void;
   onRemove?: () => void;
   editable?: boolean;
 };
 
-export function IngredientRow({ value, onChange, onRemove, editable = true }: Props) {
+export function IngredientRow({ value, onChange, onBlur, onRemove, editable = true }: Props) {
+  const { t } = useLang();
   const error = validateIngredient(value);
 
   return (
@@ -72,7 +71,8 @@ export function IngredientRow({ value, onChange, onRemove, editable = true }: Pr
         <TextInput
           value={value.name}
           onChangeText={(name) => onChange({ ...value, name })}
-          placeholder="Ingredient"
+          onBlur={onBlur}
+          placeholder={t.ingName}
           placeholderTextColor={T.ter}
           editable={editable}
           style={[styles.name, error === 'empty_name' && styles.invalid]}
@@ -80,6 +80,7 @@ export function IngredientRow({ value, onChange, onRemove, editable = true }: Pr
         <TextInput
           value={value.quantity}
           onChangeText={(quantity) => onChange({ ...value, quantity })}
+          onBlur={onBlur}
           placeholder="0"
           placeholderTextColor={T.ter}
           editable={editable}
@@ -87,7 +88,7 @@ export function IngredientRow({ value, onChange, onRemove, editable = true }: Pr
           style={[styles.qty, error === 'bad_quantity' && styles.invalid]}
         />
         {onRemove ? (
-          <Pressable onPress={onRemove} hitSlop={8} accessibilityLabel="Remove ingredient">
+          <Pressable onPress={onRemove} hitSlop={8} accessibilityLabel={t.ingRemove}>
             <Text style={styles.remove}>×</Text>
           </Pressable>
         ) : null}
@@ -108,7 +109,10 @@ export function IngredientRow({ value, onChange, onRemove, editable = true }: Pr
                 <Pressable
                   key={u}
                   disabled={!editable}
-                  onPress={() => onChange({ ...value, unit: u })}
+                  onPress={() => {
+                    onChange({ ...value, unit: u });
+                    onBlur?.(); // a unit selection is a commit → triggers the debounced save
+                  }}
                   style={[styles.chip, selected && styles.chipOn]}
                 >
                   <Text style={[styles.chipText, selected && styles.chipTextOn]}>{u}</Text>
@@ -119,8 +123,8 @@ export function IngredientRow({ value, onChange, onRemove, editable = true }: Pr
         ))}
       </ScrollView>
 
-      {error && error !== 'empty_name' && error !== 'bad_quantity' ? (
-        <Text style={styles.errText}>{ERROR_TEXT[error]}</Text>
+      {error === 'non_canonical_unit' ? (
+        <Text style={styles.errText}>{t.errUnit}</Text>
       ) : null}
     </View>
   );

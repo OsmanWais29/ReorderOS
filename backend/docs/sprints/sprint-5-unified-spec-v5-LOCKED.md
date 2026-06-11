@@ -674,6 +674,13 @@ Downstream sprints unblocked:
 
 ## F.3 API client (`frontend/src/api/recipes.ts`)
 
+> **Errata (2026-06-11, Phase 16):** the `suggest()` row below lists `POST
+> /onboarding/recipes/suggest`, but the **implemented** route is per-menu-item
+> `POST /onboarding/recipes/{menu_item_id}/suggest` — a deliberate Phase 5 design choice (the
+> bundled per-item base+modifier LLM call; see `app/modules/recipes/router.py:159`). The client
+> (`frontend/src/api/recipes.ts`) follows the implemented route. Build against the per-menu-item
+> path; the listing below is stale on this one row.
+
 Thin typed wrappers over the §5 endpoints (no new endpoints invented here):
 `getRecipes()` → `GET /onboarding/recipes`; `suggest()` → `POST /onboarding/recipes/suggest`;
 `getRecipe(id)`, `patchRecipe(id)` (handle **409** when confirmed), `confirm(id)` (handle **400** on zero ingredients), `unconfirm(id)`, `skip(id)`; modifier `patch`/`confirm`; `getProgress()`; `syncMenu()` → `POST /pos/clover/sync-menu`. All carry the auth/tenant headers already used by `src/auth/api.ts`.

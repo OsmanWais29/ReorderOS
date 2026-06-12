@@ -159,6 +159,11 @@ export const getProgress = (token: string) =>
 export const getModifiers = (token: string, menuItemId: string) =>
   req<ModifierListItem[]>(token, `/onboarding/recipes/${menuItemId}/modifiers`);
 
+/** Read-only modifier detail (Staff+) — used to display/edit a saved modifier and re-hydrate
+ * a draft after app-close. The read-only partner of getRecipe; pure read (no unskip/409). */
+export const getModifier = (token: string, menuItemId: string, modifierId: string) =>
+  req<ModifierDetail>(token, `/onboarding/recipes/${menuItemId}/modifiers/${modifierId}`);
+
 export const patchModifier = (
   token: string,
   menuItemId: string,

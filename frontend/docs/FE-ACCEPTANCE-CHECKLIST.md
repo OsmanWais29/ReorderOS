@@ -31,8 +31,11 @@
       unit cannot be selected; a server 400 on a bad unit is handled.
 - [ ] **FE-5** Field-blur auto-save persists the draft; app close preserves draft state.
 - [ ] **FE-6** Un-confirm ("Edit recipe") round-trips in the UI; the recipe returns to draft.
-- [ ] **FE-7** "Extra shot ×2" modifier shows the multiplier; subtractive modifiers are disabled
-      *(post-onboarding detail screen — deferred slice; verify when that screen lands)*.
+- [ ] **FE-7** Modifier sub-section: additive modifiers are editable/confirmable (read back via
+      the new GET, per-blur save into `modifier_drafts`, confirm gating mirrors base recipes);
+      subtractive/substitution modifiers are shown disabled as "Not yet supported" with skip as
+      the only action; a non-additive confirm 409 shows its own message. (The "Extra shot ×2"
+      multiplier at sale time is the worker's job — already covered by `e2e_10`.)
 - [ ] **FE-8** EN/FR toggle covers every recipe/modifier string with no missing keys AND the FR
       copy is correct (parity is FE-0c; this row is the human translation-quality check).
 - [ ] **FE-9** Unauthenticated requests → 401 with no ghost data rendered.
@@ -53,8 +56,9 @@
 
 ## Notes
 
-- The **modifier sub-section** ships in Phase 16 **slice 3** (in Sprint-5 scope — without it no
-  modifier can be confirmed, so modifier depletion has zero pilot reach). The post-onboarding
+- The **modifier sub-section** shipped in Phase 16 **slice 3** (in Sprint-5 scope — without it no
+  modifier can be confirmed, so modifier depletion would have zero pilot reach). It reads modifier
+  drafts via the new `GET .../modifiers/{modifier_id}`. The post-onboarding
   `(app)/recipes/[menuItemId]` **detail screen** is the deferred follow-up (own section below).
 - Gate 36 (canonical units, UI) and fail-5 (UI rejects invalid/neg/empty) remain **PARTIAL** in
   the Phase 15 matrix until FE-2 and FE-4 are checked here against the running app.

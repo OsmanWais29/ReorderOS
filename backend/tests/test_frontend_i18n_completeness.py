@@ -29,6 +29,7 @@ _NEW_FILES = [
     _ROOT / "frontend" / "src" / "components" / "IngredientRow.tsx",
     _ROOT / "frontend" / "src" / "components" / "RecipeBits.tsx",
     _ROOT / "frontend" / "src" / "components" / "MenuItemAccordion.tsx",
+    _ROOT / "frontend" / "src" / "components" / "ModifierSubsection.tsx",
 ]
 
 

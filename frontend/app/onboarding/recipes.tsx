@@ -10,6 +10,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button } from '@/components/atoms';
 import { OnboardingHeader } from '@/components/OnboardingHeader';
 import { MenuItemAccordion } from '@/components/MenuItemAccordion';
+import { ModifierSubsection } from '@/components/ModifierSubsection';
 import { ProgressCounter, RecipeSkeleton } from '@/components/RecipeBits';
 import {
   IngredientRow,
@@ -275,6 +276,7 @@ export default function Recipes() {
                     </View>
                   </>
                 )}
+                <ModifierSubsection menuItemId={it.menu_item_id} />
               </MenuItemAccordion>
             );
           })}

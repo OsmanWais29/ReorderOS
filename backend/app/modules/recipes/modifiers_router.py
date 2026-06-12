@@ -42,6 +42,23 @@ async def list_modifiers(
         raise HTTPException(status_code=404, detail="menu item not found") from None
 
 
+@router.get("/{menu_item_id}/modifiers/{modifier_id}", response_model=ModifierDetail)
+async def get_modifier(
+    menu_item_id: UUID,
+    modifier_id: UUID,
+    db: AsyncSession = Depends(get_rls_session),
+    principal: Principal = require_role("staff"),
+) -> dict[str, Any]:
+    """Read-only modifier detail (Staff+) — the partner of the recipe-detail GET; parent-scoped,
+    pure read (no implicit unskip/409). 404 on wrong parent / cross-tenant."""
+    try:
+        return await mrepo.get_modifier(
+            db, UUID(principal.tenant_id), menu_item_id, modifier_id
+        )
+    except mrepo.ModifierNotFound:
+        raise HTTPException(status_code=404, detail="modifier not found") from None
+
+
 @router.patch("/{menu_item_id}/modifiers/{modifier_id}", response_model=ModifierDetail)
 async def patch_modifier(
     menu_item_id: UUID,

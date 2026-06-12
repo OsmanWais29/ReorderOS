@@ -158,3 +158,7 @@ Legend: O = Owner, M = Manager, S = Staff, P = Public (no auth).
 Total v1 HTTP surface: **~55 endpoints**, plus 1 webhook ingress.
 
 CI must keep the generated TypeScript client at `frontend/api-client/` in sync with this surface (Sprint 10).
+
+## Audit notes
+
+- **2026-06-11 (Sprint 5 Phase 16):** added `GET /onboarding/recipes/{menu_item_id}/modifiers/{modifier_id}` (read-only modifier detail). The modifier config surface had write routes (PATCH/confirm/skip) but **no read** for a single modifier's ingredients — a concrete instance of the **consumer-less-API completeness class**: an endpoint set looks complete until a consumer (here the modifier-config UI) needs the symmetric read, and its absence forces a write-as-read anti-pattern (PATCH would implicitly unskip / 409). The recipe surface had the read (`GET /recipes/{menu_item_id}`); the modifier surface didn't. Worth a sweep of the matrix for other write-without-read asymmetries before the Sprint 10 client-gen.

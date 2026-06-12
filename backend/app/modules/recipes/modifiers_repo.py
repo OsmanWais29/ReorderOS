@@ -130,6 +130,32 @@ async def list_modifiers(
     ]
 
 
+async def get_modifier(
+    db: AsyncSession, tenant_id: UUID, menu_item_id: UUID, modifier_id: UUID
+) -> dict[str, Any]:
+    """Single modifier's state + draft ingredients (Sprint 5 Phase 16). A PURE READ — the
+    read-only partner of the recipe-detail GET, so the modifier config UI can read a draft
+    back to display/edit it (and re-hydrate after app-close) instead of round-tripping through
+    a PATCH (which would implicitly unskip a skipped modifier and 409 a confirmed one).
+
+    Parent-scoped via _require_modifier (guard 1): a modifier of a DIFFERENT menu item, or
+    another tenant's, raises ModifierNotFound (→ 404) — the composite-FK boundary applies to
+    reads too. Touches no row: GET on a skipped/confirmed modifier leaves its status untouched.
+    Mirrors get_recipe — returns the DRAFT ingredients (empty once confirmed; the operator
+    un-confirms to edit, which copies the version back into a draft)."""
+    mod = await _require_modifier(db, tenant_id, menu_item_id, modifier_id)
+    draft = (
+        await db.execute(
+            text(
+                "SELECT draft_ingredients FROM modifier_drafts"
+                " WHERE modifier_id = :mod AND tenant_id = :tid"
+            ),
+            {"mod": modifier_id, "tid": tenant_id},
+        )
+    ).scalar()
+    return _detail(mod, str(mod["status"]), _as_list(draft))
+
+
 async def save_draft(
     db: AsyncSession,
     tenant_id: UUID,

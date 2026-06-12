@@ -37,15 +37,19 @@
       copy is correct (parity is FE-0c; this row is the human translation-quality check).
 - [ ] **FE-9** Unauthenticated requests → 401 with no ghost data rendered.
 
-## Tracked compliance debt (Law 25 — bilingual)
+## Tracked compliance debt (bilingual — Charter of the French Language / Bill 96)
 
 - [ ] **DEBT-i18n-legacy** — the legacy onboarding screens (`account`, `connecting`,
   `pos-picker`, `found-summary`, etc.) **hardcode English**; only the new Recipes screen routes
   through `strings.ts` (EN+FR). An operator therefore experiences a flow that is **not
-  bilingual end-to-end**, which is a **Law 25** posture issue regardless of the new screen's
-  correctness. Out of Sprint 5 scope (not introduced by Phase 16), recorded here so it surfaces
-  when the legacy screens are next touched — migrate their literals into `strings.ts` and extend
-  `test_frontend_i18n_completeness.py`'s file list to cover them.
+  bilingual end-to-end**. The French-language obligation is the **Charter of the French Language
+  as amended by Bill 96** (NOT Law 25 — that is Québec's *privacy* statute; distinct). Out of
+  Sprint 5 scope (not introduced by Phase 16). **Remediation trigger: BEFORE the first
+  French-speaking pilot onboards** (a Montréal/Québec cohort makes this near-certain — schedule
+  it against that date, not "on next touch"). Fix = migrate the legacy literals into
+  `strings.ts` (EN+FR) and add those files to `test_frontend_i18n_completeness.py`'s scan list
+  so the guards enforce it permanently (~1 day). Verify the Bill 96 specifics against current
+  guidance when scheduling.
 
 ## Notes
 

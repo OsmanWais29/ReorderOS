@@ -4,8 +4,9 @@ Three mechanical checks (no renderer needed) that together enforce "every user-f
 in the new screens resolves through strings.ts with EN and FR present":
 
   1. EN/FR key PARITY — neither locale is missing a key (a string present in EN but absent in
-     FR ships an English fragment to a French user; for a Québec pilot under Law 25 that is the
-     axis where gaps show). Parity is key-presence, not translation quality.
+     FR ships an English fragment to a French user; for a Québec cohort, French-language
+     coverage is required by the Charter of the French Language / Bill 96 — NOT Law 25, which is
+     privacy). Parity is key-presence, not translation quality.
   2. USED ⊆ DEFINED — every `t.<key>` referenced by the new screens exists in strings.ts (a
      reference to an undefined key is a silent runtime fallback).
   3. NO BARE LITERALS — the new screen files carry no hardcoded user-facing string (the legacy

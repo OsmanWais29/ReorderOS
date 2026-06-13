@@ -151,10 +151,13 @@ factors / UUIDs, all compared against the **V2 reference**.
 
 ## V4 — Monitors as tested diagnostics
 
-Add **duplicate-idempotency-key detector** and **coverage-collapse** to `diagnostics.py` beside
-the existing two; **every monitor sensitivity-tested by seeding the bad state it detects.** Ops
-runbook: monitor → meaning → remediation. **Pinned SQL in docs is not a mechanism — functions
-with tests only.**
+Add **three** monitors to `diagnostics.py` beside the existing two — **duplicate-idempotency-key
+detector**, **coverage-collapse**, and a **count-adjust anomaly detector** (the landing slot for
+V1 finding F3.9: flags a count-derived consumption that goes **negative** — phantom stock — or a
+`count_adjust` magnitude beyond a drift threshold; the count-anchored analogue of the existing
+`integrity_drift` monitor). **Every monitor sensitivity-tested by seeding the bad state it
+detects.** Ops runbook: monitor → meaning → remediation. **Pinned SQL in docs is not a mechanism
+— functions with tests only.**
 
 ---
 

@@ -106,12 +106,18 @@ accounting figure. The system explicitly models this as an operational estimate.
 
 ```
 on_hand = last_count_quantity
-        + SUM(delta of receive/transfer_in/count_adjust movements)
+        + SUM(delta of receive/transfer_in/count_adjust/opening_balance movements)
             WHERE created_at > reconciliation_cutoff_created_at
         - SUM(delta_i × yield_factor_applied_i, per row)
             for each sale_signal and sale_signal_reversal movement i
             WHERE created_at > reconciliation_cutoff_created_at
 ```
+
+**`opening_balance` in the receipts term**: included to match the implementation
+(`services.py` `receipts_since`). In practice an `opening_balance` is written once at item
+creation, *before* any count, so it is excluded by `created_at > cutoff` and the term is empty;
+it is listed only so a re-initialization edge case (an `opening_balance` after a count) is
+counted consistently by the formula and the code.
 
 **Sign convention**: `sale_signal` rows store a positive delta (theoretical units consumed);
 `sale_signal_reversal` rows store the arithmetic negation (negative delta). Summing both

@@ -117,10 +117,53 @@ check for an **injected-failure-between-writes** test. The headline is reassurin
 the revoke IDOR. The class is now fully characterized and inventoried; nothing else matches the
 signature unproven.
 
-## S1 (Platform) — not yet swept
+## TH-1 — test data accumulates in the test DB (test-hygiene)
 
-Different signature (config validation / migration rollback = fail-9 class, not
-multi-write-in-session). Pending.
+**Finding:** the test DB holds ~3510 committed `inventory_movements` from accumulated e2e/worker
+runs — commit-real-data tests key on unique tenants and never delete, so it grows per suite run
+(surfaced during the S5 mutation cleanup). Not a production failure class; a hygiene defect that
+bloats the DB and makes "is this row residue?" ambiguous — the condition behind this turn's
+reckless-cleanup near-miss.
+
+**The tests STAY** — they found the IDOR, the atomicity gaps, the RLS bypass; deleting them at
+launch = shipping blind. The fix is the test *data* self-cleaning, structurally:
+- **Most tests** use per-test transaction rollback (exercise everything, persist nothing — DB
+  byte-identical before/after). Extend that default.
+- **The few that MUST commit** (worker crash-recovery — rollback would defeat the test) get an
+  explicit cleanup fixture deleting their **captured id set** (the logged lesson: scope to captured
+  ids, never "delete where it looks like residue").
+
+**Four DB lifecycles (rule 1: tests never touch production):** (1) **test** — ephemeral,
+self-cleaning; (2) **dev/demo** — resettable (`dropdb`/`createdb` → `upgrade head` → seed);
+(3) **production** — clean at launch, migrated forward only, never seeded, never wiped;
+(4) "functionable in production" is guaranteed by production **never having had test data**, not by
+scrubbing it. **MIG-1** (schema builds `0001→head` clean) is the proof the clean launch works.
+
+**Disposition:** fill — convert committing tests to rollback where possible + scoped cleanup
+fixtures on the rest; batch at the gate.
+
+## S1 (Platform) — failure-class sweep (fail-9 / class-7)
+
+- **F1.1 health/deploy** — **COVERED.** `test_health.py`: `/health/live` never touches the DB;
+  `/health/ready` reports degraded with an **injected** DB failure (`patch ping_database` raises).
+- **F1.2 migration apply** — **COVERED.** `test_phase1_connections::test_migration_applies_and_table_exists`
+  + conftest `validate_schema` (fails loudly if not at head).
+- **MIG-1 migration round-trip (`0001→head→base→head`)** — **GAP.** Only forward-apply tested; no
+  downgrade/round-trip → fail-9 **rollback leg untested** (same apply-but-not-rollback shape as the
+  atomicity class). Also the proof-of-clean-production-launch. **Fill.**
+- **F1.3 config fail-closed (class-7)** — **PARTIAL.** `test_phase0_config` only checks secrets are
+  *present in the test env* and **documents** that missing `token_encryption_key` /
+  `clover_webhook_auth_code` / WorkOS fields default `None`, boot **silently**, fail late. No test
+  asserts production boot **fails closed**. **Fill** — prod fail-closed guard (`app_env=='production'`)
+  + test.
+- **CORS posture** — sub-item, not yet swept.
+
+## Gate batch (fill together, one pass)
+
+revoke-IDOR (✅ shipped `0d7973c`) · atomicity class (F2.6 done; + `commit_receipt`,
+`record_count_event`, opening_balance/draft candidates) · **F5.3** depletion arbiter · **TH-1**
+test-data self-cleaning · **MIG-1** round-trip · **F1.3** config fail-closed · **A/B/C + RLS-1**
+RLS-consistency migration (posture-first). Prod-role lookup confirms F2.2 grade (non-blocking).
 
 ## Pending (not decided)
 

@@ -159,28 +159,28 @@ full suite** (594 passed each). One-time cruft cleaned preserving the reference 
   `claim_batch` returned >1, the test dropped an event → `{1000, None}`. Fixed: process all of
   the test's claimed events (matching production) + per-merchant respx mocks (total bound to
   tenant, not call order). 10× green.
-- **Finding 2 — F4-claim-bound: RESOLVED → test-harness artifact, PRODUCTION-SAFE, LOW.**
-  `claim_batch(batch_size=1)` was observed returning 2 rows in-suite. Investigated to ground:
-  - **Real at the execution level, NOT a measurement illusion:** instrumentation inside
-    `claim_batch` (row count of the single `UPDATE…RETURNING`) fired **40/40** in the bad state —
-    one execution genuinely returned all pending rows (LIMIT ignored). So *not* branch (b)-as-DIAG-lie.
-  - **But NOT a production claim-bound violation.** The over-claim manifests **only** under the
-    pytest harness: bimodal per-process (`0/40` or `40/40`), and **requires prior tests in the
-    same process** (probe-alone in a fresh process = `0/40` ×5). The production code path is
-    correct across **70+ single-event-loop trials**: raw asyncpg prepared-stmt reuse `1×10`;
-    fresh-process worker `0/40`; isolation `0/70`. Trigger = pytest-asyncio **loop-per-test** +
-    `reset_sa_engine`/`dispose_*_engine_sync(close=False)` churn after heavy prior service-pool
-    use (phase6) → the documented **asyncpg "connection reused across event loops = undefined
-    behavior"** hazard (same family as the `::jsonb` dialect note in `worker.py`).
-  - **Production runs the worker in ONE long-lived loop:** `app/workers/inbox_worker.py:57`
-    `asyncio.run(_main())` → `InboxWorker.run()` `while True: claim_batch+process` — no
-    loop-per-op, no per-op engine disposal. None of the trigger conditions exist. Claim-once
-    **holds in production**; V8c dual-path idempotency rests on solid ground.
-  - **Severity LOW** (test-harness only). The FLAKY-1 fix (process-all-claimed) already makes
-    the test robust to it. **Secondary observation (test-hygiene):** the
-    `reset_sa_engine(close=False)` + loop-per-test pattern can yield wrong query results via
-    cross-loop asyncpg reuse — a latent test-infra fragility that could surface elsewhere; worth
-    a dedicated fix (session-scoped loop or proper per-test engine teardown), tracked, not urgent.
+- **Finding 2 — F4-claim-bound: REOPENED. Earlier "RESOLVED/production-safe/LOW" RETRACTED.**
+  `claim_batch(batch_size=1)` deterministically returns >1 (all pending) in a "bad" pytest
+  process — instrumentation inside `claim_batch` (single `UPDATE…RETURNING` row count) fired
+  **40/40**. Real at the execution level (not a DIAG illusion).
+  - **What I got WRONG:** I claimed the cause was *cross-loop asyncpg connection reuse* and
+    therefore *test-harness-only / production-safe*. **NullPool falsified that** — with NullPool
+    confirmed active on both test engines (fresh connection per session, no reuse), the
+    over-claim **still fired 40/40** (run 3 of 8). So the mechanism is **not** connection reuse,
+    and the production-safe conclusion was unsupported. Retracted.
+  - **What is established:** bimodal per-process (`0,0,40,0,0…`), in-suite-only (probe-alone
+    fresh process = `0/40` ×5; needs prior tests e.g. phase6), deterministic *within* a bad
+    process, **survives single-loop + fresh connections**. Single-loop *clean-state* trials are
+    correct (raw `1×10`, fresh-worker `0/40`, isolation `0/70`) — but those never reproduced the
+    suite-accumulated state, so they do **not** establish production safety.
+  - **Mechanism: UNKNOWN.** Not connection-pool, not (simple) prepared-stmt generic-plan
+    (raw reuse `1×10`). Remaining hypotheses: (1) **plan/stats-dependent LIMIT violation** in
+    `WHERE inbox_id IN (SELECT … LIMIT 1 FOR UPDATE SKIP LOCKED)` — *production-relevant* if so;
+    (2) a SQLAlchemy/asyncpg process-global state poisoned by prior queries — likely test-only.
+  - **Production-safety: UNKNOWN.** Cannot rule out (1). Next: reproduce the bad-process state
+    and `EXPLAIN (ANALYZE)` the exact claim query to see whether the plan honors LIMIT; that one
+    observation sets production-relevance and severity. FLAKY-1 (process-all-claimed) makes the
+    *test* robust regardless, but does not retire this.
 
 **Lesson:** the one-time cruft clean must be the four-lifecycle reset (`drop/create/upgrade`,
 re-seeds) or a DELETE preserving `tenant_id IS NULL` reference rows — raw `TRUNCATE` wiped the
@@ -210,10 +210,13 @@ clean-infra foundation) + **FLAKY-1** (✅ `1dc70ea`) · atomicity class (F2.6 d
 arbiter · **MIG-1** round-trip · **F1.3** config fail-closed · **A/B/C + RLS-1** RLS-consistency
 migration (posture-first). Prod-role lookup confirms F2.2 grade (non-blocking).
 
-**F4-claim-bound — RESOLVED:** test-harness artifact (asyncpg cross-loop reuse under
-pytest loop-per-test), **production-safe** (single-loop worker correct across 70+ trials;
-entrypoint `asyncio.run` one loop), LOW severity. Claim-once holds in production. Secondary
-test-hygiene fix tracked (cross-loop engine reuse). Details above.
+**F4-claim-bound — REOPEN (production-safety UNKNOWN).** Earlier "resolved/production-safe"
+RETRACTED: NullPool (active, confirmed) did **not** stop the 40/40 over-claim, falsifying the
+cross-loop-reuse mechanism. `claim_batch(1)` deterministically returns >1 in a bad pytest
+process; mechanism unknown (plan/stats-dependent LIMIT violation can't be ruled out → could be
+production-relevant). **Next:** reproduce + `EXPLAIN (ANALYZE)` the claim query to grade
+production-relevance. **TH-2 NOT fixed** (NullPool was the wrong fix). Details above.
+This is the one open item whose severity could be HIGH and is not yet bounded.
 
 ## Pending (not decided)
 

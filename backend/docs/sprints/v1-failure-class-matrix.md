@@ -40,12 +40,41 @@ findings attach where the code lives.
 | B | S3/S4 | consistent RLS policy targeting | **INCONSISTENCY** | most tables `{public}`; `orders`/`sale_line_items` `{app_user, service_worker}` only | A/B/C migration — **posture-first** (verify intent; not uniform-for-its-own-sake) |
 | C | S3 | consistent FORCE RLS | **INCONSISTENCY** | `orders`/`sale_line_items` `relforcerowsecurity=f`; the other tenant tables `t` | A/B/C migration — **posture-first** |
 
+## Auth-surface inventory (S2 / F2.x) — first pass complete
+
+Classified by *(invariant-kind, assertion-role)*, never the grep ratio (the `realrole=0`
+signal on `test_e2e_auth` misfired — reading-order triage, not a verdict).
+
+| File | Invariant asserted | Assertion-role | Verdict |
+|------|--------------------|----------------|---------|
+| `test_jwt.py` | JWT verify (crypto) | roleless | COVERED — trap N/A |
+| `test_e2e_auth.py` | Bearer JWT → `get_principal` → RBAC → tenant-filter; injects wrong-tenant / manager / staff / foreign-invite | real pipeline (app = superuser) | **COVERED** — foreign-invite mutation-proven app-layer (survives the bypass: removing `WHERE tenant_id` → leak, 1 fail / 8 pass); 403s are app-layer authz (RLS cannot emit a 403) |
+| `test_rbac.py` | `require_role` owner/manager/staff | stubbed principal, app-layer guard | COVERED (role) |
+| `test_rls.py` | RLS row-scoping | **`app_user` via `SET ROLE`** | COVERED — the only place RLS runs as a real RLS-subject |
+| `test_auth_routes.py` | register happy / dup / invalid + atomicity | real pipeline / mutation | COVERED; **F2.6 PARTIAL → fill** |
+| `test_invitations.py` | create role-gates / accept / revoke own + cross | real pipeline / mutation | COVERED; **revoke-IDOR fixed** (`0d7973c`) |
+| `test_phase0_engine_isolation.py` | app vs service engine + role isolation | real connections | COVERED — **cites dev-RLS-bypass** (`SELECT current_user` asserts app = `reorderos`, "superuser for local dev") |
+| `test_phase0_service_worker.py` | `service_worker` role/grants exist | **superuser catalog reads** (`pg_roles`, `has_*_privilege`) | **PARTIAL-by-rule** — grant-exists ≠ role-behaves |
+
+**Linked finding (catalog-read ≠ behavioral coverage).** `test_phase0_service_worker`'s
+grant coverage is the same class as the grant side of **F3.4** (append-only). F3.4's
+`test_1_1_app_user_cannot_update_movements` is the done-right template — it *behaviorally*
+attempts the forbidden UPDATE as `app_user` (already mutation-proven). One real-role test
+family (connect **as** `service_worker`; exercise granted ops + assert blocked from
+non-granted) closes the `service_worker` gap on that template. Tracked **linked**, not
+independent. *(Note: F3.4's append-only is already behaviorally covered; what's linked is the
+service_worker catalog-read gap to F3.4's behavioral pattern.)*
+
 ## Pending (not decided)
 
-- **F2.2 runtime grade** — awaiting prod `DATABASE_URL` role + `is_superuser`/`bypasses_rls` +
-  policy-target confirmation. Pre-computed: app-layer `tenant_id` filtering is the actual
-  isolation (comprehensive except the now-fixed revoke path); RLS is a bypassed backstop.
-  Grade resolves on the lookup.
+- **F2.2 runtime grade — INFERRED superuser, lookup-pending (non-blocking).** The audit
+  proceeds on the inference: Finding A (invitations forced + no DELETE policy → revoke works
+  only via superuser bypass) already implies a superuser deployment, and Part 1 closed the
+  live hole regardless of role. `test_phase0_engine_isolation` confirms app = `reorderos`
+  (superuser) in dev. Pre-computed posture: app-layer `tenant_id` filtering is the actual
+  isolation (comprehensive, all four e2e blocks proven app-layer); RLS is a bypassed backstop.
+  The prod `DATABASE_URL` role + `is_superuser`/`bypasses_rls` + policy-target **confirm** the
+  grade later; they do not gate the inventory.
 
 ## A/B/C + RLS-1 migration (deferred, posture-first)
 

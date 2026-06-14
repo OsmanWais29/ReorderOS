@@ -159,10 +159,19 @@ full suite** (594 passed each). One-time cruft cleaned preserving the reference 
   `claim_batch` returned >1, the test dropped an event → `{1000, None}`. Fixed: process all of
   the test's claimed events (matching production) + per-merchant respx mocks (total bound to
   tenant, not call order). 10× green.
-- **Finding 2 — F4-claim-bound: REOPENED. Earlier "RESOLVED/production-safe/LOW" RETRACTED.**
-  `claim_batch(batch_size=1)` deterministically returns >1 (all pending) in a "bad" pytest
+- **Finding 2 — F4-claim-bound: FIXED & VERIFIED (`8c924f4`), MEDIUM, production-relevant.**
+  (History: I first mis-called it "benign", then "test-harness artifact / production-safe" —
+  **both retracted**; NullPool falsified the cross-loop hypothesis, and the real mechanism was
+  proven by EXPLAIN. The mis-calls are kept here as the cautionary record.)
+  `claim_batch(batch_size=1)` deterministically returned >1 (all pending) in a "bad" pytest
   process — instrumentation inside `claim_batch` (single `UPDATE…RETURNING` row count) fired
   **40/40**. Real at the execution level (not a DIAG illusion).
+  - **FIX (shipped `8c924f4`):** wrap the locking subquery in `WITH claimed AS MATERIALIZED (…)`
+    → single evaluation, plan-independent. **Verified both legs:** over-claim **0/40 across 10**
+    bad-state-reproduction runs (was bimodal 40/40); **claim-once asserted** (claimed `inbox_id`s
+    always distinct); fixed-query `EXPLAIN` shows the `LockRows`/`Limit` at **`loops=1`** inside a
+    single CTE scan (the actual `MATERIALIZED` guarantee, not just "passed where reproducible").
+    Full suite 594 green.
   - **What I got WRONG:** I claimed the cause was *cross-loop asyncpg connection reuse* and
     therefore *test-harness-only / production-safe*. **NullPool falsified that** — with NullPool
     confirmed active on both test engines (fresh connection per session, no reuse), the
@@ -221,7 +230,7 @@ clean-infra foundation) + **FLAKY-1** (✅ `1dc70ea`) · atomicity class (F2.6 d
 arbiter · **MIG-1** round-trip · **F1.3** config fail-closed · **A/B/C + RLS-1** RLS-consistency
 migration (posture-first). Prod-role lookup confirms F2.2 grade (non-blocking).
 
-**F4-claim-bound — MECHANISM PROVEN (EXPLAIN), production-relevant, MEDIUM, fix known.**
+**F4-claim-bound — FIXED `8c924f4` + VERIFIED (MEDIUM, production-relevant).**
 `claim_batch`'s `IN (SELECT … LIMIT 1 FOR UPDATE SKIP LOCKED)` is planned as a Nested Loop Semi
 Join that re-executes the locking subquery per outer row (`loops=2`) → `LIMIT N` claim returns >N
 distinct events. Bound violated = **batch-size, NOT claim-once** (each event claimed once; SKIP

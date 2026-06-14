@@ -15,8 +15,15 @@ evidence**. Dotted `F{sprint}.{n}` catalog entries are emitted from here at the 
   downgrade COVERED→PARTIAL on sight. Confirmed instances this sprint: **fail-9**, the **matrix
   spot-check**, and **F2.6** — a systematic class, not a coincidence.
 - **Mutation proofs run on disposable git state** (throwaway commit + `git reset --hard`, or
-  `git stash`) — never in-place edit-and-restore on the working tree. Two near-misses logged:
-  the `git checkout`-over-uncommitted-fix slip, and the manual edit-and-restore round.
+  `git stash`) — never in-place edit-and-restore on the working tree. Disposable git state
+  protects **source, not the DB**: a test that *fails* under a mutation skips its own
+  cleanup-after-assert and leaks its seed (this turn: the foreign-invite mutation left
+  `user_workos_test`, poisoning 8 later tests on the fixed `workos_id`). After a mutation that
+  reddens a committing test, clean its **captured id set** — and before any cleanup, check
+  pre-state and scope to captured ids (never "delete where it looks like residue"; the blanket
+  delete that targeted all 3510 movement-tenants was saved only by an FK). TH-1 makes this
+  automatic. Lessons logged: git-checkout-over-uncommitted-fix; manual edit-and-restore;
+  blanket-delete-by-resemblance; mutation-failure-leaks-seed.
 - **Fills wait for the gate; recordings do not.** Re-grades/dispositions are recorded
   immediately; fill tests commit as a batch at the gate.
 

@@ -65,6 +65,26 @@ non-granted) closes the `service_worker` gap on that template. Tracked **linked*
 independent. *(Note: F3.4's append-only is already behaviorally covered; what's linked is the
 service_worker catalog-read gap to F3.4's behavioral pattern.)*
 
+## S3 (Inventory Ledger) — failure-class hunt (first pass)
+
+Negative-property coverage is **mostly genuine** — each injects its failure (the opposite of
+the F2.6 pattern):
+- **append-only** (F3.4): `test_1_1/1_2/7_1` attempt the forbidden UPDATE/DELETE as `app_user` → behavioral; mutation-proven.
+- **dup opening_balance** (F3.2): `test_1_5/4_3/7_3` INSERT a second row → assert `23505`.
+- **reversal-nets** (F3.1): `test_h0_5/h0_6` (mutation-proven); **reversal-rejects-wrong-type** `test_h0_8` raises.
+- **drift** (F3.3): `test_3_1/4_7/7_24/7_25` inject counted≠predicted → assert adjust/alert.
+- **cadence**: `test_6_9` rejects null Mode-B cadence.
+
+**New finding — atomicity (failure-class 3) = the F2.6-class recurrence.** `commit_receipt`
+is multi-write (per line: INSERT movement + UPDATE `emits_movement_id`; then UPDATE
+`commit_state`); `record_count_event` writes a count_event + (on drift) a `count_adjust`
+movement. Both rest on the caller-transaction + rollback-on-exception pattern (same as
+`register_tenant` — atomic by construction). But coverage is **happy-path + idempotency only**
+(`test_4_9/4_10/7_20`); **no test injects a mid-commit failure** asserting that neither the
+partial movements nor `commit_state='committed'` persist. → **PARTIAL** (failure-class-3 leg
+untested), same class as F2.6. Disposition: **fill** with injected-failure rollback tests (the
+F2.6 template); coverage, awaits gate.
+
 ## Pending (not decided)
 
 - **F2.2 runtime grade — INFERRED superuser, lookup-pending (non-blocking).** The audit

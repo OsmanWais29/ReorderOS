@@ -173,14 +173,25 @@ full suite** (594 passed each). One-time cruft cleaned preserving the reference 
     process, **survives single-loop + fresh connections**. Single-loop *clean-state* trials are
     correct (raw `1×10`, fresh-worker `0/40`, isolation `0/70`) — but those never reproduced the
     suite-accumulated state, so they do **not** establish production safety.
-  - **Mechanism: UNKNOWN.** Not connection-pool, not (simple) prepared-stmt generic-plan
-    (raw reuse `1×10`). Remaining hypotheses: (1) **plan/stats-dependent LIMIT violation** in
-    `WHERE inbox_id IN (SELECT … LIMIT 1 FOR UPDATE SKIP LOCKED)` — *production-relevant* if so;
-    (2) a SQLAlchemy/asyncpg process-global state poisoned by prior queries — likely test-only.
-  - **Production-safety: UNKNOWN.** Cannot rule out (1). Next: reproduce the bad-process state
-    and `EXPLAIN (ANALYZE)` the exact claim query to see whether the plan honors LIMIT; that one
-    observation sets production-relevance and severity. FLAKY-1 (process-all-claimed) makes the
-    *test* robust regardless, but does not retire this.
+  - **Mechanism: PROVEN via `EXPLAIN (ANALYZE, BUFFERS)` in the bad state.** The
+    `WHERE inbox_id IN (SELECT … LIMIT 1 FOR UPDATE SKIP LOCKED)` is planned as a
+    **`Nested Loop Semi Join`**: the `LIMIT 1`/`LockRows` subquery is the **inner relation,
+    re-executed once per outer candidate row** (`loops=2`). Each re-execution honors `LIMIT 1`
+    locally (`rows=1`) but `SKIP LOCKED` skips the already-locked row, so it locks a *different*
+    one — 2 distinct rows match the semi-join → `Update … actual rows=2` for a `LIMIT 1` claim.
+    Plan-shape, not stats-drift (the `Limit` node's own estimate is correct at 1). The
+    documented `IN (SELECT … LIMIT … FOR UPDATE SKIP LOCKED)` nested-loop hazard.
+  - **Production-relevant: YES.** The nested-loop semi-join is a normal planner choice for the
+    identical production query (cost sits at the flip threshold) — not a pytest artifact. TH-1's
+    cruft-clear surfaced it; it was always reachable.
+  - **Severity: MEDIUM.** Violated bound = **batch-size** (a `LIMIT N` claim can return >N
+    *distinct* events), **NOT claim-once** — each event still claimed once; `SKIP LOCKED` still
+    prevents two workers grabbing the same row. Downstream idempotency/isolation **holds**.
+    Harm: unbounded batch size + more in-flight `processing` claims (worse blast radius on a
+    mid-batch crash). FLAKY-1 already makes the test robust; production still needs the fix.
+  - **Fix:** `WITH cte AS MATERIALIZED (SELECT … LIMIT n FOR UPDATE SKIP LOCKED) UPDATE …
+    WHERE inbox_id IN (SELECT inbox_id FROM cte)` — `MATERIALIZED` forces single evaluation of
+    the locking subquery → batch bound honored under any plan. **Add to gate batch (TH-2 slot).**
 
 **Lesson:** the one-time cruft clean must be the four-lifecycle reset (`drop/create/upgrade`,
 re-seeds) or a DELETE preserving `tenant_id IS NULL` reference rows — raw `TRUNCATE` wiped the
@@ -210,13 +221,12 @@ clean-infra foundation) + **FLAKY-1** (✅ `1dc70ea`) · atomicity class (F2.6 d
 arbiter · **MIG-1** round-trip · **F1.3** config fail-closed · **A/B/C + RLS-1** RLS-consistency
 migration (posture-first). Prod-role lookup confirms F2.2 grade (non-blocking).
 
-**F4-claim-bound — REOPEN (production-safety UNKNOWN).** Earlier "resolved/production-safe"
-RETRACTED: NullPool (active, confirmed) did **not** stop the 40/40 over-claim, falsifying the
-cross-loop-reuse mechanism. `claim_batch(1)` deterministically returns >1 in a bad pytest
-process; mechanism unknown (plan/stats-dependent LIMIT violation can't be ruled out → could be
-production-relevant). **Next:** reproduce + `EXPLAIN (ANALYZE)` the claim query to grade
-production-relevance. **TH-2 NOT fixed** (NullPool was the wrong fix). Details above.
-This is the one open item whose severity could be HIGH and is not yet bounded.
+**F4-claim-bound — MECHANISM PROVEN (EXPLAIN), production-relevant, MEDIUM, fix known.**
+`claim_batch`'s `IN (SELECT … LIMIT 1 FOR UPDATE SKIP LOCKED)` is planned as a Nested Loop Semi
+Join that re-executes the locking subquery per outer row (`loops=2`) → `LIMIT N` claim returns >N
+distinct events. Bound violated = **batch-size, NOT claim-once** (each event claimed once; SKIP
+LOCKED holds) → downstream idempotency intact; severity MEDIUM. **Fix:** `MATERIALIZED` CTE for
+the locking subquery (single evaluation, plan-independent). **Add to gate batch.** Details above.
 
 ## Pending (not decided)
 

@@ -104,13 +104,14 @@ class InboxWorker:
         expires = now + timedelta(seconds=self.CLAIM_TTL_SECONDS)
         sm = get_service_sessionmaker()
         async with sm() as session:
+            # MATERIALIZED is load-bearing (F4-claim-bound): without it, the planner can choose
+            # a Nested Loop Semi Join that RE-EXECUTES the LIMIT/FOR UPDATE SKIP LOCKED subquery
+            # once per outer row — each re-run skips the already-locked row and locks a new one,
+            # so a LIMIT N claim returns >N distinct rows (batch bound violated). MATERIALIZED
+            # forces a single evaluation → exactly LIMIT rows locked, under any plan. Do not remove.
             result = await session.execute(
                 text("""
-                    UPDATE pos_event_inbox
-                    SET state                 = 'processing',
-                        processing_started_at = :now,
-                        claim_expires_at      = :exp
-                    WHERE inbox_id IN (
+                    WITH claimed AS MATERIALIZED (
                         SELECT inbox_id FROM pos_event_inbox
                         WHERE (
                             (state = 'pending'
@@ -123,6 +124,11 @@ class InboxWorker:
                         LIMIT :batch
                         FOR UPDATE SKIP LOCKED
                     )
+                    UPDATE pos_event_inbox
+                    SET state                 = 'processing',
+                        processing_started_at = :now,
+                        claim_expires_at      = :exp
+                    WHERE inbox_id IN (SELECT inbox_id FROM claimed)
                     RETURNING *
                 """),
                 {"now": now, "exp": expires, "batch": batch_size},

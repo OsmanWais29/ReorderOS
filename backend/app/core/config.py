@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, ValidationError, field_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["local", "ci", "staging", "production"]
@@ -120,6 +120,41 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
+
+    @model_validator(mode="after")
+    def _require_secrets_in_production(self) -> Settings:
+        """Fail-closed config (F1.3). The security/core secrets below default to None so
+        local/dev/test run without them — but a PRODUCTION deploy missing any would boot
+        SILENTLY and fail only at the first OAuth / webhook / worker call (silently-deaf-on-
+        misconfig). Raise at construction instead, so a misconfigured prod deploy never starts.
+        (ValueError → pydantic ValidationError → get_settings() RuntimeError.)"""
+        if self.app_env != "production":
+            return self
+        # Required at every production launch: auth (WorkOS), token encryption, Clover OAuth +
+        # webhook auth, and the worker DB URL.
+        required: dict[str, object] = {
+            "TOKEN_ENCRYPTION_KEY": self.token_encryption_key,
+            "SERVICE_DATABASE_URL": self.service_database_url,
+            "WORKOS_CLIENT_ID": self.workos_client_id,
+            "WORKOS_JWKS_URL": self.workos_jwks_url,
+            "CLOVER_APP_ID": self.clover_app_id,
+            "CLOVER_APP_SECRET": self.clover_app_secret,
+            "CLOVER_WEBHOOK_AUTH_CODE": self.clover_webhook_auth_code,
+        }
+        # Sprint 6 (receipts / photo extraction) makes these REQUIRED the moment it ships —
+        # move them into `required` above at receipts launch (or NOW if receipts are in the
+        # first pilot):
+        #     "ANTHROPIC_API_KEY":  self.anthropic_api_key,
+        #     "DO_SPACES_KEY":      self.spaces_key,
+        #     "DO_SPACES_SECRET":   self.spaces_secret,
+        #     "DO_SPACES_BUCKET":   self.spaces_bucket,
+        #     "DO_SPACES_ENDPOINT": self.spaces_endpoint,
+        missing = [k for k, v in required.items() if not v]
+        if missing:
+            raise ValueError(
+                "Production config is missing required secrets (fail-closed): " + ", ".join(missing)
+            )
+        return self
 
 
 @lru_cache(maxsize=1)

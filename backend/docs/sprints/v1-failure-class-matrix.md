@@ -212,14 +212,21 @@ re-seeds) or a DELETE preserving `tenant_id IS NULL` reference rows — raw `TRU
   `/health/ready` reports degraded with an **injected** DB failure (`patch ping_database` raises).
 - **F1.2 migration apply** — **COVERED.** `test_phase1_connections::test_migration_applies_and_table_exists`
   + conftest `validate_schema` (fails loudly if not at head).
-- **MIG-1 migration round-trip (`0001→head→base→head`)** — **GAP.** Only forward-apply tested; no
-  downgrade/round-trip → fail-9 **rollback leg untested** (same apply-but-not-rollback shape as the
-  atomicity class). Also the proof-of-clean-production-launch. **Fill.**
-- **F1.3 config fail-closed (class-7)** — **PARTIAL.** `test_phase0_config` only checks secrets are
-  *present in the test env* and **documents** that missing `token_encryption_key` /
-  `clover_webhook_auth_code` / WorkOS fields default `None`, boot **silently**, fail late. No test
-  asserts production boot **fails closed**. **Fill** — prod fail-closed guard (`app_env=='production'`)
-  + test.
+- **MIG-1 migration round-trip (`0001→head→base→head`)** — **ROLLBACK CAPABILITY CONFIRMED**
+  (`ed34f8f`). Executed the full chain: all 21 migrations downgrade head→base **and** upgrade
+  base→head with **no error**; schema + `app_user`/`service_worker` roles + FORCE RLS + the `0014`
+  reference seed all restored. The never-exercised leg actually works — **"can we undo a bad
+  deploy?" → YES** (a real production-safety capability, not just "test added"). Guarded going
+  forward by `test_migration_roundtrip.py` (destructive; skipped by default, `RUN_MIGRATION_TESTS=1`
+  in a dedicated CI step on a disposable DB).
+- **F1.3 config fail-closed (class-7)** — **FIXED** (`ed34f8f`). Was broader than the symptom: ~10
+  security/core secrets default `None`, `get_settings()` only raised on pydantic `ValidationError`
+  (never triggered by `None`-on-`str|None`), **no prod guard at all** → production booted silently
+  deaf. Added a `model_validator` that fails the boot when `app_env=='production'` and any core
+  secret is absent (token-encryption, service-DB, WorkOS client+jwks, Clover app-id+secret+webhook).
+  Sprint-6 receipts secrets (Anthropic/Spaces) structured + commented for trivial promotion at
+  receipts launch. **9 tests**, incl. 7 failure-injecting missing-secret cases (redden if the
+  validator is removed).
 - **CORS posture** — sub-item, not yet swept.
 
 ## Gate batch (fill together, one pass)
@@ -227,7 +234,7 @@ re-seeds) or a DELETE preserving `tenant_id IS NULL` reference rows — raw `TRU
 revoke-IDOR (✅ shipped `0d7973c`) · **TH-1** test-data self-cleaning (✅ shipped `3da90ef`, the
 clean-infra foundation) + **FLAKY-1** (✅ `1dc70ea`) · atomicity class (F2.6 done; +
 `commit_receipt`, `record_count_event`, opening_balance/draft candidates) · **F5.3** depletion
-arbiter · **MIG-1** round-trip · **F1.3** config fail-closed · **A/B/C + RLS-1** RLS-consistency
+arbiter · **MIG-1** round-trip (✅ `ed34f8f`, rollback confirmed) · **F1.3** config fail-closed (✅ `ed34f8f`) · **A/B/C + RLS-1** RLS-consistency
 migration (posture-first). Prod-role lookup confirms F2.2 grade (non-blocking).
 
 **F4-claim-bound — FIXED `8c924f4` + VERIFIED (MEDIUM, production-relevant).**

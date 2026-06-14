@@ -149,8 +149,31 @@ self-cleaning; (2) **dev/demo** — resettable (`dropdb`/`createdb` → `upgrade
 (4) "functionable in production" is guaranteed by production **never having had test data**, not by
 scrubbing it. **MIG-1** (schema builds `0001→head` clean) is the proof the clean launch works.
 
-**Disposition:** fill — convert committing tests to rollback where possible + scoped cleanup
-fixtures on the rest; batch at the gate.
+**Disposition: DONE** (`3da90ef`). Per-test captured-id autoclean + session-scoped leak
+detector (asserts every base table returns to pre-suite counts). Proven: **delta-0 across 10×
+full suite** (594 passed each). One-time cruft cleaned preserving the reference seed.
+
+**Findings surfaced by TH-1 (cruft was masking both):**
+- **Finding 1 — FLAKY-1 (FIXED, `1dc70ea`).** `test_cross_tenant_same_order_id` processed only
+  `claimed[0]`; the production worker `run()` loop processes *every* claimed row. When
+  `claim_batch` returned >1, the test dropped an event → `{1000, None}`. Fixed: process all of
+  the test's claimed events (matching production) + per-merchant respx mocks (total bound to
+  tenant, not call order). 10× green.
+- **Finding 2 — F4-claim-bound: OPEN. NOT benign.** `claim_batch(batch_size=1)` was observed
+  returning **2 rows** in-suite (run-8 DIAG capture); **unreproduced in isolation (0/70**, both
+  distinct and byte-identical `received_at`; no test concurrency). Mechanism unknown.
+  `LIMIT N` returning >N on the **ingestion front door** is one of: (a) a real claim-bound
+  violation — foundational, since claim-once underpins every downstream idempotency/isolation
+  guarantee and overlapping cross-worker claims would be unanalyzed; (b) a DIAG/snapshot
+  measurement artifact → no over-claim; (c) in-between. **Severity unanalyzed until resolved.**
+  The FLAKY-1 fix makes the *test* tolerant; it does **not** retire this, and the 10× green
+  sweep proves test stability, not claim-bound safety. **Required: reproduce deterministically
+  (the run-8 suite-state is reachable) → answer "under what condition can FOR UPDATE SKIP
+  LOCKED + LIMIT N return >N?" → set severity.** Next investigation after the batch infra lands.
+
+**Lesson:** the one-time cruft clean must be the four-lifecycle reset (`drop/create/upgrade`,
+re-seeds) or a DELETE preserving `tenant_id IS NULL` reference rows — raw `TRUNCATE` wiped the
+`0014` global `unit_conversions` seed and broke 5 conversions tests.
 
 ## S1 (Platform) — failure-class sweep (fail-9 / class-7)
 
@@ -170,10 +193,16 @@ fixtures on the rest; batch at the gate.
 
 ## Gate batch (fill together, one pass)
 
-revoke-IDOR (✅ shipped `0d7973c`) · atomicity class (F2.6 done; + `commit_receipt`,
-`record_count_event`, opening_balance/draft candidates) · **F5.3** depletion arbiter · **TH-1**
-test-data self-cleaning · **MIG-1** round-trip · **F1.3** config fail-closed · **A/B/C + RLS-1**
-RLS-consistency migration (posture-first). Prod-role lookup confirms F2.2 grade (non-blocking).
+revoke-IDOR (✅ shipped `0d7973c`) · **TH-1** test-data self-cleaning (✅ shipped `3da90ef`, the
+clean-infra foundation) + **FLAKY-1** (✅ `1dc70ea`) · atomicity class (F2.6 done; +
+`commit_receipt`, `record_count_event`, opening_balance/draft candidates) · **F5.3** depletion
+arbiter · **MIG-1** round-trip · **F1.3** config fail-closed · **A/B/C + RLS-1** RLS-consistency
+migration (posture-first). Prod-role lookup confirms F2.2 grade (non-blocking).
+
+**OPEN investigation (gates nothing in the batch, but precedes any new reliance on claim-once):**
+**F4-claim-bound** — reproduce the `claim_batch` LIMIT-N→>N observation deterministically and set
+its severity (query bug / isolation issue / measurement artifact). The ingestion front door;
+do not let it sit dismissed.
 
 ## Pending (not decided)
 

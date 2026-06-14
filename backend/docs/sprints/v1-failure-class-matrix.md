@@ -39,7 +39,7 @@ findings attach where the code lives.
 | ID | Sprint / F | Property (invariant) | Verdict | Evidence (executed) | Disposition / Status |
 |----|-----------|----------------------|---------|---------------------|----------------------|
 | revoke-IDOR | S2 / F2.x | `revoke_invitation` must not delete cross-tenant | **LIVE IDOR (fixed)** | cross-tenant test fails without app-layer `tenant_id` filter under the superuser test role; mutation-proven | **SHIPPED** `0d7973c` (Part 1, app-layer filter) |
-| dev-RLS-bypass | S2 / F2.2 | the running app is subject to RLS | **PARTIAL** | `reorderos rolsuper=t`; no `SET ROLE` in `app/`; GUCs set but bypassed; RLS suite proves policies *as app_user* only | tracked; prod-role grade pending lookup |
+| dev-RLS-bypass | S2 / F2.2 | the running app is subject to RLS | **PARTIAL** | `reorderos rolsuper=t`; no `SET ROLE` in `app/`; GUCs set but bypassed; RLS suite proves policies *as app_user* only | **accept-with-rationale** (app-layer `tenant_id` filtering is the proven isolation) **+** restore the RLS backstop in the A/B/C+RLS-1 migration (enable/force/policy consistency). Prod-role lookup confirms the grade (non-blocking). |
 | RLS-1 | S4 / `oauth_states` | every tenant table RLS-enabled (sweep) | **"(b) incompatible" REFUTED** | all-table RLS status (4 off); `ALTER … ENABLE` succeeds in a txn; consume is pre-tenant-context | **(a) enable RLS + permissive/service policy**; folds into the A/B/C migration (4th item). Enable-without-policy = the superuser-bypass trap. |
 | F2.6 | S2 / F2.x | register-tenant atomic (no orphan tenant) | **COVERED → PARTIAL** | dup-slug fails at the *first* write; no between-writes failure test existed | **fill written + mutation-proven** (premature-commit → red; restore → green); awaits gate |
 | F5.3 | S5 / F5.3 | depletion-specific dup ledger (`ON CONFLICT` arbiter) | label-corrected (was "F4.2-conflict") | concurrent `write_movement` test; mutation-proven; F4.2 = the *webhook-replay* dup (distinct path, already proven) | fill written; awaits gate |
@@ -119,10 +119,13 @@ check for an **injected-failure-between-writes** test. The headline is reassurin
 - `save_draft` / `skip_recipe` / `unconfirm_recipe` / `unconfirm_modifier` (S5 drafts) —
   candidates, lower-stakes (the high-stakes *confirm* paths are COVERED above).
 
-**Disposition:** the PARTIAL set fills with one F2.6-template pass at the gate. Severity is low
-(no live bug — the code is atomic by the caller-transaction; only the *test* is missing), unlike
-the revoke IDOR. The class is now fully characterized and inventoried; nothing else matches the
-signature unproven.
+**Disposition:** the PARTIAL set is a **REQUIRED fill** (one F2.6-template pass at the gate) —
+NOT optional-because-low-severity. "Atomic by construction" is a *structural* claim that needs
+the injected-failure test, because construction changes silently under refactor: `process_line`
+was "atomic by construction, only the test missing" until its test existed — and it was the one
+that mattered. Low *priority* (no live bug today; atomic by the caller-transaction) ≠ optional.
+`commit_receipt` and `record_count_event` are required fills. The class is fully characterized
+and inventoried; nothing else matches the signature unproven.
 
 ## TH-1 — test data accumulates in the test DB (test-hygiene)
 

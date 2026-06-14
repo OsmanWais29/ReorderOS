@@ -173,5 +173,5 @@ async def revoke_invite(
         raise HTTPException(status_code=403, detail="Only owners can revoke invitations")
 
     await set_rls_context(db, principal)
-    await revoke_invitation(db, invitation_id)
+    await revoke_invitation(db, uuid.UUID(principal.tenant_id), invitation_id)
     await db.commit()

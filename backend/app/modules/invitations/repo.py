@@ -112,8 +112,19 @@ async def accept_invitation(
     return membership
 
 
-async def revoke_invitation(session: AsyncSession, invitation_id: uuid.UUID) -> None:
-    result = await session.execute(select(Invitation).where(Invitation.id == invitation_id))
+async def revoke_invitation(
+    session: AsyncSession, tenant_id: uuid.UUID, invitation_id: uuid.UUID
+) -> None:
+    # App-layer tenant scoping (F2.2): the fetch is filtered by tenant_id so a revoke can only
+    # touch the caller's own invitation. RLS is a bypassed backstop when the app runs as a
+    # superuser role, so this explicit filter — not RLS — is the actual cross-tenant guard
+    # (invitations has no DELETE policy; the only working protection is this WHERE).
+    result = await session.execute(
+        select(Invitation).where(
+            Invitation.id == invitation_id,
+            Invitation.tenant_id == tenant_id,
+        )
+    )
     inv = result.scalar_one_or_none()
     if inv is None:
         raise HTTPException(status_code=404, detail="Invitation not found")

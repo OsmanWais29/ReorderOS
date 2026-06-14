@@ -85,6 +85,43 @@ partial movements nor `commit_state='committed'` persist. → **PARTIAL** (failu
 untested), same class as F2.6. Disposition: **fill** with injected-failure rollback tests (the
 F2.6 template); coverage, awaits gate.
 
+## Atomicity class — cross-surface signature sweep (S2–S5)
+
+Signature: a function doing **2+ writes in a caller-passed session** (no self-commit) →
+check for an **injected-failure-between-writes** test. The headline is reassuring — the
+**highest-stakes paths are genuinely proven**, the gaps are ledger-helpers and drafts.
+
+**COVERED (injected-failure test exists):**
+- **`process_line` (S5, movements + status) — MUTATION-PROVEN this turn.** The 9/10 live-money
+  invariant. `test_depleted_status_and_movements_are_atomic_injected_rollback` (phase15:310)
+  injects a raise in `_set_status('depleted')` *after* the movement loop, asserts 0 movements +
+  line `pending` + event `failed`, with an `autospec`+`assert_called` anti-vacuousness guard.
+  Would-it-fail confirmed: injecting `session.commit()` before the status write → test reddens
+  (movements persist); restore → green. **Proven, not structurally assumed.**
+- `confirm_recipe` (S5) — `test_no_partial_confirm_injected_late_failure` (phase4:663).
+- `confirm_modifier` (S5) — `test_no_partial_confirm_injected_late_failure` (phase6:551).
+- `suggest_recipe` (S5) — `test_llm_failure_returns_503_and_writes_nothing` (phase5:314).
+- catalog_sync partial-pull (S4) — `test_partial_pull_does_not_soft_delete` (phase2:167).
+- worker crash-mid-line (S4) — `test_crash_mid_line_survives_and_recovers` (phase12:115).
+
+**PARTIAL (F2.6-class — multi-write, atomic-by-construction, no injected-failure test):**
+- `register_tenant` (S2/F2.6) — fill written.
+- `commit_receipt` (S3) — confirmed no injected-failure test.
+- `record_count_event` (S3) — confirmed no injected-failure test.
+- `record_opening_balance` (S3, 2 writes) — candidate, unverified.
+- `save_draft` / `skip_recipe` / `unconfirm_recipe` / `unconfirm_modifier` (S5 drafts) —
+  candidates, lower-stakes (the high-stakes *confirm* paths are COVERED above).
+
+**Disposition:** the PARTIAL set fills with one F2.6-template pass at the gate. Severity is low
+(no live bug — the code is atomic by the caller-transaction; only the *test* is missing), unlike
+the revoke IDOR. The class is now fully characterized and inventoried; nothing else matches the
+signature unproven.
+
+## S1 (Platform) — not yet swept
+
+Different signature (config validation / migration rollback = fail-9 class, not
+multi-write-in-session). Pending.
+
 ## Pending (not decided)
 
 - **F2.2 runtime grade — INFERRED superuser, lookup-pending (non-blocking).** The audit

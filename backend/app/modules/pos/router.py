@@ -91,7 +91,7 @@ async def connect(
 
     state_token = await _state_mgr.generate(user["tenant_id"], user["user_id"])
     authorize_url = (
-        f"{settings.clover_oauth_base_url}/oauth/authorize"
+        f"{settings.clover_oauth_base_url}/oauth/v2/authorize"
         f"?client_id={settings.clover_app_id}"
         f"&redirect_uri={settings.clover_oauth_callback_url}"
         f"&state={state_token}"
@@ -114,7 +114,7 @@ async def connect_url(
 
     state_token = await _state_mgr.generate(user["tenant_id"], user["user_id"])
     authorize_url = (
-        f"{settings.clover_oauth_base_url}/oauth/authorize"
+        f"{settings.clover_oauth_base_url}/oauth/v2/authorize"
         f"?client_id={settings.clover_app_id}"
         f"&redirect_uri={settings.clover_oauth_callback_url}"
         f"&state={state_token}"

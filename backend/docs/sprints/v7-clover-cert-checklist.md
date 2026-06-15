@@ -177,10 +177,20 @@ All four must be green before step 5. Each is a positive check, not an assumptio
    `GET /api/v1/pos/clover/connect` is owner-auth via **Bearer JWT** — a plain browser navigation
    (address bar / link click) **cannot attach the Authorization header**, so it 401s and never
    redirects to Clover → you "land on /callback with no code." The real flow:
+   0. Get an owner JWT (WorkOS password grant via our `/auth/sign-in`):
+      ```
+      TOKEN=$(curl -sS -X POST https://<host>/api/v1/auth/sign-in -H 'Content-Type: application/json' \
+        -d '{"email":"<owner-email>","password":"<owner-password>"}' \
+        | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+      curl -sS https://<host>/api/v1/auth/me -H "Authorization: Bearer $TOKEN"   # confirm role=owner + tenant id
+      ```
+      (503 "Auth not configured" → WORKOS_CLIENT_ID/SECRET unset on the deploy; 401 → bad creds or the
+      owner hasn't registered a tenant yet.)
    1. Authenticated owner calls the JSON endpoint **with** the header:
       ```
-      curl -sS https://<host>/api/v1/pos/clover/connect-url -H "Authorization: Bearer <owner-jwt>"
-      # → {"url":"https://sandbox.dev.clover.com/oauth/v2/authorize?client_id=…&redirect_uri=…&state=…"}
+      curl -sS https://<host>/api/v1/pos/clover/connect-url -H "Authorization: Bearer $TOKEN"
+      # → {"url":"https://sandbox.dev.clover.com/oauth/v2/authorize?client_id=...&redirect_uri=...&state=..."}
+      # (if 403 tenant/role: add  -H "X-Tenant-Id: <tenant id from /auth/me>")
       ```
    2. **Open that returned `url` in a browser** → Clover consent screen → approve.
    3. Clover redirects to `CLOVER_OAUTH_CALLBACK_URL?merchant_id=…&code=…&state=…`; `/callback`

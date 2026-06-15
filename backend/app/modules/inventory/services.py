@@ -504,6 +504,27 @@ async def add_receipt_line(
     return line_id
 
 
+async def _mark_receipt_committed(
+    session: AsyncSession, tenant_id: UUID, receipt_id: UUID
+) -> None:
+    """Set the receipt's terminal committed state. Extracted as the autospec seam for the
+    atomicity test — it is the movements/status boundary. Runs in the CALLER's session/txn at the
+    SAME sequence point as the prior inline UPDATE (after the movement loop, before the flush);
+    introduces NO new session or commit, so the atomicity boundary is unchanged.
+
+    (Sprint 6 will need a separate POS-commit baseline / inertness regression here — revisit
+    when Sprint 6 starts; not in scope for V1.)"""
+    await session.execute(
+        text("""
+            UPDATE receipts
+               SET commit_state = 'committed',
+                   committed_at = NOW()
+             WHERE tenant_id = :tid AND id = :rid
+        """),
+        {"tid": tenant_id, "rid": receipt_id},
+    )
+
+
 async def commit_receipt(
     session: AsyncSession,
     *,
@@ -620,16 +641,8 @@ async def commit_receipt(
 
         movement_ids.append(mv_id)
 
-    # ── 4. mark committed ─────────────────────────────────────────────────────
-    await session.execute(
-        text("""
-            UPDATE receipts
-               SET commit_state = 'committed',
-                   committed_at = NOW()
-             WHERE tenant_id = :tid AND id = :rid
-        """),
-        {"tid": tenant_id, "rid": receipt_id},
-    )
+    # ── 4. mark committed (extracted seam — same session/txn, same sequence point) ──
+    await _mark_receipt_committed(session, tenant_id, receipt_id)
 
     await session.flush()
     return {"receipt_id": receipt_id, "movement_ids": movement_ids, "status": "committed"}

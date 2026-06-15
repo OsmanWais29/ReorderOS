@@ -571,3 +571,61 @@ async def test_4_10_receipt_commit_idempotency(
         uuid.UUID(item),
     )
     assert n_mv == 1, f"expected 1 receive movement, got {n_mv}"
+
+
+@pytest.mark.integration
+async def test_receipt_commit_atomic_injected_rollback(admin_conn):
+    """F2.6-template atomicity (commit_receipt, V1 gap): inject a failure AFTER the receive
+    movements are written but BEFORE the committed-status write; the per-transaction rollback must
+    leave NEITHER — no receive movements AND the receipt still 'draft'. autospec + assert_called
+    guard the injection point so a rename/inline of _mark_receipt_committed fails loudly, not
+    vacuously. (Sprint-6 POS-commit baseline is deferred — revisit when Sprint 6 starts.)"""
+    from unittest.mock import patch
+
+    import app.modules.inventory.services as svc
+    from app.core.database import get_sessionmaker
+
+    t = await seed_tenant(admin_conn)
+    u = await seed_user(admin_conn)
+    tid = uuid.UUID(str(t["id"]))
+    uid = uuid.UUID(str(u["id"]))
+    uom = await _mk_uom(admin_conn, str(tid))
+    item = await _mk_item(admin_conn, str(tid), uom, mode="recipe_deducted")
+
+    sm = get_sessionmaker()
+    async with sm() as seed_s:
+        rid = await svc.create_receipt(seed_s, tenant_id=tid, created_by=uid)
+        line_id = await svc.add_receipt_line(
+            seed_s,
+            tenant_id=tid,
+            receipt_id=rid,
+            inventory_item_id=uuid.UUID(item),
+            received_quantity=Decimal("10"),
+            unit_cost_cents=500,
+        )
+        await seed_s.commit()
+
+    idem = f"receipt_line:{line_id}"
+    with (
+        patch.object(
+            svc,
+            "_mark_receipt_committed",
+            autospec=True,
+            side_effect=RuntimeError("injected: between movement-writes and status-commit"),
+        ) as m,
+        pytest.raises(RuntimeError),
+    ):
+        async with sm() as session:
+            await svc.commit_receipt(session, tenant_id=tid, receipt_id=rid)
+            await session.commit()
+    m.assert_called()  # the seam fired → movements were written before it
+
+    # SEPARATE read (admin_conn, outside the rolled-back txn): rollback left neither
+    mv = await admin_conn.fetchval(
+        "SELECT count(*) FROM inventory_movements WHERE tenant_id=$1 AND idempotency_key=$2",
+        tid,
+        idem,
+    )
+    assert mv == 0, "receive movement persisted despite the failed commit (atomicity broken)"
+    state = await admin_conn.fetchval("SELECT commit_state FROM receipts WHERE id=$1", rid)
+    assert state == "draft", f"receipt left {state!r}, not rolled back to draft"

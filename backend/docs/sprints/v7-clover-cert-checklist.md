@@ -151,6 +151,80 @@ flow, check the DB at every hop. `psql` shorthand (point at the DB your app/work
 If all five hops check out for one sale, the full ingestion path is proven end-to-end against real
 Clover — the half the 2,000-order sim could not reach.
 
+## E. PRE-FLIGHT (run all four BEFORE ringing up — a missing prereq must not masquerade as broken ingestion)
+
+All four must be green before step 5. Each is a positive check, not an assumption.
+
+1. **Webhook reachable + verification echo works** (the reachability proof). Active self-test of the
+   exact verify path — no dashboard needed:
+   ```
+   curl -sS -X POST https://<your-host>/api/v1/webhooks/pos/clover \
+        -H 'Content-Type: application/json' -d '{"verificationCode":"preflight-123"}'
+   ```
+   GREEN = it prints `preflight-123` (200, text/plain). RED = timeout/404/wrong body → the URL Clover
+   posts to is wrong/unreachable; fix before anything. Then confirm the Clover dashboard shows the
+   webhook **verified/active** (Clover sent its own ping and got the echo).
+
+2. **Connection active + token valid:**
+   ```sql
+   SELECT merchant_id, state, (access_token_expires_at > now()) AS token_valid
+   FROM tenant_pos_connections WHERE tenant_id=:T AND vendor='clover';
+   ```
+   GREEN = one row, `state='active'`, `token_valid=t`. RED = no row / `state<>'active'` / token expired
+   → re-run `GET /api/v1/pos/clover/connect`.
+
+3. **Test item mapped to a confirmed recipe that can actually deplete:**
+   ```sql
+   SELECT mi.name, mi.pos_item_id, mi.recipe_version_id, count(ri.*) AS ingredients
+   FROM menu_items mi
+   LEFT JOIN recipe_ingredients ri ON ri.recipe_version_id = mi.recipe_version_id
+   WHERE mi.tenant_id=:T AND mi.recipe_version_id IS NOT NULL
+   GROUP BY 1,2,3;
+   ```
+   GREEN = the item you'll ring up appears with a non-null `pos_item_id` AND `recipe_version_id` AND
+   `ingredients >= 1`. RED = missing pos_item_id (re-sync catalog) / no recipe_version_id (confirm the
+   recipe) / 0 ingredients (add ingredients + confirm). NOTE: if a recipe unit ≠ the item's storage
+   unit, also confirm a conversion exists, or hop 4 will read `failed/missing_conversion`.
+
+4. **Worker running:** confirm the process is up and looping —
+   `ps aux | grep "[a]pp.workers.inbox_worker"` (or the platform's Worker component shows running) AND
+   the log shows `inbox_worker.starting`. Liveness cross-check: there are no stale pending events —
+   `SELECT count(*) FROM pos_event_inbox WHERE tenant_id=:T AND state='pending';` should be 0 now (and
+   later, any new pending row drains within ~2s). RED = no process → start `python -m
+   app.workers.inbox_worker`.
+
+Only when 1-4 are green, proceed to step 5. (A prereq miss now produces a *clean diagnosis* later —
+e.g. `unmapped` = prereq 3, stuck `pending` = prereq 4 — instead of looking like a broken pipeline.)
+
+## F. What a §C shape mismatch looks like at Hop 3 — and stop-vs-note
+
+A §C mismatch = the real Clover JSON in `fetched_payload` differs from where the parser reads. This is
+a FINDING (the verification sprint doing its job — real-vs-assumed surfaced), not a failure. The fix is
+usually one line (point the parser at the right field) + a captured-payload regression test that closes
+the §C item. Decide stop-vs-note by ONE question: **does the mismatch corrupt depletion** (the
+menu-item/recipe resolution, the quantity, the payment-state/eligibility, or the modifier mapping)?
+
+**STOP-and-fix (silent depletion corruption — the dangerous ones):**
+| Symptom in the data | Real cause | Fix |
+|---|---|---|
+| `sale_line_items.menu_item_id` NULL despite prereq 3 green → `depletion_status='unmapped/no_recipe'` | line→catalog ref isn't `lineItem.item.id` where `_insert_line_item` reads it | repoint to the real ref |
+| `sale_line_items.quantity` wrong (e.g. 1000 not 1) → δ off at hop 5 | `unitQty` semantics differ (weighted/thousandths) | adjust qty parse |
+| order ingested but `depletion_status='failed'/sale_ineligible` though you paid+locked | `_derive_payment_state` read the wrong field → OPEN | fix the paymentState/payments/refundTotal read |
+| a refund doesn't reverse | `refundTotal` only via `?expand=refunds`, or different field | request the expand in `get_order` / fix detection |
+| modified item: no `sale_line_item_modifiers` row → modifier δ missing at hop 5 | `modifications…modifier.id`/quantity shape differs | repoint modifier parse |
+
+**NOTE-and-continue (no depletion impact):**
+- Extra/unknown fields Clover sends that we don't read — ignored by design.
+- A non-load-bearing field absent/renamed (`device.id`, `externalReferenceId`, `employee.id`) → a NULL
+  in a reporting column; order still depletes correctly.
+- Cosmetic differences (timestamp precision, field order).
+
+Rule of thumb: **if hop 4 shows `depleted` and hop 5's δ matches your hand-check, any payload
+difference is NOTE-and-continue.** If the sale lands `unmapped`/`failed`/wrong-δ when it should be a
+clean `depleted`, that's STOP-and-fix — and exactly the bug this whole exercise exists to catch before
+a real café relies on it. Either way: save the `fetched_payload` to `tests/fixtures/clover/` so the
+fix (or the confirmation) becomes a permanent regression test and §C closes.
+
 ## Cert gate
 
 V7 is "certified" when: (A) green in CI, (B) all live steps checked off on a real sandbox merchant,

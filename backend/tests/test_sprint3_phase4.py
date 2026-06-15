@@ -629,3 +629,56 @@ async def test_receipt_commit_atomic_injected_rollback(admin_conn):
     assert mv == 0, "receive movement persisted despite the failed commit (atomicity broken)"
     state = await admin_conn.fetchval("SELECT commit_state FROM receipts WHERE id=$1", rid)
     assert state == "draft", f"receipt left {state!r}, not rolled back to draft"
+
+
+@pytest.mark.integration
+async def test_count_event_atomic_injected_rollback(admin_conn):
+    """F2.6-template atomicity (record_count_event, Mode A): inject a failure AFTER the count_event
+    row is written but AT the count_adjust movement; the per-transaction rollback must leave NEITHER
+    — no count_event AND no count_adjust movement. autospec + assert_called guard the seam (drift
+    forces it to fire, so the count_event was written before it)."""
+    from unittest.mock import patch
+
+    import app.modules.inventory.services as svc
+    from app.core.database import get_sessionmaker
+
+    t = await seed_tenant(admin_conn)
+    tid = uuid.UUID(str(t["id"]))
+    uom = await _mk_uom(admin_conn, str(tid))
+    item = uuid.UUID(await _mk_item(admin_conn, str(tid), uom, mode="recipe_deducted"))
+
+    sm = get_sessionmaker()
+    # opening_balance 100 → predicted on_hand 100; counting 80 → drift -20 → count_adjust emitted
+    async with sm() as s:
+        await svc.record_opening_balance(
+            s, tenant_id=tid, inventory_item_id=item, quantity=Decimal("100")
+        )
+        await s.commit()
+
+    with (
+        patch.object(
+            svc,
+            "_emit_count_adjust",
+            autospec=True,
+            side_effect=RuntimeError("injected: between count-event and count_adjust"),
+        ) as m,
+        pytest.raises(RuntimeError),
+    ):
+        async with sm() as session:
+            await svc.record_count_event(
+                session, tenant_id=tid, inventory_item_id=item, counted_quantity=Decimal("80")
+            )
+            await session.commit()
+    m.assert_called()  # drift fired the seam → the count_event row was written before it
+
+    events = await admin_conn.fetchval(
+        "SELECT count(*) FROM inventory_count_events WHERE tenant_id=$1 AND inventory_item_id=$2",
+        tid,
+        item,
+    )
+    assert events == 0, "count_event persisted despite the failed correction (atomicity broken)"
+    adjusts = await admin_conn.fetchval(
+        "SELECT count(*) FROM inventory_movements WHERE tenant_id=$1 AND movement_type='count_adjust'",
+        tid,
+    )
+    assert adjusts == 0, "count_adjust movement persisted despite rollback"

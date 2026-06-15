@@ -248,6 +248,39 @@ async def record_opening_balance(
 # ═════════════════════════════════════════════════════════════════════════════
 
 
+async def _emit_count_adjust(
+    session: AsyncSession,
+    tenant_id: UUID,
+    inventory_item_id: UUID,
+    event_id: UUID,
+    delta: Decimal,
+    recorded_at: datetime,
+) -> None:
+    """Emit the Mode-A `count_adjust` ledger movement for a count event. Extracted as the autospec
+    seam for the atomicity test — it is the count-event/correction boundary. Runs in the CALLER's
+    session/txn at the SAME sequence point as the prior inline INSERT; introduces NO new boundary."""
+    await session.execute(
+        text("""
+            INSERT INTO inventory_movements
+                (tenant_id, inventory_item_id, movement_type, delta,
+                 source_type, source_id, idempotency_key, recorded_at, notes)
+            VALUES
+                (:tid, :iid, 'count_adjust', :delta,
+                 'count_event', :event_id,
+                 :idem_key, :at, :notes)
+        """),
+        {
+            "tid": tenant_id,
+            "iid": inventory_item_id,
+            "delta": delta,
+            "event_id": event_id,
+            "idem_key": f"count_adjust:{event_id}",
+            "at": recorded_at,
+            "notes": f"System count correction from {event_id}",
+        },
+    )
+
+
 async def record_count_event(
     session: AsyncSession,
     *,
@@ -366,25 +399,8 @@ async def record_count_event(
             predicted if predicted is not None else counted_quantity
         )
         if abs(count_adjust_delta) >= Decimal("0.0001"):
-            await session.execute(
-                text("""
-                    INSERT INTO inventory_movements
-                        (tenant_id, inventory_item_id, movement_type, delta,
-                         source_type, source_id, idempotency_key, recorded_at, notes)
-                    VALUES
-                        (:tid, :iid, 'count_adjust', :delta,
-                         'count_event', :event_id,
-                         :idem_key, :at, :notes)
-                """),
-                {
-                    "tid": tenant_id,
-                    "iid": inventory_item_id,
-                    "delta": count_adjust_delta,
-                    "event_id": event_id,
-                    "idem_key": f"count_adjust:{event_id}",
-                    "at": counted_at,
-                    "notes": f"System count correction from {event_id}",
-                },
+            await _emit_count_adjust(
+                session, tenant_id, inventory_item_id, event_id, count_adjust_delta, counted_at
             )
     await session.flush()
 

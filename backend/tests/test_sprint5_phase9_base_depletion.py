@@ -13,6 +13,7 @@ and per-item aggregation (two ingredient rows → one summed movement).
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -25,8 +26,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
-from app.core.database import engine, make_bound_session
+from app.core.database import engine, get_sessionmaker, make_bound_session
 from app.modules.inventory.depletion import handler
+from app.modules.inventory.depletion.writer import write_movement
 from tests.helpers.sprint5 import seed_recipe_version_session
 
 
@@ -258,6 +260,94 @@ async def test_replay_is_idempotent(db) -> None:
     await handler.process_line(db, UUID(s["tid"]), UUID(s["sli_id"]))
     await handler.process_line(db, UUID(s["tid"]), UUID(s["sli_id"]))  # re-run
     assert len(await _movements(db, s["tid"], s["item_id"])) == 1  # ON CONFLICT, no dup
+
+
+# ── F4.2-conflict: the ON CONFLICT arbiter under TRUE concurrency ────────────
+
+
+@pytest.mark.integration
+async def test_write_movement_concurrent_arbiter(admin_conn) -> None:
+    """write_movement's INSERT ... ON CONFLICT (tenant_id, idempotency_key) DO NOTHING is
+    the concurrency arbiter — it must let exactly ONE of N simultaneous writers win the same
+    idempotency key (duplicate webhook / retry overlap → two workers racing the same sale).
+
+    Why this exists separately from test_replay_is_idempotent: that test drives process_line
+    twice SEQUENTIALLY, so the second call short-circuits on the terminal-status guard and
+    never reaches write_movement — the unique-constraint arbiter is never exercised. This test
+    isolates the arbiter: N independent sessions (real pooled connections, each committing)
+    fire write_movement with the SAME key concurrently. Correct behaviour: 1 row, 1 non-None
+    return. Removing ON CONFLICT (or reintroducing a check-then-insert TOCTOU) reddens this —
+    the losers hit the UNIQUE constraint and raise instead of no-op'ing.
+
+    Uses the production get_sessionmaker (not the bound-rollback `db` fixture, which shares one
+    transaction and so cannot race). The default engine connects as the superuser, which
+    bypasses FORCE RLS — no SET LOCAL app.tenant_id needed. Seeds/cleans up via admin_conn
+    since the racing sessions COMMIT real rows (no fixture rollback to undo them)."""
+    # committed prerequisites (visible to the independent racing connections)
+    t = await admin_conn.fetchrow(
+        "INSERT INTO tenants (slug, name) VALUES ($1, $2) RETURNING id",
+        f"tenant-{uuid.uuid4().hex[:8]}",
+        "F4.2-conflict",
+    )
+    tid = t["id"]
+    uom = await admin_conn.fetchrow(
+        "INSERT INTO units_of_measure (tenant_id, name, abbreviation, unit_type)"
+        " VALUES ($1, $2, $3, 'weight') RETURNING id",
+        tid,
+        f"uom-{uuid.uuid4().hex[:6]}",
+        "u",
+    )
+    item = await admin_conn.fetchrow(
+        "INSERT INTO inventory_items"
+        " (tenant_id, name, inventory_mode, storage_unit_id, storage_to_recipe_factor)"
+        " VALUES ($1, $2, 'recipe_deducted', $3, 1.0) RETURNING id",
+        tid,
+        f"item-{uuid.uuid4().hex[:6]}",
+        uom["id"],
+    )
+    iid = item["id"]
+    key = f"conflict-test:{uuid.uuid4().hex}"
+    source_id = uuid7()
+
+    sm = get_sessionmaker()
+
+    async def _race() -> uuid.UUID | None:
+        async with sm() as session:
+            mid = await write_movement(
+                session,
+                tenant_id=tid,
+                idempotency_key=key,
+                legacy_key=None,
+                inventory_item_id=iid,
+                movement_type="sale_depletion",
+                delta=Decimal("-5"),
+                yield_factor_applied=Decimal("1"),
+                source_type="sale_line_item",
+                source_id=source_id,
+            )
+            await session.commit()
+            return mid
+
+    try:
+        results = await asyncio.gather(*[_race() for _ in range(10)])
+
+        # exactly one writer wrote the row; the rest got the ON CONFLICT no-op (None)
+        winners = [r for r in results if r is not None]
+        assert len(winners) == 1, f"expected 1 winner, got {len(winners)}: {results}"
+
+        # and the ledger holds exactly one row for that key — no concurrent-duplicate leak
+        count = await admin_conn.fetchval(
+            "SELECT COUNT(*) FROM inventory_movements"
+            " WHERE tenant_id = $1 AND idempotency_key = $2",
+            tid,
+            key,
+        )
+        assert count == 1, f"expected 1 movement row, got {count} (arbiter leaked)"
+    finally:
+        # racing sessions committed real rows — clean up (item delete cascades movements)
+        await admin_conn.execute("DELETE FROM inventory_items WHERE id = $1", iid)
+        await admin_conn.execute("DELETE FROM units_of_measure WHERE id = $1", uom["id"])
+        await admin_conn.execute("DELETE FROM tenants WHERE id = $1", tid)
 
 
 @pytest.mark.integration

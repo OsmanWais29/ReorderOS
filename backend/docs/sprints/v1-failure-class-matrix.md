@@ -351,6 +351,105 @@ the exact statement a write-only guard would miss.
 
 **Coverage honesty:** runtime guard ⇒ only test-EXERCISED paths are visible. "Guard green" = no IDOR on
 any path the suite exercises, NOT "no IDOR possible." Keep tests covering every tenant-scoped read/write.
+
+## V2 — independent depletion oracle (centerpiece correctness proof)
+
+**Approach (founder-confirmed): Option 1 — independent reference calculator.** A reusable
+`tests/depletion_model/` module: an in-memory `World` (tenants/items/recipes/modifiers/conversions) +
+`seed_world` + an order-stream + an **oracle** that recomputes expected per-(tenant, item) net δ in pure
+Python/Decimal, **never importing `app.modules.inventory.depletion`**. Drives `process_line` directly
+(V2 isolates the engine; V5 will drive the full worker at 2,000 orders). Compares aggregated real
+`inventory_movements` net δ per item against the oracle.
+
+**Two layers (founder chose Option 3 — both):** (a) raw ledger δ — oracle mirrors the engine's formula
+(δ excludes `yield_factor_applied`), catches arithmetic/aggregation/eligibility/mode-sign bugs; (b)
+physical on-hand per spec — oracle applies `yield_factor` and compares the `on_hand()` projection,
+catching spec-conformance bugs the ledger layer hides (the most business-critical number — what the café
+reorders from). V5 reuses (b) at scale; build once now.
+
+**Independence guards (advisor-hardened):** oracle reads only the in-memory `World` (never the DB);
+V2 Worlds use trivial conversions (identity / one global factor) so the oracle never re-derives the
+3-tier precedence (owned by `test_sprint5_phase1_conversions`); oracle predicts net δ + coarse per-line
+outcome (contributes/net-zero), **not** engine reason-strings (those are engine labels, not spec truth);
+mirror divide-per-ingredient-then-sum Decimal order (exact equality, no tolerance); seed `yield≠1`,
+`factor≠1`, `multiplier≠1`, shared-item — the distinguishing conditions that coincide-and-mask at 1.
+
+**Covers:** flat recipes + modifiers, Mode A (`recipe_deducted`→neg `sale_depletion`) and Mode B
+(`count_anchored`→pos `sale_signal`), eligibility, refund-reversal-nets-to-zero. **Not** sub-recipes.
+
+**Status: DONE.** `tests/depletion_model/{world,oracle,seed,run}.py` + `tests/test_v2_depletion_oracle.py`
+(7 scenarios: Mode-A aggregation+conversion+yield, Mode-B yield_factor on-hand, base+modifier shared
+item, mixed eligibility, refund-after-deplete nets-to-zero, mixed modes, unmapped+missing-conversion).
+Full suite **612 green**, IDOR guard still green, ruff clean. `oracle.py` imports nothing from the
+depletion module (independence by construction). A model bug caught pre-run: the engine's Mode-A on_hand
+is Σ(non-signal deltas) and ignores `last_count_quantity` (Mode-B anchor only) — oracle corrected to match.
+
+**Mutation-proven (the oracle has teeth on BOTH layers; disposable git state, restored clean):**
+- **A — drop `/yield_q` in `walk_base`** → `test_mode_a_aggregation_conversion_yield` FAILS on the
+  *ledger* layer (exp flour −0.75/sugar −300; bug −1.5/−600, off by the ×2 yield). Layer (a) has teeth.
+- **B — drop `yield_factor` in `on_hand`** → `test_mode_b_signal_applies_yield_factor` PASSES the ledger
+  assert but FAILS the *on-hand* assert (exp 880 = 1000−150×0.8; bug 850 = 1000−150×1.0). Proves layer
+  (b) catches what layer (a) is blind to — a bug in the reorder-from number invisible to the raw ledger.
+
+- **C — drop the modifier `slim_qty` multiplier in `walk_modifiers`** → `test_base_plus_modifier_shared_item`
+  FAILS (exp milk −700, act −500). Extends teeth to the modifier path (multiplier × separate yield ×
+  shared-item key — the most complex independent logic).
+
+**Honest limits of the V2 instrument (so "mutation-proven" doesn't over-promise):**
+- **Eligibility is delegated, not independently verified.** `oracle._eligible` mirrors `resolve_eligibility`;
+  `test_mixed_eligibility_stream` proves *integration* (eligible lines flow, ineligible don't), not
+  eligibility correctness — if the engine wrongly treated CREDITED as eligible, both sides would agree.
+  Eligibility correctness is owned by the 17 phase-8 tests; V2 does not re-check it.
+- **Net-δ comparison is blind to net-preserving corruption.** `actual_ledger` sums per item; two −50s for
+  one −100, or a wrong movement_type with the same delta, won't show on the ledger layer (the on-hand
+  layer catches signal-vs-nonsignal type errors, not all). In-scope-as-designed (founder asked per-item net).
+- **Operation order is deliberately matched** (per-ingredient-then-sum) for exact Decimal equality, so an
+  operation-order bug is shared-blind. Correct trade for no-tolerance comparison; noted.
+
+**Reuse:** V5 generates a large random `World`, drives the full worker at scale, and compares against
+this same `oracle.expected_on_hand` (layer b) per ingredient — the V2 module is the V5 substrate.
+
+## Batch-yield productization gap (surfaced by V2, FOUNDER decision pending)
+
+**Finding:** the v5 spec (§578) states verbatim *"Recipe yield_quantity defaults to 1. Batch yields via
+DB edits."* The depletion formula divides by `yield_quantity` (walker), but BOTH write paths hardcode it
+to `1` — `confirm_recipe` (`repo.py:493`) and modifier confirm (`modifiers_repo.py:282`) — and there is
+**no operator-facing UI/API to set it**. So a batch recipe (e.g. a 20-portion soup base) can only get a
+correct yield via a manual DB edit; absent that, every sale depletes the batch's full ingredient list as
+if one serving were the whole batch → **N× over-depletion** for any batch-authored recipe.
+
+This is the SAME family as the [sub-recipes] gap: batch/prep modeling the v5 spec acknowledges but
+defers out of the product. Same discriminating question — **do any pilots author batch/multi-serving
+recipes?** If yes → a real scheduled gap (UI/API to set `yield_quantity`, + the sub-recipe story). If all
+pilots author strictly per-serving recipes → yield=1 is correct and this is closed. **Status: OPEN,
+pending founder pilot-mix confirmation** (resolve together with sub-recipes — one batch/prep decision).
+Note: V2's yield≠1 tests are not prod-unreachable — they exercise the spec-sanctioned DB-edit path, and
+that is exactly where Mutation A's division bug would bite in production.
+
+## Sub-recipes — scope discrepancy (verified, FOUNDER decision pending)
+
+**Finding (earned, not a grep miss):** old `SPRINTS.md` (§242/§250/§274) and the 2026-05-31 scope note
+("sub-recipes IN scope → `recipe_sub_recipes` + recursive walk + cycle guard + fixture") planned
+sub-recipes — but the authoritative **`sprint-5-unified-spec-v5-LOCKED.md` never mentions them**, the
+phase map never built them, and they exist **nowhere**: no `recipe_sub_recipes` table (migrations /
+`schema.sql` / live DB all empty), no recursion in `walker.walk_base`, `confirm_recipe` flattens a flat
+ingredient list (and hardcodes `yield_quantity=1`), `inventory_items` has no produced-by-recipe concept.
+Per the memory's own doc-precedence rule (v5 spec + phase map supersede SPRINTS.md), sub-recipes were
+**dropped when v5 was locked, never built** — implicitly (no explicit descope ADR).
+
+**Agent assessment (domain reasoning — NOT pilot-specific data, which isn't recorded anywhere):** batch
+preparations reused across menu items (house sauces/dressings, doughs, stocks, batters, marinades, prepped
+components) are the NORM in any kitchen that cooks; only pure-assembly operations (coffee + wholesale
+pastries, grab-and-go) lack them. Without sub-recipes a prep-based café must either duplicate raw
+quantities across every dish that uses the prep (operator maintains N copies; one change → N edits) OR
+model the prep as a purchased item whose raw sub-ingredients then **never deplete** — breaking reorder
+accuracy, the core product promise. **Likely needed for most real restaurants; safely dropped only if all
+10 pilots are confirmed pure-assembly.**
+
+**Decision rule (founder):** discriminating question — *do any of the 10 pilots make something in-house
+that goes into >1 menu item?* If yes for even a few → record sub-recipes as a real scheduled feature gap
+(not a bug). If all pure-assembly → confirm the drop was correct and close. **Status: OPEN, pending
+founder pilot-mix confirmation.** V2 does not block on it (the flat oracle is needed regardless).
 3. Proceed to V2 → V3 → V5 (prove-the-product-works chain).
 4. Make the **final A-vs-B call before V7 / Clover real-data cert**, informed by the probe + whatever
    V2/V3/V5 surface. If A's DB-enforced assurance looks worth it then, do it before real restaurant data;

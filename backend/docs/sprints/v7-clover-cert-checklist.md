@@ -171,7 +171,31 @@ All four must be green before step 5. Each is a positive check, not an assumptio
    FROM tenant_pos_connections WHERE tenant_id=:T AND vendor='clover';
    ```
    GREEN = one row, `state='active'`, `token_valid=t`. RED = no row / `state<>'active'` / token expired
-   → re-run `GET /api/v1/pos/clover/connect`.
+   → run the **connect-initiation flow** below (NOT a raw browser hit to `/connect`).
+
+   ### Connect-initiation flow (the exact way to start the OAuth handshake)
+   `GET /api/v1/pos/clover/connect` is owner-auth via **Bearer JWT** — a plain browser navigation
+   (address bar / link click) **cannot attach the Authorization header**, so it 401s and never
+   redirects to Clover → you "land on /callback with no code." The real flow:
+   1. Authenticated owner calls the JSON endpoint **with** the header:
+      ```
+      curl -sS https://<host>/api/v1/pos/clover/connect-url -H "Authorization: Bearer <owner-jwt>"
+      # → {"url":"https://sandbox.dev.clover.com/oauth/v2/authorize?client_id=…&redirect_uri=…&state=…"}
+      ```
+   2. **Open that returned `url` in a browser** → Clover consent screen → approve.
+   3. Clover redirects to `CLOVER_OAUTH_CALLBACK_URL?merchant_id=…&code=…&state=…`; `/callback`
+      exchanges the code and writes the connection (then re-check the SQL above → `active`).
+
+   **Authorize path is v2** (`/oauth/v2/authorize`) — fixed `c1b8720`; the legacy `/oauth/authorize`
+   returns to the callback without a v2-usable code. Two snag-checks if you still get no code:
+   - **`redirect_uri` must EXACTLY match** the redirect URL registered in the Clover sandbox app
+     dashboard (character-for-character) — a mismatch makes Clover skip issuing the code.
+   - **App-launch ≠ authorize:** opening the installed app *tile* from the Clover dashboard redirects
+     to the site URL with `merchant_id` but **no `code`** (that's a launch). Only going through the
+     `/oauth/v2/authorize` consent URL (step 2 above) yields a `code`.
+   - **If you DO get a code but token exchange fails:** the callback posts to
+     `apisandbox.dev.clover.com/oauth/v2/token`; the docs example uses `sandbox.dev.clover.com/oauth/v2/token`.
+     If it 404s, the token host needs switching to `clover_oauth_base_url` (flagged, not yet changed).
 
 3. **Test item mapped to a confirmed recipe that can actually deplete:**
    ```sql

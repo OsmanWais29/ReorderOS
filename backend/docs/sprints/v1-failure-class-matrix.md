@@ -424,6 +424,42 @@ settable `yield_quantity` (UI/API) is a real feature, built + gated behind the r
 Note: V2's yield≠1 tests are not prod-unreachable — they exercise the spec-sanctioned DB-edit path, and
 that is exactly where Mutation A's division bug would bite in production.
 
+## V3 — metamorphic relations (engine-vs-engine invariants)
+
+**Approach:** where V2 asks "is the number right?" (engine vs oracle), V3 asks "does the engine obey
+invariants regardless of the number?" Most relations compare two REAL engine runs (original vs
+transformed stream) with NO oracle — so a bug the oracle would share still shows. No-tolerance discipline
+kept: re-division relations (split/scale/batch) use evenly-divisible quantities + the engine's
+multiply-then-divide order so they are EXACT, not approximate.
+
+**Status: DONE.** `tests/depletion_model/transforms.py` + `tests/test_v3_metamorphic.py` — 11 relations:
+commutativity, eligibility-isolation, inert-isolation, tenant-isolation, replay-idempotency,
+refund-symmetry, additivity (split), homogeneity (scale), batch-ratio per-serving, batch-ratio invariant
+across yield, conversion-invariance. Full suite **623 green**; ruff clean.
+
+**Batch relation (founder-requested, the production-untested path):** selling N servings of a yield-N
+recipe depletes exactly one batch Q — `(N×Q)/N = Q` exactly (multiply-then-divide, no rounding),
+invariant across N. Keeps the batch-cooking case under test NOW, while adaptive-onboarding/batch-yield is
+being designed (same reasoning as V2's yield≠1 tests).
+
+**Mutation map (honest — all 11 relations categorized):**
+- **Non-vacuous (mutation-proven), 7:** drop `line_quantity` (M1) → additivity + homogeneity +
+  batch-invariance redden; drop `/yield_q` (M2) → ONLY the two batch relations redden (the engine-vs-engine
+  relations are *yield-blind* — both sides share the bug — which is exactly why the batch relation was
+  needed); remove resolver `is_voided` gate (M5) → eligibility-isolation reddens; break
+  `record_sale_reversal` negation `-orig→orig` (M6) → refund-symmetry reddens; make `convert` ignore its
+  factor (M7) → conversion-invariance reddens.
+- **Structural / not reddenable by a single-line mutation, 4 (stated, not silently omitted):**
+  *commutativity* (stateless-per-line + SUM commutes), *tenant-isolation* (unique-UUID keying — M4
+  confirmed: dropping the `recipe_ingredients` tenant filter still matches only the right row, 11 pass),
+  *replay-idempotency* (double-protected — terminal-status check AND the ON CONFLICT idempotency key, so
+  removing one alone won't move the ledger), *inert-isolation* (an unmapped line has no recipe rows to
+  fabricate movements from). Value = documented invariant + regression guard if the architecture later
+  adds ordering/caching or a non-unique-key query. NOT claimed as "mutation-proven."
+- **Also confirmed (honest non-finding):** break per-item aggregation `+= → =` (M3) → 11 pass — V3 worlds
+  are single-ingredient, so aggregation is V2's `test_mode_a_aggregation` territory (which DOES catch it),
+  not a V3 relation. One of the two originally-suggested mutations; reported rather than buried.
+
 ## Adaptive onboarding — CONFIRMED design direction (future sprint, do NOT build now)
 
 **Decision (founder, 2026-06-15):** onboarding asks the restaurant multiple-choice questions about how it

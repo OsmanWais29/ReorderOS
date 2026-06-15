@@ -264,3 +264,96 @@ One `invitations`/RLS-consistency migration, **after** establishing the intended
 2. **B** — reconcile policy targeting toward the verified-correct pattern.
 3. **C** — FORCE consistency on `orders`/`sale_line_items`.
 4. **RLS-1** — enable RLS on `oauth_states` + a permissive/service policy for the pre-context consume.
+
+## RLS probe (does the app work as `app_user`?) — measured, not guessed
+
+**Setup (temporary, gated, reverted — never committed):** gated the app engine in `app/core/database.py`
+on `PROBE_RLS_APP_USER=1` to connect with `server_settings={"role":"app_user"}`. Verified live:
+`current_user=app_user, is_superuser=off` → FORCE RLS actually enforced. Ran the full suite as-is,
+fixed nothing. Reverted; `git status` clean (only pre-existing `package-lock.json` noise).
+
+**Raw:** `141 failed / 358 passed / 1 skipped / 106 errors`. The count is inflated by the probe's own
+design (it routed *all* app-engine traffic — including test setup/teardown — through `app_user`). The
+shape is what decides:
+
+| Root cause | Mentions | Real app-runtime signal? |
+|---|---|---|
+| **Bootstrap `INSERT…RETURNING` blocked on `tenants`** (and dependents) | 485 | ✅ **YES — genuine app gap** |
+| `DELETE` denied on `ingredient_cost_snapshots` | 81 | ❌ test *teardown* only (app never DELETEs snapshots) |
+| `permission denied` on `alembic_version` | 192 | ❌ migration/fixture machinery (app never writes it) |
+
+**The one real finding — proven by execution (raw psql, not inference):**
+`tenant_insert` WITH CHECK (`rls_mode='register'`) passes, but the ORM emits `RETURNING id` to populate
+`tenant.id`, and Postgres applies the **`tenant_select` USING policy** (`id = app.tenant_id`, *empty* in
+register mode) to the returned row → cannot see the row it just created → rejects the statement as
+*"new row violates row-level security policy for table tenants."*
+- INSERT **without** RETURNING as `app_user`+`rls_mode='register'` → `INSERT 0 1` (succeeds).
+- INSERT **with** RETURNING → fails.
+- The app's own `/auth/register-tenant` route fails (`test_register_tenant_creates_owner`), **not just
+  fixtures** — every test needing a seeded tenant cascades off this single gap.
+
+**Decision-relevant truth:** not a swamp (bootstrap doesn't throw unrecoverably), but not "a GUC here and
+there" either. It is a structural fact: **the app has never once run under live RLS.** The probe only
+exercised the write paths the tests happen to cover. Option A ⇒ fix the bootstrap-`SELECT` policy gap,
+audit *every* tenant-scoped write path for the same RETURNING/grant/GUC interaction, switch
+`DATABASE_URL` to the non-bypass role, prove the suite green as `app_user`, and keep it green forever.
+
+**Decision (2026-06-14): Option 3 — sequenced, with cheap protection front-loaded.**
+1. Record (this section). ✅
+2. Add **Option B's lint guard NOW** — a test that fails any tenant-scoped query missing its `tenant_id`
+   filter. Closes the *revoke-IDOR class* (query-shipped-without-filter) against the one running layer
+   (app-layer filtering), cheaply, regardless of the eventual A/B call. ✅ **DONE** (`tests/idor_guard.py`
+   + autouse listener in `conftest.py`).
+
+### IDOR guard — build + audit result
+
+**Design (and two bugs caught building it):**
+- Runtime guard, **app engine only** (service engine is legitimately cross-tenant). A
+  `before_cursor_execute` listener flags any SELECT/UPDATE/DELETE on a tenant-scoped table with no
+  `tenant_id` *predicate*, unless ALLOWLISTed. The whole suite is the lint corpus.
+- **The read is the primary case** (advisor catch): revoke-IDOR was fixed on the *SELECT load*;
+  `session.delete(inv)` emits a by-PK DELETE that is byte-identical before/after the fix. A write-only
+  guard could not tell fixed from broken. The guard covers SELECT too — that's what discriminates.
+- Bug 1: substring `"tenant_id" in sql` matched the ORM's *selected column* `table.tenant_id`, not a
+  WHERE predicate → false-negatived everything. Fixed with a predicate regex (`tenant_id <op>/IS/IN`).
+- Bug 2: the per-test engine is disposed+recreated (`reset_sa_engine`), so a session-start listener was
+  stranded; and the async greenlet boundary hides the caller stack. Fixed: per-test attach + cross-
+  greenlet frame walk (`greenlet.parent.gr_frame`) to attribute app-issued vs test-issued queries.
+
+**Audit (2026-06-14): 51 flagged → 38 are test-assertion reads (not policed) → 13 app-code flags →
+ZERO real IDOR holes.** All 13 act on an id already tenant-authorized upstream:
+- recipes (3 UPDATEs): `recipe_id` from a tenant-scoped `menu_items`+`recipes` load (route keyed by
+  `menu_item_id`, 404-gated at entry).
+- modifiers (4 UPDATEs + `modifier_drafts` read): `_require_modifier` 404-gates `(id, tenant_id,
+  menu_item_id)` before every write.
+- inventory/receipts (2 read-backs): server-generated ids from tenant-scoped inserts.
+- invitations (3): accept-by-token bootstrap (pre-tenant), accept UPDATE by token-loaded id, revoke
+  DELETE by the tenant-scoped-loaded id (the `0d7973c` fix).
+Each is ALLOWLISTed with its rationale in `tests/idor_guard.py` — the entries ARE the audit record. They
+are defense-in-depth gaps, NOT hardened with their own `tenant_id` predicate (deferred; `session.delete`
+would need rewriting to a Core delete). Hardening them is an optional follow-up.
+
+**Allowlist-by-fingerprint caveat (advisor catch, then closed):** an allowlisted *write* is byte-
+identical whether or not its upstream entry-guard runs — so the guard cannot catch *entry-guard removal*
+on those 13 paths (their safety lives in a statement the fingerprint can't see; same shape as the
+original revoke bug). This is covered NOT by the IDOR guard but by dedicated cross-tenant 404 functional
+tests, verified to exist for every allowlisted write path: recipes →
+`test_cross_tenant_returns_404` (skip/PATCH) + `test_confirm_unconfirm_cross_tenant_404`; modifiers →
+`test_cross_tenant_and_cross_item_404` (the `_require_modifier` chokepoint); invitations → the revoke
+mutation proof itself. Each allowlist rationale cites its backing test. So: the guard catches NEW/
+unallowlisted unscoped queries (mutation-proven); entry-guard removal on the 13 is caught by those
+404 tests. The honest report is both clauses, not just the first.
+
+**Mutation-proven:** reverting the revoke fix (drop `tenant_id` from the SELECT load) on disposable git
+state → functional test fails `204 != 404` (IDOR reproduced) AND the guard fails (flags the now-unscoped
+`SELECT … invitations WHERE id = $1`). Restored clean. The guard catches the regression via the read —
+the exact statement a write-only guard would miss.
+
+**Coverage honesty:** runtime guard ⇒ only test-EXERCISED paths are visible. "Guard green" = no IDOR on
+any path the suite exercises, NOT "no IDOR possible." Keep tests covering every tenant-scoped read/write.
+3. Proceed to V2 → V3 → V5 (prove-the-product-works chain).
+4. Make the **final A-vs-B call before V7 / Clover real-data cert**, informed by the probe + whatever
+   V2/V3/V5 surface. If A's DB-enforced assurance looks worth it then, do it before real restaurant data;
+   if the lint guard proved sufficient, formalize Option B as the declared posture.
+   Not avoidance — sequencing: the lint guard protects the real risk now; the expensive call is made when
+   it has the most information and matters most (real data).

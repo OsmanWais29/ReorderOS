@@ -110,6 +110,80 @@ def assert_no_test_data_leak(validate_schema: None) -> Any:
     assert not deltas, f"test data leaked (did not self-clean): {deltas}"
 
 
+# ── Tenant-isolation lint guard (revoke-IDOR class backstop) ──────────────────
+# Attaches a SQL listener to the APP engine only and flags any SELECT/UPDATE/DELETE
+# on a tenant-scoped table that lacks a tenant_id predicate (and isn't ALLOWLISTed).
+# IDOR_GUARD_MEASURE=1 => collect+report, never fail (sizing the audit).
+# See tests/idor_guard.py for the why (the read is the primary case for this codebase).
+
+
+@pytest.fixture(scope="session", autouse=True)
+def idor_guard() -> Any:
+    """Session-scoped collector. The per-test `_idor_guard_attach` fixture binds a
+    listener to each test's app engine (the engine is disposed+recreated per test by
+    `reset_sa_engine`, so a one-time session listener would be stranded) and funnels
+    violations here. At session end: report + (unless IDOR_GUARD_MEASURE=1) fail."""
+    from tests import idor_guard as guard
+
+    state = guard.GuardState(measure_only=os.environ.get("IDOR_GUARD_MEASURE") == "1")
+    yield state
+
+    print(f"\n[idor_guard] statements inspected: {state.seen}")
+    if state.violations:
+        print("\n\n===== IDOR GUARD: tenant-scoped queries with no tenant_id filter =====")
+        print("(runtime guard — only test-EXERCISED paths are visible; green != IDOR-impossible)")
+        for v in state.violations.values():
+            print(f"\n  [{v.verb.upper()}] tables={','.join(v.tables)}")
+            print(f"  {v.sql}")
+        print("=" * 70)
+        try:
+            import json as _json
+
+            with open("/tmp/idor_violations.txt", "w") as fh:
+                for v in state.violations.values():
+                    fh.write(f"[{v.verb.upper()}] {','.join(v.tables)}\n{v.sql}\n\n")
+            with open("/tmp/idor_fingerprints.json", "w") as fh:
+                _json.dump(
+                    {v.fingerprint: f"{v.verb}:{','.join(v.tables)}" for v in state.violations.values()},
+                    fh,
+                    indent=2,
+                )
+        except OSError:
+            pass
+    if not state.measure_only:
+        assert not state.violations, (
+            f"{len(state.violations)} tenant-scoped query/queries lack a tenant_id filter "
+            "(potential cross-tenant IDOR). See output above / tests/idor_guard.py ALLOWLIST."
+        )
+
+
+@pytest.fixture(autouse=True)
+def _idor_guard_attach(idor_guard: Any) -> Any:
+    """Attach the IDOR listener to THIS test's app engine instance (fresh per test)."""
+    from sqlalchemy import event
+
+    from app.core.database import get_engine
+    from tests import idor_guard as guard
+
+    state = idor_guard
+
+    def _on_exec(conn: Any, cursor: Any, statement: str, *args: Any) -> None:
+        state.seen += 1
+        v = guard.inspect(statement)
+        if v is None:
+            return
+        if not guard.app_origin():  # police app-issued queries only, not test reads
+            return
+        state.violations.setdefault(v.fingerprint, v)
+
+    engine = get_engine()  # creates/returns this test's engine; app reuses the cached one
+    event.listen(engine.sync_engine, "before_cursor_execute", _on_exec)
+    try:
+        yield
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", _on_exec)
+
+
 _TENANT_TABLES_CACHE: list[str] | None = None
 
 

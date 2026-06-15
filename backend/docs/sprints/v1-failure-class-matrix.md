@@ -419,12 +419,29 @@ correct yield via a manual DB edit; absent that, every sale depletes the batch's
 if one serving were the whole batch → **N× over-depletion** for any batch-authored recipe.
 
 This is the SAME family as the [sub-recipes] gap: batch/prep modeling the v5 spec acknowledges but
-defers out of the product. Same discriminating question — **do any pilots author batch/multi-serving
-recipes?** If yes → a real scheduled gap (UI/API to set `yield_quantity`, + the sub-recipe story). If all
-pilots author strictly per-serving recipes → yield=1 is correct and this is closed. **Status: OPEN,
-pending founder pilot-mix confirmation** (resolve together with sub-recipes — one batch/prep decision).
+defers out of the product. **Status: SCHEDULED** (2026-06-15) — resolved by [adaptive-onboarding]:
+settable `yield_quantity` (UI/API) is a real feature, built + gated behind the restaurant profile.
 Note: V2's yield≠1 tests are not prod-unreachable — they exercise the spec-sanctioned DB-edit path, and
 that is exactly where Mutation A's division bug would bite in production.
+
+## Adaptive onboarding — CONFIRMED design direction (future sprint, do NOT build now)
+
+**Decision (founder, 2026-06-15):** onboarding asks the restaurant multiple-choice questions about how it
+operates (batch cooking? in-house preps used across dishes? full kitchen vs coffee-and-assembly?), stores
+the answers as a **restaurant profile** in the DB, and uses that profile to configure inventory
+complexity — turn ON batch-yield + sub-recipes for kitchens that cook, keep it simple for assembly-only
+shops.
+
+**This is ONE coherent feature**, not three. The questionnaire is the front door that turns on the
+[sub-recipes] + batch-yield features — you cannot configure sub-recipes before sub-recipes exist. All
+three ship together in the same future sprint, designed as one adaptive-onboarding system with
+architecture-before-building: (1) the **profile schema**, (2) the **question→feature mapping**, (3) the
+**conditional UI**. This also answers the pilot-mix question structurally — support BOTH kitchen and
+assembly via the profile rather than betting the cohort is one or the other.
+
+**Sequencing:** do NOT build now — same rule as the features themselves. Finish verifying the current
+engine (V3 → V5 → V7) first; new onboarding/engine work waits. Captured + scheduled; verification
+continues.
 
 ## Sub-recipes — scope discrepancy (verified, FOUNDER decision pending)
 
@@ -448,8 +465,9 @@ accuracy, the core product promise. **Likely needed for most real restaurants; s
 
 **Decision rule (founder):** discriminating question — *do any of the 10 pilots make something in-house
 that goes into >1 menu item?* If yes for even a few → record sub-recipes as a real scheduled feature gap
-(not a bug). If all pure-assembly → confirm the drop was correct and close. **Status: OPEN, pending
-founder pilot-mix confirmation.** V2 does not block on it (the flat oracle is needed regardless).
+(not a bug). If all pure-assembly → confirm the drop was correct and close.
+**Status: SCHEDULED** (2026-06-15) — resolved by [adaptive-onboarding]: sub-recipes are a real feature,
+built + gated behind the restaurant profile. Not dropped. V2 does not block on it (flat oracle suffices).
 3. Proceed to V2 → V3 → V5 (prove-the-product-works chain).
 4. Make the **final A-vs-B call before V7 / Clover real-data cert**, informed by the probe + whatever
    V2/V3/V5 surface. If A's DB-enforced assurance looks worth it then, do it before real restaurant data;

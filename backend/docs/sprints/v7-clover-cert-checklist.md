@@ -69,6 +69,88 @@ order and adjust the parser if wrong:
 - [ ] **`unitQty` semantics** — confirm it is the count (1 = one unit), and how fractional/weighted
   items are represented (our model treats qty as a plain multiplier).
 
+## D. THE single-sale end-to-end trace (the one thing still untested)
+
+Every automated test injects into `pos_event_inbox` (or sets `fetched_payload`), so the ARRIVAL
+half is unproven: real Clover delivery, our `X-Clover-Auth` verification, and the worker fetching +
+parsing the REAL order JSON. This is the walkthrough that proves it — ring up ONE sale, watch it
+flow, check the DB at every hop. `psql` shorthand (point at the DB your app/worker actually use):
+`PGPASSWORD=… psql -h <host> -p <port> -U <user> -d <db>` and `:T` = your tenant_id.
+
+### Prereqs (so the sale actually depletes — do these once)
+1. App configured for sandbox: `CLOVER_ENVIRONMENT=sandbox`, `CLOVER_APP_ID/_SECRET`,
+   `CLOVER_OAUTH_CALLBACK_URL` (public), `CLOVER_WEBHOOK_AUTH_CODE`, `TOKEN_ENCRYPTION_KEY`,
+   `DATABASE_URL`, `SERVICE_DATABASE_URL`. Webhook URL registered in the Clover dashboard =
+   `https://<your-host>/api/v1/webhooks/pos/clover` (it must echo the `verificationCode` ping — that
+   confirms reachability before anything else).
+2. **Connect:** as an owner, hit `GET /api/v1/pos/clover/connect` → install on the sandbox merchant.
+   Check: `SELECT merchant_id, state FROM tenant_pos_connections WHERE tenant_id=:T;` → one row,
+   `state='active'`. (Without this the worker can't fetch the order — step 3 would stall.)
+3. **Catalog + recipe:** `POST /api/v1/pos/clover/sync-menu`, then confirm a recipe for the item
+   you'll ring up. Check: `SELECT name, pos_item_id, recipe_version_id FROM menu_items WHERE
+   tenant_id=:T AND recipe_version_id IS NOT NULL;` → the item has a non-null `recipe_version_id`.
+   (If it doesn't, the sale will land as `unmapped/no_recipe` — correct behavior, but not the
+   depletion proof you want.)
+4. **Start the worker:** `python -m app.workers.inbox_worker` (leave it running; watch its logs).
+
+### Ring up ONE sale and trace it
+5. In the Clover **sandbox Register**, ring up that mapped item (qty 1), take payment with a test
+   card, and **close/lock the order** (depletion needs `state=locked` + `paymentState=PAID`).
+
+6. **Hop 1 — Clover has it:** the order shows in the Clover sandbox dashboard (Orders). (Not our DB.)
+
+7. **Hop 2 — webhook → inbox (arrival proven):**
+   ```sql
+   SELECT inbox_id, vendor_object_type, vendor_event_type, state,
+          signature_verified, (fetched_payload IS NULL) AS not_yet_fetched, received_at
+   FROM pos_event_inbox WHERE tenant_id=:T ORDER BY received_at DESC LIMIT 3;
+   ```
+   Expect a fresh row: `vendor_object_type='O'`, `signature_verified=true`, `state='pending'`,
+   `not_yet_fetched=true`. **No row ⇒ delivery or auth failed** — check the Clover webhook config and
+   that `X-Clover-Auth` matches `CLOVER_WEBHOOK_AUTH_CODE` (the handler 401s on mismatch); check the
+   merchant resolves (`SELECT lookup_tenant_by_merchant('clover','<merchant_id>');`).
+
+8. **Hop 3 — worker fetched + parsed the REAL order (the §C confirmation moment):**
+   ```sql
+   SELECT state, (fetched_payload IS NOT NULL) AS fetched, processing_error
+   FROM pos_event_inbox WHERE inbox_id='<from hop 2>';
+   -- then inspect the REAL Clover JSON we received:
+   SELECT jsonb_pretty(fetched_payload) FROM pos_event_inbox WHERE inbox_id='<…>';
+   ```
+   Expect `state='processed'`, `fetched=true`. **Read `fetched_payload`** — this is the real Clover
+   order shape; confirm §C against it: `lineItems.elements[].item.id`, `unitQty`, `paymentState`,
+   `refundTotal` present-or-not, `payments.elements[].result`, and (if you added a modifier)
+   `modifications.elements[].quantity` vs repeated elements. **Stuck `pending`/`processing` ⇒ worker
+   down or `get_order` failing** (check worker logs + connection `state='active'`).
+
+9. **Hop 4 — order + line parsed correctly:**
+   ```sql
+   SELECT id, clover_order_id, state, payment_state FROM orders
+   WHERE tenant_id=:T ORDER BY processed_at DESC LIMIT 1;            -- expect locked / PAID
+   SELECT clover_line_item_id, menu_item_id, recipe_version_id, quantity,
+          depletion_status, depletion_reason
+   FROM sale_line_items WHERE order_id='<order id>';
+   ```
+   Expect one line, `menu_item_id` + `recipe_version_id` non-null, `depletion_status='depleted'`.
+   `unmapped` ⇒ item not mapped (prereq 3); `failed` ⇒ read `depletion_reason`
+   (`missing_conversion` / `sale_ineligible` / etc.).
+
+10. **Hop 5 — the ledger moved (the payoff):**
+    ```sql
+    SELECT inventory_item_id, movement_type, delta, idempotency_key
+    FROM inventory_movements WHERE source_id='<sale_line_item id>' ORDER BY inventory_item_id;
+    ```
+    Expect `sale_depletion` rows (Mode A, negative δ) and/or `sale_signal` (Mode B, positive) — one
+    per ingredient — with δ = `qty × recipe_qty / yield` (hand-check against the recipe). Confirm the
+    derived stock: call `on_hand()` for an ingredient (or read `vw_depletion_coverage`).
+
+11. **Idempotency sanity:** in Clover, re-save the same order (fires another webhook). Re-run hop 10
+    — δ must be UNCHANGED (no doubling: inbox dedup + `uq_sli_clover`). Then refund the sale in Clover
+    and confirm reversal rows appear and net the ingredient to zero.
+
+If all five hops check out for one sale, the full ingestion path is proven end-to-end against real
+Clover — the half the 2,000-order sim could not reach.
+
 ## Cert gate
 
 V7 is "certified" when: (A) green in CI, (B) all live steps checked off on a real sandbox merchant,

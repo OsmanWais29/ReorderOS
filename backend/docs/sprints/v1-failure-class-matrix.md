@@ -39,7 +39,7 @@ findings attach where the code lives.
 | ID | Sprint / F | Property (invariant) | Verdict | Evidence (executed) | Disposition / Status |
 |----|-----------|----------------------|---------|---------------------|----------------------|
 | revoke-IDOR | S2 / F2.x | `revoke_invitation` must not delete cross-tenant | **LIVE IDOR (fixed)** | cross-tenant test fails without app-layer `tenant_id` filter under the superuser test role; mutation-proven | **SHIPPED** `0d7973c` (Part 1, app-layer filter) |
-| dev-RLS-bypass | S2 / F2.2 | the running app is subject to RLS | **PARTIAL** | `reorderos rolsuper=t`; no `SET ROLE` in `app/`; GUCs set but bypassed; RLS suite proves policies *as app_user* only | **accept-with-rationale** (app-layer `tenant_id` filtering is the proven isolation) **+** restore the RLS backstop in the A/B/C+RLS-1 migration (enable/force/policy consistency). Prod-role lookup confirms the grade (non-blocking). |
+| dev-RLS-bypass | S2 / F2.2 | the running app is subject to RLS | **PARTIAL → RESOLVED (Option B)** | `reorderos rolsuper=t`; no `SET ROLE` in `app/`; GUCs set but bypassed; RLS suite proves policies *as app_user* only | **FINAL: Option B** — app-layer filtering + IDOR guard are the sole declared control; RLS is documented not-relied-upon defense-in-depth (see FINAL RLS POSTURE). Not "subject to RLS" by design; the migration is not pursued. |
 | RLS-1 | S4 / `oauth_states` | every tenant table RLS-enabled (sweep) | **"(b) incompatible" REFUTED** | all-table RLS status (4 off); `ALTER … ENABLE` succeeds in a txn; consume is pre-tenant-context | **(a) enable RLS + permissive/service policy**; folds into the A/B/C migration (4th item). Enable-without-policy = the superuser-bypass trap. |
 | F2.6 | S2 / F2.x | register-tenant atomic (no orphan tenant) | **COVERED → PARTIAL** | dup-slug fails at the *first* write; no between-writes failure test existed | **FILLED `fd8948b`** (mutation-proven); V1 atomicity class complete |
 | F5.3 | S5 / F5.3 | depletion-specific dup ledger (`ON CONFLICT` arbiter) | label-corrected (was "F4.2-conflict") | concurrent `write_movement` test; mutation-proven; F4.2 = the *webhook-replay* dup (distinct path, already proven) | **FILLED `fd8948b`** |
@@ -255,15 +255,43 @@ the locking subquery (single evaluation, plan-independent). **Add to gate batch.
   The prod `DATABASE_URL` role + `is_superuser`/`bypasses_rls` + policy-target **confirm** the
   grade later; they do not gate the inventory.
 
-## A/B/C + RLS-1 migration (deferred, posture-first)
+## A/B/C + RLS-1 migration — NOT PURSUED (Option B chosen, 2026-06-15)
 
-One `invitations`/RLS-consistency migration, **after** establishing the intended RLS posture
-(likely all-forced, `{public}`-targeted) and verifying `service_worker` write paths don't break:
+Superseded by the FINAL RLS POSTURE decision below. Rows A/B/C/RLS-1 and dev-RLS-bypass are
+dispositioned **wont-fix-under-Option-B**: the consistency migration only mattered to make RLS a
+relied-upon backstop (Option A). Under Option B the DB-level RLS posture is not relied upon, so
+reconciling its policy/force/enable inconsistencies is unnecessary work. (Original plan kept for
+history: A=DELETE policy on invitations; B=reconcile policy targeting; C=FORCE on
+orders/sale_line_items; RLS-1=enable RLS on oauth_states + service policy.)
 
-1. **A** — add a DELETE policy on `invitations`.
-2. **B** — reconcile policy targeting toward the verified-correct pattern.
-3. **C** — FORCE consistency on `orders`/`sale_line_items`.
-4. **RLS-1** — enable RLS on `oauth_states` + a permissive/service policy for the pre-context consume.
+## FINAL RLS POSTURE — Option B (founder decision, 2026-06-15)
+
+**Decided: app-layer `tenant_id` filtering + the IDOR lint guard are the DECLARED, SOLE tenant-
+isolation control.** DB-level RLS policies remain in place as **documented, NOT-relied-upon**
+defense-in-depth (inert in prod — `doadmin` bypasses; the app sets GUCs but does not `SET ROLE`).
+The A/B/C+RLS-1 RLS-consistency migration is **not pursued**.
+
+**Why B (not A):** the specific risk that made a second layer urgent — a tenant-scoped query
+shipping without its `tenant_id` filter (the revoke-IDOR class) — is already covered by the
+mutation-proved IDOR guard (`tests/idor_guard.py`). Option A (switch the app to a non-bypass role)
+would require fixing the bootstrap `INSERT…RETURNING` policy gap + auditing every tenant-scoped
+write path under `app_user` + a prod role switch — multi-day work buying assurance we have largely
+secured cheaply. No current compliance or multi-developer driver requires DB-enforced isolation
+(10-pilot early SaaS, single founder-developer; Québec Law 25 is a privacy obligation that does not
+mandate RLS specifically as the mechanism).
+
+**Controls of record under Option B:**
+1. App-layer `tenant_id` predicate on every tenant-scoped read/write (the recipes-repo philosophy,
+   uniform across modules — verified by the V2/V3 audits + the repo header convention).
+2. The IDOR guard (CI test): fails any app-issued tenant-scoped SELECT/UPDATE/DELETE lacking a
+   `tenant_id` predicate that isn't allowlisted-with-rationale. Mutation-proven on the revoke bug.
+3. Per-route entry guards (404 on cross-tenant id) backing the load-then-write-by-PK paths.
+
+**Revisit trigger (when Option A becomes worth the audit):** SOC 2 / enterprise procurement / a
+Law-25 audit demanding DB-enforced isolation, OR onboarding a second backend developer (the IDOR
+guard only sees test-exercised paths, so a larger team raises the unguarded-new-path risk). At that
+point: fix the bootstrap-`SELECT` register policy, audit write paths under `app_user`, switch
+`DATABASE_URL` to the non-bypass role, run the suite green as `app_user` — the deferred Option A plan.
 
 ## RLS probe (does the app work as `app_user`?) — measured, not guessed
 
@@ -569,8 +597,6 @@ that goes into >1 menu item?* If yes for even a few → record sub-recipes as a 
 **Status: SCHEDULED** (2026-06-15) — resolved by [adaptive-onboarding]: sub-recipes are a real feature,
 built + gated behind the restaurant profile. Not dropped. V2 does not block on it (flat oracle suffices).
 3. Proceed to V2 → V3 → V5 (prove-the-product-works chain).
-4. Make the **final A-vs-B call before V7 / Clover real-data cert**, informed by the probe + whatever
-   V2/V3/V5 surface. If A's DB-enforced assurance looks worth it then, do it before real restaurant data;
-   if the lint guard proved sufficient, formalize Option B as the declared posture.
-   Not avoidance — sequencing: the lint guard protects the real risk now; the expensive call is made when
-   it has the most information and matters most (real data).
+4. **DECIDED (2026-06-15): Option B** — see "FINAL RLS POSTURE" below. The lint guard proved sufficient
+   for the urgent risk; app-layer filtering + IDOR guard formalized as the sole declared control; the
+   A/B/C+RLS-1 migration is not pursued; Option A documented as a revisit-on-trigger path.

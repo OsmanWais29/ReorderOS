@@ -479,12 +479,50 @@ mixed A+B counted together. Full suite **628 green**; ruff clean.
 **Mutation-proven:** re-anchor off-by-one (`qty+1`) reddens both Mode-B tests + mixed; never-emit
 count_adjust (threshold→huge) reddens the Mode-A drift test + mixed. Count path has teeth.
 
-**V5b — NEXT.** Drive the real worker with 3 concurrent terminals over a large generated
-World/timeline (real commits + TH-1 cleanup for cross-worker visibility), counts injected at
-barriers between order waves (so the oracle stays deterministic — a count's re-anchor must see a
-well-defined set of prior sales), compare per-ingredient ledger + on-hand to `expected_timeline`.
-This is the real-world load test of the F4 `MATERIALIZED` `claim_batch` fix (3 terminals in a rush
-= F4's conditions). Mutations target `claim_batch` + the snapshot/replay logic, NOT the walker.
+**V5b — DONE.** `tests/depletion_model/sim.py` + `tests/test_v5b_simulation.py`. Drives the REAL
+worker (`InboxWorker.claim_batch` → ingest → T2 deplete) with **3 concurrent terminals** over
+Clover-format events seeded into `pos_event_inbox` (`fetched_payload` set → skips the API), counts
+injected at **barriers** between order waves (inbox drained first, so each re-anchor sees a
+well-defined prior set and the oracle stays deterministic), real commits, autoclean wipes the fresh
+tenant. Compares final per-ingredient ledger + on-hand to `oracle.expected_timeline`.
+- Fast default (2 waves × 20, 3 terminals, a barrier count) runs in the suite — **629 green**.
+- **Headline: 2,000 orders / 3 terminals / a count after every wave → PASS in ~9.6s** (gated
+  `RUN_V5_SIM=1`). The restaurant-facing proof: ledger + on-hand exact vs the oracle under the
+  realistic busiest-day load. Mixed kitchen: Mode A + Mode B, base+modifier shared item, g→kg
+  conversion, a batch-yield (yield 10) recipe, ~9% voided + ~8% unpaid lines, an unmapped item.
+
+**Mutations (honest):**
+- **M-yield (walker drop `/yield_q`) reddens the 2,000→oracle pipeline** — the full worker→oracle
+  comparison is NON-VACUOUS (catches a depletion-math bug at scale, through real ingestion).
+- **M-mat (drop `MATERIALIZED` from `claim_batch`) stays GREEN under 3-terminal load — but the
+  correctness oracle structurally CANNOT probe F4, so green here proves nothing about F4.** F4 over-
+  claim returns >N *distinct* rows with **claim-once preserved** (see the F4-claim-bound row): each
+  over-claimed row is a distinct inbox event handed to exactly one worker and processed once — there
+  is no double-processing, so there is no net-δ divergence regardless of MATERIALIZED. (And at 250
+  pending rows the planner may not even pick the Nested-Loop-Semi-Join plan, so over-claim may not
+  have occurred at all — green is not evidence either way.) **F4 stays proven solely by the dedicated
+  EXPLAIN + 0/40 `claim_batch` test**, not by V5b. Corrected from an earlier draft that wrongly
+  attributed M-mat's green to idempotency neutralizing double-processing — over-claim preserves
+  claim-once, so there is nothing for idempotency to neutralize on this path.
+
+**Honest boundaries of the V5b proof (so "handles your busiest day" doesn't oversell):**
+- **Count-vs-sale race is excluded.** Counts run at BARRIERS (inbox drained, then count) to keep the
+  oracle deterministic. The one genuinely concurrency-sensitive case — a count landing *mid-wave
+  while sales commit around it* (counting the walk-in while orders fire) — is deliberately NOT in the
+  deterministic check; its outcome legitimately depends on which sales committed before the count's
+  row-lock.
+- **Concurrency is DB-real but single-event-loop.** 3 worker loops share 3 pool connections and
+  `FOR UPDATE SKIP LOCKED` is enforced server-side, so claim contention is real; but asyncio
+  interleaving explores a narrower race window than true multi-process parallelism. "3 terminals" =
+  3 concurrent claimers on one loop, not 3 OS processes.
+- **Idempotency-under-duplicate-delivery is proven separately** (`test_v5b_duplicate_delivery_idempotent`):
+  the same Clover order delivered via two webhooks (CREATE then UPDATE) does not double the ledger.
+  Two-layer dedup (surfaced while building this test): the inbox rejects EXACT re-delivery via
+  `pos_inbox_dedup_unique (tenant, vendor, vendor_event_id, vendor_event_type, vendor_ts)`, and the
+  same order arriving via different webhook types is deduped at depletion by `uq_sli_clover
+  (tenant, clover_line_item_id)` (`_insert_line_item` ON CONFLICT → None → no re-deplete). This is
+  the real positive load-bearing claim — distinct from M-mat / F4 over-claim. Doubling is
+  structurally precluded by the unique constraints (the test documents/guards it).
 
 ## Adaptive onboarding — CONFIRMED design direction (future sprint, do NOT build now)
 

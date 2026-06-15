@@ -34,6 +34,10 @@ class Seeded:
     menu_item_ids: dict[str, str] = field(default_factory=dict)  # menu_item key -> uuid
     recipe_version_ids: dict[str, str] = field(default_factory=dict)  # menu_item key -> rv
     modifier_ids: dict[str, tuple[str, str]] = field(default_factory=dict)  # key -> (mod, mv)
+    # POS catalog ids (the keys the worker maps Clover line items / modifications by). Set for
+    # every recipe/modifier so V5b can build Clover payloads referencing them.
+    pos_item_ids: dict[str, str] = field(default_factory=dict)  # menu_item key -> pos_item_id
+    pos_modifier_ids: dict[str, str] = field(default_factory=dict)  # mod key -> pos_modifier_id
 
 
 def _distinct_units(world: World) -> set[str]:
@@ -124,21 +128,31 @@ async def seed_world(session: Any, world: World) -> Seeded:
         s.menu_item_ids[r.menu_item] = seeded.menu_item_id
         if r.confirmed:
             s.recipe_version_ids[r.menu_item] = seeded.recipe_version_id
+        # POS catalog id the worker maps Clover li.item.id by (UNIQUE per tenant).
+        pos_item_id = f"pos-{r.menu_item}-{uuid.uuid4().hex[:6]}"
+        await session.execute(
+            text("UPDATE menu_items SET pos_item_id = :pid WHERE id = :mid AND tenant_id = :t"),
+            {"pid": pos_item_id, "mid": seeded.menu_item_id, "t": tid},
+        )
+        s.pos_item_ids[r.menu_item] = pos_item_id
 
     # modifiers → modifier_versions → modifier_ingredients (+ confirmed pointer)
     for m in world.modifiers:
         mi_id = s.menu_item_ids[m.menu_item]
+        pos_modifier_id = f"posm-{m.key}-{uuid.uuid4().hex[:6]}"
         mod_id = str(
             (
                 await session.execute(
                     text("""
-                        INSERT INTO modifiers (tenant_id, menu_item_id, name, modifier_type, status)
-                        VALUES (:t, :m, :n, 'additive', 'confirmed') RETURNING id
+                        INSERT INTO modifiers
+                            (tenant_id, menu_item_id, name, modifier_type, status, pos_modifier_id)
+                        VALUES (:t, :m, :n, 'additive', 'confirmed', :pm) RETURNING id
                     """),
-                    {"t": tid, "m": mi_id, "n": f"{m.key}-{uuid.uuid4().hex[:5]}"},
+                    {"t": tid, "m": mi_id, "n": f"{m.key}-{uuid.uuid4().hex[:5]}", "pm": pos_modifier_id},
                 )
             ).scalar_one()
         )
+        s.pos_modifier_ids[m.key] = pos_modifier_id
         mv_id = str(
             (
                 await session.execute(

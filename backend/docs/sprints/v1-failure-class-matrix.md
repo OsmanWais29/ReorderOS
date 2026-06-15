@@ -41,8 +41,8 @@ findings attach where the code lives.
 | revoke-IDOR | S2 / F2.x | `revoke_invitation` must not delete cross-tenant | **LIVE IDOR (fixed)** | cross-tenant test fails without app-layer `tenant_id` filter under the superuser test role; mutation-proven | **SHIPPED** `0d7973c` (Part 1, app-layer filter) |
 | dev-RLS-bypass | S2 / F2.2 | the running app is subject to RLS | **PARTIAL** | `reorderos rolsuper=t`; no `SET ROLE` in `app/`; GUCs set but bypassed; RLS suite proves policies *as app_user* only | **accept-with-rationale** (app-layer `tenant_id` filtering is the proven isolation) **+** restore the RLS backstop in the A/B/C+RLS-1 migration (enable/force/policy consistency). Prod-role lookup confirms the grade (non-blocking). |
 | RLS-1 | S4 / `oauth_states` | every tenant table RLS-enabled (sweep) | **"(b) incompatible" REFUTED** | all-table RLS status (4 off); `ALTER … ENABLE` succeeds in a txn; consume is pre-tenant-context | **(a) enable RLS + permissive/service policy**; folds into the A/B/C migration (4th item). Enable-without-policy = the superuser-bypass trap. |
-| F2.6 | S2 / F2.x | register-tenant atomic (no orphan tenant) | **COVERED → PARTIAL** | dup-slug fails at the *first* write; no between-writes failure test existed | **fill written + mutation-proven** (premature-commit → red; restore → green); awaits gate |
-| F5.3 | S5 / F5.3 | depletion-specific dup ledger (`ON CONFLICT` arbiter) | label-corrected (was "F4.2-conflict") | concurrent `write_movement` test; mutation-proven; F4.2 = the *webhook-replay* dup (distinct path, already proven) | fill written; awaits gate |
+| F2.6 | S2 / F2.x | register-tenant atomic (no orphan tenant) | **COVERED → PARTIAL** | dup-slug fails at the *first* write; no between-writes failure test existed | **FILLED `fd8948b`** (mutation-proven); V1 atomicity class complete |
+| F5.3 | S5 / F5.3 | depletion-specific dup ledger (`ON CONFLICT` arbiter) | label-corrected (was "F4.2-conflict") | concurrent `write_movement` test; mutation-proven; F4.2 = the *webhook-replay* dup (distinct path, already proven) | **FILLED `fd8948b`** |
 | A | S2 / `invitations` | invitations has a DELETE policy | **GAP** | `pg_policies`: 0 DELETE/ALL on `invitations`; `relforcerowsecurity=t` → non-super DELETE denied (silent no-op) | A/B/C migration |
 | B | S3/S4 | consistent RLS policy targeting | **INCONSISTENCY** | most tables `{public}`; `orders`/`sale_line_items` `{app_user, service_worker}` only | A/B/C migration — **posture-first** (verify intent; not uniform-for-its-own-sake) |
 | C | S3 | consistent FORCE RLS | **INCONSISTENCY** | `orders`/`sale_line_items` `relforcerowsecurity=f`; the other tenant tables `t` | A/B/C migration — **posture-first** |
@@ -124,8 +124,9 @@ NOT optional-because-low-severity. "Atomic by construction" is a *structural* cl
 the injected-failure test, because construction changes silently under refactor: `process_line`
 was "atomic by construction, only the test missing" until its test existed — and it was the one
 that mattered. Low *priority* (no live bug today; atomic by the caller-transaction) ≠ optional.
-`commit_receipt` and `record_count_event` are required fills. The class is fully characterized
-and inventoried; nothing else matches the signature unproven.
+`commit_receipt` and `record_count_event` are required fills. **STATUS: FILLED** — `register_tenant`
+(F2.6), `commit_receipt` (`f7773e6`), `record_count_event` (`fd8948b`) all carry injected-failure
+rollback tests, each mutation-proven; F5.3 arbiter covered. V1 atomicity class COMPLETE.
 
 ## TH-1 — test data accumulates in the test DB (test-hygiene)
 
@@ -232,9 +233,8 @@ re-seeds) or a DELETE preserving `tenant_id IS NULL` reference rows — raw `TRU
 ## Gate batch (fill together, one pass)
 
 revoke-IDOR (✅ shipped `0d7973c`) · **TH-1** test-data self-cleaning (✅ shipped `3da90ef`, the
-clean-infra foundation) + **FLAKY-1** (✅ `1dc70ea`) · atomicity class (F2.6 done; +
-`commit_receipt`, `record_count_event`, opening_balance/draft candidates) · **F5.3** depletion
-arbiter · **MIG-1** round-trip (✅ `ed34f8f`, rollback confirmed) · **F1.3** config fail-closed (✅ `ed34f8f`) · **A/B/C + RLS-1** RLS-consistency
+clean-infra foundation) + **FLAKY-1** (✅ `1dc70ea`) · atomicity class (✅ `f7773e6`+`fd8948b`: F2.6, commit_receipt, record_count_event — all
+injected-failure + mutation-proven) · **F5.3** depletion arbiter (✅ `fd8948b`) · **MIG-1** round-trip (✅ `ed34f8f`, rollback confirmed) · **F1.3** config fail-closed (✅ `ed34f8f`) · **A/B/C + RLS-1** RLS-consistency
 migration (posture-first). Prod-role lookup confirms F2.2 grade (non-blocking).
 
 **F4-claim-bound — FIXED `8c924f4` + VERIFIED (MEDIUM, production-relevant).**

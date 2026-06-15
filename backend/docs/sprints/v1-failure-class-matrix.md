@@ -552,6 +552,28 @@ tenant. Compares final per-ingredient ledger + on-hand to `oracle.expected_timel
   the real positive load-bearing claim — distinct from M-mat / F4 over-claim. Doubling is
   structurally precluded by the unique constraints (the test documents/guards it).
 
+## V7 — Clover sandbox certification (scaffolding-complete, live-cert-pending)
+
+Founder runs the live sandbox session (real credentials / test merchant); agent prepped everything
+around it. `docs/sprints/v7-clover-cert-checklist.md` = the runbook (A automated / B live steps / C
+parser-conformance unknowns to confirm against a captured payload).
+
+**Offline-automated (`tests/test_v7_clover_conformance.py`, 14 tests, in-suite):**
+- `_derive_payment_state` matrix — every signal (explicit `paymentState`, `refundTotal` vs `total`,
+  `payments.elements[].result` SUCCESS/AUTH/REFUNDED mixes, `payType`, default OPEN) + priority.
+- Modifier multiplier in BOTH Clover representations ("×2" as one modification `quantity:2` vs two
+  modifications defaulting to 1) → identical depletion (proven engine-vs-engine, two tenants).
+- Read-first: verified our parser surface against Clover dev docs; the genuinely ambiguous shapes
+  (`modifications[].quantity` vs repeated elements, `refundTotal` vs `expand=refunds`, `payments`
+  result values, `paymentState` spellings, `item.id` ref, `unitQty` semantics) are flagged in §C as
+  verify-in-sandbox rather than asserted — NOT claimed certain.
+
+**Pending (founder):** the live sandbox afternoon (OAuth install, catalog sync, real sale → ingest →
+deplete, refund, token refresh, uninstall) + capturing 3-5 real payloads to close §C. Until then V7
+is **scaffolding-complete, NOT live-certified** — do not tell a café "Clover-certified" yet.
+
+Full suite **644 green**.
+
 ## Adaptive onboarding — CONFIRMED design direction (future sprint, do NOT build now)
 
 **Decision (founder, 2026-06-15):** onboarding asks the restaurant multiple-choice questions about how it

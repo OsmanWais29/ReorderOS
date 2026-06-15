@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from tests.depletion_model.world import MODE_A, D, Line, Order, World
+from tests.depletion_model.world import MODE_A, Count, D, Line, Order, World
 
 
 class OracleMissingConversion(Exception):
@@ -153,3 +153,65 @@ def expected_on_hand(
                 # by yield_factor (the engine's Mode B: anchor − signals×yield_factor).
                 out[it.key] = D(it.opening_count) - s * D(it.yield_factor)
     return out
+
+
+def expected_timeline(
+    world: World, timeline: list[object], *, partial_refunds_enabled: bool = False
+) -> tuple[dict[str, Decimal], dict[str, Decimal | None]]:
+    """V5 oracle: process a timeline of Orders and Counts IN ORDER, modelling re-anchoring and
+    Mode-A count_adjust, and return (raw ledger net per item, on-hand per item).
+
+    Stateful because counts depend on history (the engine does too):
+      Mode A: on_hand = Σ(non-signal deltas). A count emits count_adjust = counted − predicted
+              (predicted = the running Σ at count time, the engine's watermark ledger_sum), so
+              after the count the running Σ == counted. The adjust IS a ledger movement.
+      Mode B: a count re-anchors last_count_quantity = counted and resets the post-count signal
+              window; on_hand = current_anchor − Σ(signal mag since the anchor) × yield_factor.
+              Counts emit NO Mode-B ledger movement (re-anchor is an inventory_items UPDATE).
+
+    Mirrors the engine's per-event order (the V5 runner processes the same list in the same
+    order), but computes from the v5 §11 spec — still imports nothing from the engine."""
+    ledger: dict[str, Decimal] = {}
+    # Mode A running Σ(non-signal deltas) == that item's on_hand.
+    run_a: dict[str, Decimal] = {it.key: Decimal("0") for it in world.items if it.mode == MODE_A}
+    # Mode B current anchor + signals accumulated since that anchor.
+    anchor_b: dict[str, Decimal | None] = {
+        it.key: (D(it.opening_count) if it.opening_count is not None else None)
+        for it in world.items if it.mode != MODE_A
+    }
+    signals_b: dict[str, Decimal] = {it.key: Decimal("0") for it in world.items if it.mode != MODE_A}
+
+    for event in timeline:
+        if isinstance(event, Order):
+            for line in event.lines:
+                if not _eligible(event, line, partial_refunds_enabled=partial_refunds_enabled):
+                    continue
+                deltas = _line_deltas(world, event, line)
+                if deltas is None or line.refund_after_deplete:
+                    continue
+                for item_key, d in deltas.items():
+                    ledger[item_key] = ledger.get(item_key, Decimal("0")) + d
+                    if world.item(item_key).mode == MODE_A:
+                        run_a[item_key] += d
+                    else:
+                        signals_b[item_key] += d  # positive signal magnitude
+        elif isinstance(event, Count):
+            it = world.item(event.item)
+            if it.mode == MODE_A:
+                predicted = run_a[event.item]
+                adjust = D(event.counted) - predicted
+                if abs(adjust) >= Decimal("0.0001"):  # engine's drift threshold
+                    ledger[event.item] = ledger.get(event.item, Decimal("0")) + adjust
+                    run_a[event.item] += adjust  # now == counted
+            else:
+                anchor_b[event.item] = D(event.counted)
+                signals_b[event.item] = Decimal("0")  # reset the post-count window
+
+    on_hand: dict[str, Decimal | None] = {}
+    for it in world.items:
+        if it.mode == MODE_A:
+            on_hand[it.key] = run_a[it.key]
+        else:
+            a = anchor_b[it.key]
+            on_hand[it.key] = None if a is None else a - signals_b[it.key] * D(it.yield_factor)
+    return {k: v for k, v in ledger.items() if v != 0}, on_hand

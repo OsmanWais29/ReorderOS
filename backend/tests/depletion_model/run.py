@@ -7,6 +7,7 @@ actual_* == oracle expected_*.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -14,9 +15,9 @@ from uuid import UUID
 from sqlalchemy import text
 
 from app.modules.inventory.depletion import handler
-from app.modules.inventory.services import on_hand
+from app.modules.inventory.services import on_hand, record_count_event
 from tests.depletion_model.seed import SALE_AT, Seeded, seed_orders
-from tests.depletion_model.world import Line, Order, World
+from tests.depletion_model.world import Count, Line, Order, World
 
 
 async def run_stream(
@@ -42,6 +43,41 @@ async def run_stream(
             await handler.reverse_line(session, tid, UUID(sli_id))
         results.append((sli_id, status, reason))
     return results
+
+
+async def run_timeline(
+    session: Any,
+    world: World,
+    timeline: list[object],
+    seeded: Seeded,
+    *,
+    partial_refunds_enabled: bool = False,
+) -> None:
+    """Drive a timeline of Orders and Counts IN ORDER, with monotonically increasing logical
+    timestamps (so the historical on_hand boundary recorded_at>last_count_at partitions
+    pre/post-count sales). Orders → seed+process lines; Counts → record_count_event (the real
+    operator count path, which re-anchors Mode B / emits Mode A count_adjust). Mirrors the order
+    expected_timeline assumes."""
+    tid = UUID(seeded.tenant_id)
+    for i, event in enumerate(timeline):
+        ts = SALE_AT + timedelta(minutes=i)
+        if isinstance(event, Order):
+            lines = await seed_orders(session, world, [event], seeded)
+            for sli_id, line in lines:
+                await handler.process_line(
+                    session, tid, UUID(sli_id),
+                    recorded_at=ts, partial_refunds_enabled=partial_refunds_enabled,
+                )
+                if line.refund_after_deplete:
+                    await handler.reverse_line(session, tid, UUID(sli_id))
+        elif isinstance(event, Count):
+            await record_count_event(
+                session,
+                tenant_id=tid,
+                inventory_item_id=UUID(seeded.item_ids[event.item]),
+                counted_quantity=Decimal(str(event.counted)),
+                counted_at=ts,
+            )
 
 
 async def actual_ledger(session: Any, seeded: Seeded) -> dict[str, Decimal]:

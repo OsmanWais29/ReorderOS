@@ -460,6 +460,32 @@ being designed (same reasoning as V2's yield≠1 tests).
   are single-ingredient, so aggregation is V2's `test_mode_a_aggregation` territory (which DOES catch it),
   not a V3 relation. One of the two originally-suggested mutations; reported rather than buried.
 
+## V5 — restaurant-day simulation (in progress)
+
+Founder decision: simulate a REALISTIC day (mid-stream counts injected, not a count-free day —
+that would simulate a restaurant that doesn't exist, and full kitchens that cook are exactly our
+target + the ones that count most). Sequenced: **V5a** harden+test the count/watermark math at
+small scale FIRST (isolate-the-variable), then **V5b** the 2,000-order concurrent run, so a
+break tells us oracle-vs-engine vs concurrency, not both at once.
+
+**V5a — DONE.** Extended the model with `Count` timeline events + `oracle.expected_timeline`
+(stateful: Mode A `count_adjust = counted − predicted` reconciles the ledger to physical; Mode B
+re-anchors `last_count_quantity` and resets the post-count signal window; on_hand =
+anchor − Σ(signals after the count)×yield_factor) + `run_timeline` (drives `record_count_event`
+with monotonic logical timestamps so the historical `recorded_at > last_count_at` boundary
+partitions pre/post-count sales). 5 small-scale tests (`tests/test_v5a_counts.py`): Mode-B
+re-anchor window, Mode-B yield-weighted window, Mode-A drift adjust, Mode-A no-drift-no-movement,
+mixed A+B counted together. Full suite **628 green**; ruff clean.
+**Mutation-proven:** re-anchor off-by-one (`qty+1`) reddens both Mode-B tests + mixed; never-emit
+count_adjust (threshold→huge) reddens the Mode-A drift test + mixed. Count path has teeth.
+
+**V5b — NEXT.** Drive the real worker with 3 concurrent terminals over a large generated
+World/timeline (real commits + TH-1 cleanup for cross-worker visibility), counts injected at
+barriers between order waves (so the oracle stays deterministic — a count's re-anchor must see a
+well-defined set of prior sales), compare per-ingredient ledger + on-hand to `expected_timeline`.
+This is the real-world load test of the F4 `MATERIALIZED` `claim_batch` fix (3 terminals in a rush
+= F4's conditions). Mutations target `claim_batch` + the snapshot/replay logic, NOT the walker.
+
 ## Adaptive onboarding — CONFIRMED design direction (future sprint, do NOT build now)
 
 **Decision (founder, 2026-06-15):** onboarding asks the restaurant multiple-choice questions about how it

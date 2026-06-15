@@ -111,3 +111,17 @@ class Order:
     lines: list[Line]
     payment_state: str = "PAID"  # order-level (orders.payment_state)
     order_state: str = "locked"  # order-level (orders.state)
+
+
+@dataclass
+class Count:
+    """A physical inventory count event in a timeline (operator action, not POS). Mode B →
+    re-anchors last_count_quantity to `counted` (no ledger movement); Mode A → emits a
+    count_adjust movement of (counted − predicted) so the ledger reconciles to physical."""
+
+    item: str  # Item.key
+    counted: Decimal
+
+
+# A timeline interleaves sale Orders and Counts in real-restaurant-day order.
+TimelineEvent = Order | Count

@@ -1,0 +1,145 @@
+# DigitalOcean App Platform spec for the ReorderOS STAGING app.
+#
+# This creates the whole app (api web service + inbox-worker + bound DB) in one command, so you
+# don't click through it. Secrets are declared here as `type: SECRET` WITHOUT values — you set their
+# values in the DO console after create (Step 3), which is the safe place for secrets (never commit
+# secret values to git). The first deploy will FAIL until those 5 secrets are set — that is expected.
+#
+# Prereqs:
+#   1. Create the managed Postgres cluster `reorderos-staging-pg` (PG 17, tor1) in the console FIRST.
+#   2. Install + auth doctl:  brew install doctl   then   doctl auth init   (paste a DO API token).
+#
+# Create:   doctl apps create --spec .do/staging.app.yaml
+# Get URL:  doctl apps list   (note the staging app's live URL)
+# Update:   doctl apps update <STAGING_APP_ID> --spec .do/staging.app.yaml   (after editing this file)
+
+name: reorderos-staging
+region: tor1
+
+services:
+  - name: api
+    github:
+      repo: OsmanWais29/ReorderOS
+      branch: sprint-5-recipe-depletion      # staging tracks the verification branch, NOT main
+      deploy_on_push: true
+    source_dir: backend
+    dockerfile_path: backend/Dockerfile
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    health_check:
+      http_path: /health/ready
+      initial_delay_seconds: 20
+      period_seconds: 15
+      timeout_seconds: 5
+      success_threshold: 1
+      failure_threshold: 3
+    routes:
+      - path: /
+    envs:
+      - key: APP_ENV
+        scope: RUN_AND_BUILD_TIME
+        value: production            # deliberate: faithful F1.3 + DB-SSL is_production path
+      - key: APP_LOG_LEVEL
+        scope: RUN_AND_BUILD_TIME
+        value: INFO
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: ${reorderos-staging-pg.DATABASE_URL}
+      - key: WORKOS_CLIENT_ID
+        scope: RUN_TIME
+        value: client_01KQT0CRCZP8W8AMAYE5Y1F9SP
+      - key: WORKOS_JWKS_URL
+        scope: RUN_TIME
+        value: https://api.workos.com/sso/jwks/client_01KQT0CRCZP8W8AMAYE5Y1F9SP
+      - key: WORKOS_ISSUER
+        scope: RUN_TIME
+        value: https://api.workos.com/user_management/client_01KQT0CRCZP8W8AMAYE5Y1F9SP
+      - key: WORKOS_VERIFY_AUDIENCE
+        scope: RUN_TIME
+        value: "false"
+      - key: WORKOS_SECRET_KEY
+        scope: RUN_TIME
+        type: SECRET                 # set value in console (Step 3)
+      - key: CLOVER_APP_ID
+        scope: RUN_TIME
+        value: "DJFFAT14DS7QM"
+      - key: CLOVER_APP_SECRET
+        scope: RUN_TIME
+        type: SECRET                 # set value in console (Step 3 — from Clover dashboard)
+      - key: CLOVER_ENVIRONMENT
+        scope: RUN_TIME
+        value: sandbox
+      - key: CLOVER_API_BASE_URL
+        scope: RUN_TIME
+        value: https://apisandbox.dev.clover.com
+      - key: CLOVER_OAUTH_BASE_URL
+        scope: RUN_TIME
+        value: https://sandbox.dev.clover.com
+      - key: CLOVER_OAUTH_CALLBACK_URL
+        scope: RUN_TIME
+        # PLACEHOLDER — after create, set this to the real staging URL + redeploy (Step 5):
+        #   https://<staging-url>/api/v1/pos/clover/callback
+        value: https://REPLACE-WITH-STAGING-URL/api/v1/pos/clover/callback
+      - key: CLOVER_WEBHOOK_AUTH_CODE
+        scope: RUN_TIME
+        type: SECRET                 # set value in console (Step 3 — a string you choose)
+      - key: CLOVER_POST_CONNECT_REDIRECT
+        scope: RUN_TIME
+        value: http://localhost:8081/onboarding/found-summary
+      - key: CORS_ORIGINS
+        scope: RUN_TIME
+        value: '["http://localhost:8081"]'
+      - key: TOKEN_ENCRYPTION_KEY
+        scope: RUN_TIME
+        type: SECRET                 # set value in console (Step 3 — Fernet key)
+      - key: SERVICE_DATABASE_URL
+        scope: RUN_TIME
+        type: SECRET                 # set value in console (Step 3 — doadmin URL first, then service_worker)
+
+workers:
+  - name: inbox-worker
+    github:
+      repo: OsmanWais29/ReorderOS
+      branch: sprint-5-recipe-depletion
+      deploy_on_push: true
+    source_dir: backend
+    dockerfile_path: backend/Dockerfile
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    run_command: python -m app.workers.inbox_worker
+    envs:
+      - key: APP_ENV
+        scope: RUN_AND_BUILD_TIME
+        value: production
+      - key: APP_LOG_LEVEL
+        scope: RUN_AND_BUILD_TIME
+        value: INFO
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: ${reorderos-staging-pg.DATABASE_URL}
+      - key: SERVICE_DATABASE_URL
+        scope: RUN_TIME
+        type: SECRET
+      - key: CLOVER_APP_ID
+        scope: RUN_TIME
+        value: "DJFFAT14DS7QM"
+      - key: CLOVER_APP_SECRET
+        scope: RUN_TIME
+        type: SECRET
+      - key: CLOVER_ENVIRONMENT
+        scope: RUN_TIME
+        value: sandbox
+      - key: CLOVER_API_BASE_URL
+        scope: RUN_TIME
+        value: https://apisandbox.dev.clover.com
+      - key: TOKEN_ENCRYPTION_KEY
+        scope: RUN_TIME
+        type: SECRET
+
+databases:
+  - name: reorderos-staging-pg
+    engine: PG
+    version: "17"
+    production: false               # non-production
+    cluster_name: reorderos-staging-pg

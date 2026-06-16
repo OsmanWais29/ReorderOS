@@ -1,26 +1,55 @@
 # DigitalOcean App Platform spec for the ReorderOS STAGING app.
 #
-# This creates the whole app (api web service + inbox-worker + bound DB) in one command, so you
-# don't click through it. Secrets are declared here as `type: SECRET` WITHOUT values — you set their
-# values in the DO console after create (Step 3), which is the safe place for secrets (never commit
-# secret values to git). The first deploy will FAIL until those 5 secrets are set — that is expected.
+# Clean env layout (no duplicates): shared vars + the 3 shared secrets are APP-LEVEL (inherited by
+# every component); api-only vars live on the api service; the worker inherits everything and only
+# carries its run_command. Secrets are declared `type: SECRET` WITHOUT values — set the 5 values once
+# in the DO console after applying (never commit secret values).
 #
-# Prereqs:
-#   1. Create the managed Postgres cluster `reorderos-staging-pg` (PG 17, tor1) in the console FIRST.
-#   2. Install + auth doctl:  brew install doctl   then   doctl auth init   (paste a DO API token).
+# Apply the clean layout to the existing app:
+#   doctl apps update 70e351c1-3c5f-4699-b85b-05a2346e7f84 --spec .do/staging.app.yaml
+# Then set the 5 secret values in the console (3 app-level, 2 on api), Encrypt each.
 #
-# Create:   doctl apps create --spec .do/staging.app.yaml
-# Get URL:  doctl apps list   (note the staging app's live URL)
-# Update:   doctl apps update <STAGING_APP_ID> --spec .do/staging.app.yaml   (after editing this file)
+# First create (fresh): doctl apps create --spec .do/staging.app.yaml --project-id <ReOrderOS-id>
 
 name: reorderos-staging
 region: tor1
+
+# ── APP-LEVEL: inherited by api AND inbox-worker (set shared secrets ONCE here) ──
+envs:
+  - key: APP_ENV
+    scope: RUN_AND_BUILD_TIME
+    value: production
+  - key: APP_LOG_LEVEL
+    scope: RUN_AND_BUILD_TIME
+    value: INFO
+  - key: DATABASE_URL
+    scope: RUN_TIME
+    value: ${reorderos-staging-pg.DATABASE_URL}
+  - key: CLOVER_APP_ID
+    scope: RUN_TIME
+    value: "DJFFAT14DS7QM"
+  - key: CLOVER_ENVIRONMENT
+    scope: RUN_TIME
+    value: sandbox
+  - key: CLOVER_API_BASE_URL
+    scope: RUN_TIME
+    value: https://apisandbox.dev.clover.com
+  # ── shared secrets (set value once in console, app-level, Encrypt) ──
+  - key: TOKEN_ENCRYPTION_KEY
+    scope: RUN_TIME
+    type: SECRET
+  - key: SERVICE_DATABASE_URL
+    scope: RUN_TIME
+    type: SECRET
+  - key: CLOVER_APP_SECRET
+    scope: RUN_TIME
+    type: SECRET
 
 services:
   - name: api
     github:
       repo: OsmanWais29/ReorderOS
-      branch: sprint-5-recipe-depletion      # staging tracks the verification branch, NOT main
+      branch: sprint-5-recipe-depletion
       deploy_on_push: true
     source_dir: backend
     dockerfile_path: backend/Dockerfile
@@ -37,15 +66,7 @@ services:
     routes:
       - path: /
     envs:
-      - key: APP_ENV
-        scope: RUN_AND_BUILD_TIME
-        value: production            # deliberate: faithful F1.3 + DB-SSL is_production path
-      - key: APP_LOG_LEVEL
-        scope: RUN_AND_BUILD_TIME
-        value: INFO
-      - key: DATABASE_URL
-        scope: RUN_TIME
-        value: ${reorderos-staging-pg.DATABASE_URL}
+      # api-only (auth + OAuth/webhook + CORS). Shared vars/secrets come from app-level above.
       - key: WORKOS_CLIENT_ID
         scope: RUN_TIME
         value: client_01KQT0CRCZP8W8AMAYE5Y1F9SP
@@ -60,42 +81,23 @@ services:
         value: "false"
       - key: WORKOS_SECRET_KEY
         scope: RUN_TIME
-        type: SECRET                 # set value in console (Step 3)
-      - key: CLOVER_APP_ID
-        scope: RUN_TIME
-        value: "DJFFAT14DS7QM"
-      - key: CLOVER_APP_SECRET
-        scope: RUN_TIME
-        type: SECRET                 # set value in console (Step 3 — from Clover dashboard)
-      - key: CLOVER_ENVIRONMENT
-        scope: RUN_TIME
-        value: sandbox
-      - key: CLOVER_API_BASE_URL
-        scope: RUN_TIME
-        value: https://apisandbox.dev.clover.com
+        type: SECRET                 # set value in console (api), Encrypt
       - key: CLOVER_OAUTH_BASE_URL
         scope: RUN_TIME
         value: https://sandbox.dev.clover.com
       - key: CLOVER_OAUTH_CALLBACK_URL
         scope: RUN_TIME
-        # PLACEHOLDER — after create, set this to the real staging URL + redeploy (Step 5):
-        #   https://<staging-url>/api/v1/pos/clover/callback
+        # PLACEHOLDER — set to https://<staging-url>/api/v1/pos/clover/callback after first clean deploy
         value: https://REPLACE-WITH-STAGING-URL/api/v1/pos/clover/callback
-      - key: CLOVER_WEBHOOK_AUTH_CODE
-        scope: RUN_TIME
-        type: SECRET                 # set value in console (Step 3 — a string you choose)
       - key: CLOVER_POST_CONNECT_REDIRECT
         scope: RUN_TIME
         value: http://localhost:8081/onboarding/found-summary
       - key: CORS_ORIGINS
         scope: RUN_TIME
         value: '["http://localhost:8081"]'
-      - key: TOKEN_ENCRYPTION_KEY
+      - key: CLOVER_WEBHOOK_AUTH_CODE
         scope: RUN_TIME
-        type: SECRET                 # set value in console (Step 3 — Fernet key)
-      - key: SERVICE_DATABASE_URL
-        scope: RUN_TIME
-        type: SECRET                 # set value in console (Step 3 — doadmin URL first, then service_worker)
+        type: SECRET                 # set value in console (api), Encrypt
 
 workers:
   - name: inbox-worker
@@ -108,38 +110,11 @@ workers:
     instance_count: 1
     instance_size_slug: basic-xxs
     run_command: python -m app.workers.inbox_worker
-    envs:
-      - key: APP_ENV
-        scope: RUN_AND_BUILD_TIME
-        value: production
-      - key: APP_LOG_LEVEL
-        scope: RUN_AND_BUILD_TIME
-        value: INFO
-      - key: DATABASE_URL
-        scope: RUN_TIME
-        value: ${reorderos-staging-pg.DATABASE_URL}
-      - key: SERVICE_DATABASE_URL
-        scope: RUN_TIME
-        type: SECRET
-      - key: CLOVER_APP_ID
-        scope: RUN_TIME
-        value: "DJFFAT14DS7QM"
-      - key: CLOVER_APP_SECRET
-        scope: RUN_TIME
-        type: SECRET
-      - key: CLOVER_ENVIRONMENT
-        scope: RUN_TIME
-        value: sandbox
-      - key: CLOVER_API_BASE_URL
-        scope: RUN_TIME
-        value: https://apisandbox.dev.clover.com
-      - key: TOKEN_ENCRYPTION_KEY
-        scope: RUN_TIME
-        type: SECRET
+    # No envs here — inherits all shared vars + secrets from app-level above.
 
 databases:
   - name: reorderos-staging-pg
     engine: PG
     version: "17"
-    production: false               # non-production
+    production: false
     cluster_name: reorderos-staging-pg

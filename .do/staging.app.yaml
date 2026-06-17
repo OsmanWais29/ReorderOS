@@ -29,8 +29,9 @@ envs:
   - { key: DATABASE_URL, scope: RUN_TIME, type: SECRET }
   - { key: SERVICE_DATABASE_URL, scope: RUN_TIME, type: SECRET }
   - { key: TOKEN_ENCRYPTION_KEY, scope: RUN_TIME, type: SECRET }
-  - { key: CLOVER_APP_SECRET, scope: RUN_TIME, type: SECRET }
-  - { key: CLOVER_WEBHOOK_AUTH_CODE, scope: RUN_TIME, type: SECRET }
+  # CLOVER_APP_SECRET + CLOVER_WEBHOOK_AUTH_CODE are NOT app-level: their app-level entries went
+  # into a dangling state (showed SET but didn't inject). Declared per-component below instead
+  # (component-level is the proven-to-inject path — the api booted with component secrets).
 
 services:
   - name: api
@@ -58,6 +59,8 @@ services:
       - { key: CLOVER_POST_CONNECT_REDIRECT, scope: RUN_TIME, value: http://localhost:8081/onboarding/found-summary }
       - { key: CORS_ORIGINS, scope: RUN_TIME, value: '["http://localhost:8081"]' }
       - { key: WORKOS_SECRET_KEY, scope: RUN_TIME, type: SECRET }
+      - { key: CLOVER_APP_SECRET, scope: RUN_TIME, type: SECRET }
+      - { key: CLOVER_WEBHOOK_AUTH_CODE, scope: RUN_TIME, type: SECRET }
 
 workers:
   - name: inbox-worker
@@ -70,6 +73,10 @@ workers:
     instance_count: 1
     instance_size_slug: basic-xxs
     run_command: python -m app.workers.inbox_worker
+    envs:
+      # Per-component (not app-level — see note above). Worker needs both for F1.3.
+      - { key: CLOVER_APP_SECRET, scope: RUN_TIME, type: SECRET }
+      - { key: CLOVER_WEBHOOK_AUTH_CODE, scope: RUN_TIME, type: SECRET }
 
 databases:
   - name: reorderos-staging-pg

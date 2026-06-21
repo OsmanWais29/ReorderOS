@@ -1,8 +1,9 @@
 """Create ONE sellable Clover item from INSIDE the running staging container.
 
-Run in the DigitalOcean App Platform Console (api or inbox-worker component):
-    python -m tools.clover_create_item_incontainer
-    # fallback if 'app' import fails: PYTHONPATH=. python tools/clover_create_item_incontainer.py
+Run in the DigitalOcean App Platform Console (api or inbox-worker component),
+from WORKDIR /srv:
+    python -m scripts.clover_create_item_incontainer
+    # fallback if 'app' import fails: PYTHONPATH=. python scripts/clover_create_item_incontainer.py
 
 No heredoc, no quoting, no secret handling. It reuses the app's own
 TokenEncryption (which reads TOKEN_ENCRYPTION_KEY already present in the

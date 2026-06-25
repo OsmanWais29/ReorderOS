@@ -182,6 +182,7 @@ async def test_patch_twice_updates_single_draft(app_instance, conn, client) -> N
         {"name": "X", "quantity": 1, "unit": "oz"},  # non-canonical unit
         {"name": "X", "quantity": 0, "unit": "g"},  # qty not > 0
         {"name": "  ", "quantity": 1, "unit": "g"},  # empty name
+        {"name": "X", "quantity": 1e12, "unit": "g"},  # exceeds sanity ceiling
     ],
 )
 async def test_patch_validation_400(app_instance, conn, client, ingredient) -> None:
@@ -189,6 +190,23 @@ async def test_patch_validation_400(app_instance, conn, client, ingredient) -> N
     mid = await _menu_item(conn, tid)
     _as(app_instance, tid, uid, "manager")
     resp = await client.patch(f"{R}/recipes/{mid}", json={"ingredients": [ingredient]})
+    assert resp.status_code == 400
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity"])
+async def test_patch_rejects_nonfinite_quantity(app_instance, conn, client, token) -> None:
+    """Non-finite quantities slip past the `<= 0` guard (every NaN compare is False,
+    inf <= 0 is False). A conformant JSON client can't emit them, but Python's
+    json.loads (what Starlette uses) accepts the bare NaN/Infinity tokens in a raw
+    body — so post raw content to exercise the real attack path. Must 400, not 500."""
+    tid, uid = await _seed_tenant_user(conn)
+    mid = await _menu_item(conn, tid)
+    _as(app_instance, tid, uid, "manager")
+    body = f'{{"ingredients": [{{"name": "X", "quantity": {token}, "unit": "g"}}]}}'
+    resp = await client.patch(
+        f"{R}/recipes/{mid}", content=body, headers={"content-type": "application/json"}
+    )
     assert resp.status_code == 400
 
 

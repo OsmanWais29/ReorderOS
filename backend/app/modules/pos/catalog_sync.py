@@ -117,7 +117,13 @@ class CatalogSyncService:
     async def _fetch_all(
         self, fetch_page: Callable[..., Awaitable[list[dict[str, Any]]]]
     ) -> list[dict[str, Any]]:
-        """Page through a Clover collection to completion (raises on API error)."""
+        """Page through a Clover collection to completion (raises on API error).
+
+        Hitting MAX_PAGES means the pull is INCOMPLETE, not finished. Returning a
+        truncated list here would let _apply soft-delete every item past the cap
+        (the exact "partial pull drives soft-deletes" failure tweak 1 forbids), so
+        we raise instead — sync_connection's loud-abort path then makes no writes.
+        """
         out: list[dict[str, Any]] = []
         offset = 0
         for _ in range(self.MAX_PAGES):
@@ -126,8 +132,10 @@ class CatalogSyncService:
             if len(page) < self.BATCH_SIZE:
                 return out
             offset += self.BATCH_SIZE
-        log.warning("catalog_sync.max_pages_reached", pages=self.MAX_PAGES)
-        return out
+        raise RuntimeError(
+            f"catalog pull exceeded MAX_PAGES={self.MAX_PAGES} "
+            f"({len(out)}+ rows); treating as incomplete to avoid mass soft-delete"
+        )
 
     async def _get_connection(self, connection_id: str) -> Any:
         sm = get_service_sessionmaker()

@@ -18,6 +18,7 @@ operator ("needs input"), never silently dropped — a dropped ingredient is inv
 from __future__ import annotations
 
 import json
+import math
 import time
 from typing import Any
 from uuid import UUID
@@ -54,6 +55,8 @@ def _validate_ingredients(raw: Any) -> tuple[list[dict[str, Any]], list[str]]:
         try:
             quantity = float(item.get("quantity"))
         except (TypeError, ValueError):
+            quantity = 0.0
+        if not math.isfinite(quantity):  # float('nan')/('inf') parse fine but are garbage
             quantity = 0.0
         issue: str | None = None
         if not name:

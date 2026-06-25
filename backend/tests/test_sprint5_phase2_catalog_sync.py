@@ -180,6 +180,23 @@ async def test_partial_pull_does_not_soft_delete(admin_conn) -> None:
     assert all(r["active"] for r in rows)  # nothing deactivated by the failed pull
 
 
+async def test_fetch_all_raises_on_max_pages() -> None:
+    """Hitting MAX_PAGES is an INCOMPLETE pull, not a finished one. _fetch_all must
+    raise (not return a truncated list) so sync_connection's loud-abort path makes
+    no writes — otherwise every item past the cap would be soft-deleted."""
+    svc = CatalogSyncService()
+    calls = 0
+
+    async def always_full(offset: int, limit: int) -> list[dict]:
+        nonlocal calls
+        calls += 1
+        return [{"id": f"X{offset + i}"} for i in range(limit)]  # always a full page
+
+    with pytest.raises(RuntimeError, match="MAX_PAGES"):
+        await svc._fetch_all(always_full)
+    assert calls == svc.MAX_PAGES  # stopped at the cap, did not loop forever
+
+
 @pytest.mark.integration
 @respx.mock
 async def test_resync_dedups_modifiers(admin_conn) -> None:

@@ -117,9 +117,12 @@ async def main() -> None:
             "lock event processed": any(r["state"] == "processed" for r in inbox),
             "order state=locked": ostate == "locked",
             "payment_state=PAID": pstate == "PAID",
-            "10 lines all depleted": len(lines) == 10
+            # line cardinality != movement cardinality: 1 burger line fans out to 10
+            # ingredient movements. Assert every LINE is depleted, separately from the
+            # 10 ingredient MOVEMENTS below.
+            "all line items depleted": bool(lines)
             and all(r["dstatus"] == "depleted" for r in lines),
-            "exactly 10 sale_depletion": len(sale_depl) == 10,
+            "exactly 10 ingredient sale_depletion": len(sale_depl) == 10,
             "deltas match expected": got == EXPECTED,
         }
         print("\n=== VERDICT ===")

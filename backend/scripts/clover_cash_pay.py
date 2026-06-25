@@ -102,35 +102,51 @@ async def main() -> None:
             return
         order = r.json()
         total = int(order.get("total") or 0) or 1200
+        already_paid = (order.get("paymentState") or "").upper() == "PAID"
         print(f"  order {order_id}: state={order.get('state')} "
               f"paymentState={order.get('paymentState')} total={total}")
 
-        # ── 2) cash tender id ─────────────────────────────────────────────────
-        r = c.get(f"{base}/v3/merchants/{mid}/tenders", headers=H)
-        if r.status_code != 200:
-            print("GET tenders:", r.status_code, r.text[:400], _hint(r.status_code))
-            return
-        tenders = r.json().get("elements") or []
-        cash = next((t for t in tenders if t.get("labelKey") == "com.clover.tender.cash"), None)
-        if cash is None:
-            print("  no cash tender. tenders:", [t.get("labelKey") for t in tenders])
-            return
-        print("  cash tender id:", cash["id"])
+        # ── 2) cash tender (skip if already PAID — REST payment does NOT lock) ─
+        if already_paid:
+            print("  already PAID — skipping cash tender")
+        else:
+            r = c.get(f"{base}/v3/merchants/{mid}/tenders", headers=H)
+            if r.status_code != 200:
+                print("GET tenders:", r.status_code, r.text[:400], _hint(r.status_code))
+                return
+            tenders = r.json().get("elements") or []
+            cash = next((t for t in tenders if t.get("labelKey") == "com.clover.tender.cash"), None)
+            if cash is None:
+                print("  no cash tender. tenders:", [t.get("labelKey") for t in tenders])
+                return
+            print("  cash tender id:", cash["id"])
+            body = {
+                "order": {"id": order_id},
+                "tender": {"id": cash["id"]},
+                "amount": total,
+                "offline": False,
+                "cashTendered": total,
+            }
+            r = c.post(f"{base}/v3/merchants/{mid}/orders/{order_id}/payments", headers=H, json=body)
+            print("POST payment:", r.status_code)
+            print("  ", r.text[:600])
+            if r.status_code not in (200, 201):
+                print(_hint(r.status_code))
+                print("  (if 400, the cash body may need a tweak — paste this output.)")
+                return
 
-        # ── 3) create cash payment (fully tenders -> locks) ───────────────────
-        body = {
-            "order": {"id": order_id},
-            "tender": {"id": cash["id"]},
-            "amount": total,
-            "offline": False,
-            "cashTendered": total,
-        }
-        r = c.post(f"{base}/v3/merchants/{mid}/orders/{order_id}/payments", headers=H, json=body)
-        print("POST payment:", r.status_code)
-        print("  ", r.text[:600])
+        # ── 3) LOCK the order ─────────────────────────────────────────────────
+        # A REST cash tender pays the order but leaves state=open; a physical register
+        # locks it at checkout. The worker depletes ONLY on state=locked (worker.py:217),
+        # by design (an open order is still mutable), so the harness must lock explicitly.
+        r = c.post(f"{base}/v3/merchants/{mid}/orders/{order_id}", headers=H,
+                   json={"state": "locked"})
+        print("POST lock (state=locked):", r.status_code)
+        print("  ", r.text[:300])
         if r.status_code not in (200, 201):
             print(_hint(r.status_code))
-            print("  (if 400, the cash body may need a tweak — paste this output.)")
+            print("  (if this endpoint won't set state=locked, paste the response — there may be"
+                  " a dedicated checkout/lock call for this merchant.)")
             return
 
         # ── 4) report ─────────────────────────────────────────────────────────
@@ -142,7 +158,7 @@ async def main() -> None:
             print("-> webhook should fire now; trace pos_event_inbox -> sale_line_items"
                   " -> inventory_movements by this id.")
         else:
-            print("NOT locked — inspect the payment response above.")
+            print("NOT locked — inspect the lock response above.")
 
 
 if __name__ == "__main__":

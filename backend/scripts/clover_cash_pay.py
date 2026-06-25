@@ -1,25 +1,19 @@
-"""In-container: apply a CASH tender to an order via Clover REST so it reaches
-PAID/LOCKED — no card gateway, no Virtual Terminal.
+"""In-container: create a burger order and CASH-tender it to LOCKED via Clover REST —
+no card gateway, no Virtual Terminal.
 
 Run in the DO console (api component), from /srv:
-    python -m scripts.clover_cash_pay
-    # optionally choose which open order to pay:
-    CLOVER_ORDER_ID=ETNF17ORKE676 python -m scripts.clover_cash_pay
+    python -m scripts.clover_cash_pay                 # self-creates a fresh order
+    CLOVER_ORDER_ID=ETNF17ORKE676 python -m scripts.clover_cash_pay   # reuse an Open order
 
-Reuses an EXISTING open order (default below) that already has the burger line item,
-so we avoid needing ORDERS write to *create* an order/line item. It then creates a
-CASH payment, which fully tenders the order -> Clover locks it.
+DEFAULT (no CLOVER_ORDER_ID): creates a fresh order, adds the burger line item
+(Clover item QG3FB16ZSQ25G), then applies a cash tender so the order locks — you
+never touch the web terminal. Pass CLOVER_ORDER_ID to instead pay an existing Open
+order.
 
-PERMISSIONS (read this first):
-  * Creating a payment needs **PAYMENTS write**.
-  * Mutating/locking the order may need **ORDERS write**.
-  You currently have READ-only on both. If a write call 401/403s, the script says so.
-  Fix: add 'Payments: Write' (and 'Orders: Write') to app DJFFAT14DS7QM Requested
-  Permissions -> Save -> UNINSTALL+REINSTALL the app on the merchant (permission
-  changes only take effect on reinstall) -> re-run. The new token upserts into the
-  same connection row, so this script picks it up automatically.
+NEEDS: Orders:Write (create order + line item) and Payments:Write (cash payment).
+The script names the missing scope on a 401/403.
 
-Why a payment at all (not just lock): resolver.py requires payment_state == 'PAID';
+Why a payment, not just a lock: resolver.py requires payment_state == 'PAID';
 a locked-but-unpaid order is sale_ineligible and depletes nothing.
 """
 
@@ -35,7 +29,8 @@ from app.core.encryption import TokenEncryption
 from app.core.service_db import get_service_sessionmaker
 
 TENANT_ID = "aaa772e8-c714-4f74-945e-85fc13399f1d"
-ORDER_ID = os.environ.get("CLOVER_ORDER_ID", "ARYAYZ4P5661J")
+ITEM_ID = os.environ.get("CLOVER_ITEM_ID", "QG3FB16ZSQ25G")  # Bluebird Café Classic Burger
+ORDER_ID = os.environ.get("CLOVER_ORDER_ID")  # None => self-create a fresh order
 
 _ENV_API_BASES = {
     "sandbox": "https://apisandbox.dev.clover.com",
@@ -43,10 +38,10 @@ _ENV_API_BASES = {
 }
 
 
-def _scope_hint(status: int) -> str:
+def _hint(status: int) -> str:
     if status in (401, 403):
-        return ("  -> 401/403: the token lacks WRITE for this call. Add Payments:Write "
-                "(and Orders:Write), re-authorize the merchant (uninstall+reinstall), re-run.")
+        return ("  -> 401/403: token lacks WRITE for this call. Confirm Orders:Write + "
+                "Payments:Write are saved, re-authorize (uninstall+reinstall), re-run.")
     return ""
 
 
@@ -71,66 +66,83 @@ async def main() -> None:
     token = TokenEncryption().decrypt(row["access_token_enc"])
     base = _ENV_API_BASES.get(row["environment"], _ENV_API_BASES["sandbox"])
     mid = row["merchant_id"]
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    H = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
     with httpx.Client(timeout=20) as c:
-        # 1) read the order (total + current state)
+        # ── 0) obtain an order id: reuse or self-create ───────────────────────
+        if ORDER_ID:
+            order_id = ORDER_ID
+            print(f"reusing order {order_id}")
+        else:
+            r = c.post(f"{base}/v3/merchants/{mid}/orders", headers=H, json={"state": "open"})
+            print("POST create order:", r.status_code)
+            if r.status_code not in (200, 201):
+                print(r.text[:600], _hint(r.status_code))
+                return
+            order_id = r.json()["id"]
+            print("  created order:", order_id)
+
+            r = c.post(
+                f"{base}/v3/merchants/{mid}/orders/{order_id}/line_items",
+                headers=H,
+                json={"item": {"id": ITEM_ID}},
+            )
+            print("POST line_item:", r.status_code)
+            if r.status_code not in (200, 201):
+                print(r.text[:600], _hint(r.status_code))
+                return
+            print("  added line item:", r.json().get("id"))
+
+        # ── 1) read order total + state ───────────────────────────────────────
         r = c.get(
-            f"{base}/v3/merchants/{mid}/orders/{ORDER_ID}?expand=lineItems,payments",
-            headers=headers,
+            f"{base}/v3/merchants/{mid}/orders/{order_id}?expand=lineItems,payments", headers=H
         )
-        print("GET order:", r.status_code)
         if r.status_code != 200:
-            print(r.text[:600], _scope_hint(r.status_code))
+            print("GET order:", r.status_code, r.text[:400], _hint(r.status_code))
             return
         order = r.json()
         total = int(order.get("total") or 0) or 1200
-        print(f"  order {ORDER_ID}: state={order.get('state')} "
+        print(f"  order {order_id}: state={order.get('state')} "
               f"paymentState={order.get('paymentState')} total={total}")
 
-        # 2) find the cash tender id (read)
-        r = c.get(f"{base}/v3/merchants/{mid}/tenders", headers=headers)
-        print("GET tenders:", r.status_code)
+        # ── 2) cash tender id ─────────────────────────────────────────────────
+        r = c.get(f"{base}/v3/merchants/{mid}/tenders", headers=H)
         if r.status_code != 200:
-            print(r.text[:600], _scope_hint(r.status_code))
+            print("GET tenders:", r.status_code, r.text[:400], _hint(r.status_code))
             return
         tenders = r.json().get("elements") or []
         cash = next((t for t in tenders if t.get("labelKey") == "com.clover.tender.cash"), None)
         if cash is None:
-            print("  no cash tender found. tenders:", [t.get("labelKey") for t in tenders])
+            print("  no cash tender. tenders:", [t.get("labelKey") for t in tenders])
             return
         print("  cash tender id:", cash["id"])
 
-        # 3) create the cash payment (WRITE) -> fully tenders -> Clover locks the order
+        # ── 3) create cash payment (fully tenders -> locks) ───────────────────
         body = {
-            "order": {"id": ORDER_ID},
+            "order": {"id": order_id},
             "tender": {"id": cash["id"]},
             "amount": total,
             "offline": False,
             "cashTendered": total,
         }
-        r = c.post(
-            f"{base}/v3/merchants/{mid}/orders/{ORDER_ID}/payments",
-            headers=headers,
-            json=body,
-        )
+        r = c.post(f"{base}/v3/merchants/{mid}/orders/{order_id}/payments", headers=H, json=body)
         print("POST payment:", r.status_code)
         print("  ", r.text[:600])
         if r.status_code not in (200, 201):
-            print(_scope_hint(r.status_code))
-            print("  (if 400, the cash payment body shape may need a tweak — paste this output.)")
+            print(_hint(r.status_code))
+            print("  (if 400, the cash body may need a tweak — paste this output.)")
             return
 
-        # 4) re-read and report
-        r = c.get(f"{base}/v3/merchants/{mid}/orders/{ORDER_ID}?expand=payments", headers=headers)
+        # ── 4) report ─────────────────────────────────────────────────────────
+        r = c.get(f"{base}/v3/merchants/{mid}/orders/{order_id}?expand=payments", headers=H)
         o = r.json()
-        print(f"\nFINAL order {ORDER_ID}: state={o.get('state')} paymentState={o.get('paymentState')}")
+        print(f"\nFINAL order {order_id}: state={o.get('state')} paymentState={o.get('paymentState')}")
         if o.get("state") == "locked":
-            print("LOCKED clover_order_id:", ORDER_ID)
-            print("-> the order webhook should now fire; trace pos_event_inbox -> "
-                  "sale_line_items -> inventory_movements by this id.")
+            print("LOCKED clover_order_id:", order_id)
+            print("-> webhook should fire now; trace pos_event_inbox -> sale_line_items"
+                  " -> inventory_movements by this id.")
         else:
-            print("NOT locked yet — inspect the payment response above.")
+            print("NOT locked — inspect the payment response above.")
 
 
 if __name__ == "__main__":

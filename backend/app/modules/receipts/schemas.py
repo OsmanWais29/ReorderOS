@@ -27,6 +27,12 @@ class DismissRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
+class CommitRequest(BaseModel):
+    confirm: bool = False
+    reviewed_affirmation: bool = False
+    idempotency_key: UUID | None = None
+
+
 class ReceiptLineOut(BaseModel):
     id: UUID
     extracted_name: str | None

@@ -16,9 +16,26 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.inventory.depletion.conversions import convert
+
 log = logging.getLogger(__name__)
+
+# Receipt-intake sources subject to the human-confirm gate (D-606-05). 'pos' is
+# exempt (deterministic Clover walk); the receipt path enforces it.
+_INTAKE_SOURCES = frozenset({"mobile_photo", "gmail", "email", "webhook", "manual"})
+
+
+class ReceiptNothingToCommit(Exception):
+    """Every line is skipped / non-inventory — nothing to receive (D-606-06).
+    The operator dismisses; this is not a commit error (→ RECEIPT_NOTHING_TO_COMMIT)."""
+
+
+class ReceiptReviewRequired(Exception):
+    """An intake-source commit lacks the human gate: confirm + at least one
+    manually-corrected line OR a review affirmation (D-606-22) (→ RECEIPT_REVIEW_REQUIRED)."""
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -258,7 +275,8 @@ async def _emit_count_adjust(
 ) -> None:
     """Emit the Mode-A `count_adjust` ledger movement for a count event. Extracted as the autospec
     seam for the atomicity test — it is the count-event/correction boundary. Runs in the CALLER's
-    session/txn at the SAME sequence point as the prior inline INSERT; introduces NO new boundary."""
+    session/txn at the SAME sequence point as the prior inline INSERT; introduces NO new
+    boundary."""
     await session.execute(
         text("""
             INSERT INTO inventory_movements
@@ -521,95 +539,54 @@ async def add_receipt_line(
 
 
 async def _mark_receipt_committed(
-    session: AsyncSession, tenant_id: UUID, receipt_id: UUID
+    session: AsyncSession,
+    tenant_id: UUID,
+    receipt_id: UUID,
+    *,
+    confirm: bool = False,
+    reviewed_affirmation: bool = False,
+    source: str | None = None,
 ) -> None:
-    """Set the receipt's terminal committed state. Extracted as the autospec seam for the
-    atomicity test — it is the movements/status boundary. Runs in the CALLER's session/txn at the
-    SAME sequence point as the prior inline UPDATE (after the movement loop, before the flush);
-    introduces NO new session or commit, so the atomicity boundary is unchanged.
-
-    (Sprint 6 will need a separate POS-commit baseline / inertness regression here — revisit
-    when Sprint 6 starts; not in scope for V1.)"""
+    """Set the receipt's terminal committed state — the autospec seam for the atomicity
+    test. Stamps confirmed_at (server-side, only when confirm=true on an intake source —
+    D-606-04) and reviewed_affirmation in the SAME UPDATE that flips commit_state, so the
+    BEFORE-UPDATE trigger (trg_receipt_commit_integrity) reads the NEW gate values. Runs in
+    the CALLER's session/txn; introduces no new session or commit."""
+    set_confirmed = confirm and source in _INTAKE_SOURCES
     await session.execute(
         text("""
             UPDATE receipts
                SET commit_state = 'committed',
-                   committed_at = NOW()
+                   committed_at = NOW(),
+                   confirmed_at = CASE WHEN :set_confirmed THEN NOW() ELSE confirmed_at END,
+                   reviewed_affirmation = :affirmation
              WHERE tenant_id = :tid AND id = :rid
         """),
-        {"tid": tenant_id, "rid": receipt_id},
+        {
+            "set_confirmed": set_confirmed,
+            "affirmation": reviewed_affirmation,
+            "tid": tenant_id,
+            "rid": receipt_id,
+        },
     )
 
 
-async def commit_receipt(
+async def _idempotent_movement_insert(
     session: AsyncSession,
     *,
     tenant_id: UUID,
-    receipt_id: UUID,
-) -> dict[str, Any]:
-    """Commit a draft receipt.
-
-    Transaction:
-      1. Lock the receipt row (pessimistic — prevents double-commit race).
-      2. Skip if already committed (idempotent).
-      3. For each line:
-           a. Convert received_quantity to storage units.
-              (Sprint 3: purchase_unit = storage_unit, factor = 1.0)
-           b. Insert receive movement, idempotency_key = receipt_line:{line_id}.
-           c. Insert ingredient_cost_snapshot.
-           d. Set receipt_lines.emits_movement_id.
-      4. Set receipts.commit_state = 'committed', committed_at = now().
-    """
-    # ── 1. lock + state check ─────────────────────────────────────────────────
-    receipt_res = await session.execute(
-        text("SELECT commit_state FROM receipts WHERE tenant_id = :tid AND id = :rid FOR UPDATE"),
-        {"tid": tenant_id, "rid": receipt_id},
-    )
-    receipt_row = receipt_res.fetchone()
-    if not receipt_row:
-        raise ValueError(f"receipt {receipt_id} not found")
-    if receipt_row[0] == "committed":
-        return {"receipt_id": receipt_id, "status": "already_committed"}
-
-    # ── 2. fetch lines ─────────────────────────────────────────────────────────
-    lines_res = await session.execute(
-        text("""
-            SELECT id, inventory_item_id, received_quantity,
-                   purchase_unit_id, unit_cost_cents, idempotency_key
-              FROM receipt_lines
-             WHERE tenant_id = :tid AND receipt_id = :rid
-        """),
-        {"tid": tenant_id, "rid": receipt_id},
-    )
-    lines = lines_res.fetchall()
-
-    movement_ids = []
-    for line in lines:
-        line_id = UUID(str(line[0]))
-        item_id = UUID(str(line[1]))
-        received_qty = Decimal(str(line[2]))
-        purchase_unit_id = line[3]
-        unit_cost_cents = line[4]
-        idem_key = str(line[5])
-
-        # ── idempotency: skip if movement already exists ──────────────────────
-        existing_res = await session.execute(
-            text(
-                "SELECT id FROM inventory_movements"
-                " WHERE tenant_id = :tid AND idempotency_key = :key"
-            ),
-            {"tid": tenant_id, "key": idem_key},
-        )
-        existing_mv = existing_res.fetchone()
-
-        if existing_mv:
-            mv_id = UUID(str(existing_mv[0]))
-        else:
-            # ── a. storage qty (Sprint 3: 1:1 since no unit conversion yet) ──
-            storage_qty = received_qty
-
-            # ── b. receive movement ───────────────────────────────────────────
-            mv_id = uuid4()
+    inventory_item_id: UUID,
+    delta: Decimal,
+    line_id: UUID,
+    key: str,
+) -> UUID:
+    """Insert a receive movement, race-safe via a SAVEPOINT: on a UNIQUE(tenant_id,
+    idempotency_key) collision (a partial-then-retried commit), roll back the savepoint
+    and return the existing movement id deterministically (D-606-16). N per-line keys
+    therefore never need N top-level idempotency claims."""
+    mv_id = uuid4()
+    try:
+        async with session.begin_nested():
             await session.execute(
                 text("""
                     INSERT INTO inventory_movements
@@ -621,44 +598,154 @@ async def commit_receipt(
                 {
                     "id": mv_id,
                     "tid": tenant_id,
-                    "iid": item_id,
-                    "delta": storage_qty,
+                    "iid": inventory_item_id,
+                    "delta": delta,
                     "line_id": line_id,
-                    "key": idem_key,
+                    "key": key,
                 },
             )
+        return mv_id
+    except IntegrityError:
+        existing = await session.execute(
+            text(
+                "SELECT id FROM inventory_movements "
+                "WHERE tenant_id = :tid AND idempotency_key = :key"
+            ),
+            {"tid": tenant_id, "key": key},
+        )
+        return UUID(str(existing.scalar_one()))
 
-            # ── c. cost snapshot ──────────────────────────────────────────────
-            if unit_cost_cents is not None:
-                await session.execute(
-                    text("""
-                        INSERT INTO ingredient_cost_snapshots
-                            (id, tenant_id, inventory_item_id, unit_cost_cents,
-                             purchase_unit_id, source_receipt_line_id)
-                        VALUES (gen_random_uuid(), :tid, :iid, :cost, :puid, :lid)
-                    """),
-                    {
-                        "tid": tenant_id,
-                        "iid": item_id,
-                        "cost": unit_cost_cents,
-                        "puid": purchase_unit_id,
-                        "lid": line_id,
-                    },
-                )
 
-            # ── d. back-link line → movement ──────────────────────────────────
-            await session.execute(
-                text(
-                    "UPDATE receipt_lines SET emits_movement_id = :mv_id"
-                    " WHERE tenant_id = :tid AND id = :lid"
-                ),
-                {"mv_id": mv_id, "tid": tenant_id, "lid": line_id},
+async def commit_receipt(
+    session: AsyncSession,
+    *,
+    tenant_id: UUID,
+    receipt_id: UUID,
+    confirm: bool = False,
+    reviewed_affirmation: bool = False,
+) -> dict[str, Any]:
+    """Commit a draft receipt — the ONE commit path (D-606-16), shared by every source.
+
+    1. Lock the receipt (FOR UPDATE) + its lines (FOR UPDATE OF rl) → prevents a
+       double-commit race and freezes the line set the affirmation guard validates.
+    2. Already committed → idempotent no-op.
+    3. Integrity floor (D-606-06): >=1 non-skipped line with an item, else
+       ReceiptNothingToCommit. Intake sources additionally require the human gate
+       (confirm + manually-corrected line OR reviewed_affirmation, D-606-22), else
+       ReceiptReviewRequired. 'pos' is exempt (deterministic). The DB trigger is the
+       backstop for all of this.
+    4. Per movable line: convert() purchase→storage unit (identity when equal — so
+       existing same-unit receipts are bit-identical), receive movement (savepoint
+       idempotency, key = the line's idempotency_key or receipt_line:{id}), cost
+       snapshot, back-link. Skipped / item-less lines write nothing.
+    5. commit_state='committed', committed_at, confirmed_at (server-set), affirmation.
+    """
+    # ── 1. lock receipt ───────────────────────────────────────────────────────
+    receipt_row = (
+        await session.execute(
+            text(
+                "SELECT commit_state, source FROM receipts "
+                "WHERE tenant_id = :tid AND id = :rid FOR UPDATE"
+            ),
+            {"tid": tenant_id, "rid": receipt_id},
+        )
+    ).fetchone()
+    if not receipt_row:
+        raise ValueError(f"receipt {receipt_id} not found")
+    if receipt_row[0] == "committed":
+        return {"receipt_id": receipt_id, "status": "already_committed"}
+    source = receipt_row[1]
+
+    # ── 2. lock + fetch lines (with unit names + item storage unit for convert) ──
+    lines = (
+        await session.execute(
+            text("""
+                SELECT rl.id, rl.inventory_item_id, rl.received_quantity,
+                       rl.purchase_unit_id, rl.unit_cost_cents, rl.idempotency_key,
+                       rl.match_status, rl.manually_corrected, rl.extracted_unit,
+                       pu.name AS purchase_unit_name, su.name AS storage_unit_name
+                  FROM receipt_lines rl
+                  LEFT JOIN units_of_measure pu ON pu.id = rl.purchase_unit_id
+                  LEFT JOIN inventory_items   ii ON ii.id = rl.inventory_item_id
+                  LEFT JOIN units_of_measure  su ON su.id = ii.storage_unit_id
+                 WHERE rl.tenant_id = :tid AND rl.receipt_id = :rid
+                 FOR UPDATE OF rl
+            """),
+            {"tid": tenant_id, "rid": receipt_id},
+        )
+    ).mappings().all()
+
+    # ── 3. integrity floor + human-review gate ───────────────────────────────
+    movable = [
+        ln for ln in lines
+        if ln["match_status"] != "skipped" and ln["inventory_item_id"] is not None
+    ]
+    if not movable:
+        raise ReceiptNothingToCommit(f"receipt {receipt_id} has no inventory-moving line")
+
+    if source in _INTAKE_SOURCES:
+        if not confirm:
+            raise ReceiptReviewRequired("confirm:true required for an intake-source commit")
+        any_corrected = any(ln["manually_corrected"] for ln in lines)
+        if not any_corrected and not reviewed_affirmation:
+            raise ReceiptReviewRequired(
+                "requires >=1 manually-corrected line or a review affirmation"
             )
 
+    # ── 4. per movable line → movement + cost snapshot + back-link ────────────
+    movement_ids = []
+    for ln in movable:
+        line_id = UUID(str(ln["id"]))
+        item_id = UUID(str(ln["inventory_item_id"]))
+        received_qty = Decimal(str(ln["received_quantity"]))
+        key = ln["idempotency_key"] or f"receipt_line:{line_id}"
+
+        from_unit = ln["purchase_unit_name"] or ln["extracted_unit"]
+        to_unit = ln["storage_unit_name"]
+        if from_unit and to_unit and from_unit != to_unit:
+            storage_qty = await convert(
+                session, received_qty, from_unit, to_unit,
+                inventory_item_id=item_id, tenant_id=tenant_id,
+            )
+        else:
+            storage_qty = received_qty  # identity (same unit, or no unit info)
+
+        mv_id = await _idempotent_movement_insert(
+            session, tenant_id=tenant_id, inventory_item_id=item_id,
+            delta=storage_qty, line_id=line_id, key=key,
+        )
+
+        if ln["unit_cost_cents"] is not None:
+            await session.execute(
+                text("""
+                    INSERT INTO ingredient_cost_snapshots
+                        (id, tenant_id, inventory_item_id, unit_cost_cents,
+                         purchase_unit_id, source_receipt_line_id)
+                    VALUES (gen_random_uuid(), :tid, :iid, :cost, :puid, :lid)
+                """),
+                {
+                    "tid": tenant_id, "iid": item_id, "cost": ln["unit_cost_cents"],
+                    "puid": ln["purchase_unit_id"], "lid": line_id,
+                },
+            )
+        await session.execute(
+            text(
+                "UPDATE receipt_lines SET emits_movement_id = :mv_id "
+                "WHERE tenant_id = :tid AND id = :lid"
+            ),
+            {"mv_id": mv_id, "tid": tenant_id, "lid": line_id},
+        )
         movement_ids.append(mv_id)
 
-    # ── 4. mark committed (extracted seam — same session/txn, same sequence point) ──
-    await _mark_receipt_committed(session, tenant_id, receipt_id)
-
+    # ── 5. mark committed (stamps confirmed_at + affirmation for the trigger) ──
+    await _mark_receipt_committed(
+        session, tenant_id, receipt_id,
+        confirm=confirm, reviewed_affirmation=reviewed_affirmation, source=source,
+    )
     await session.flush()
-    return {"receipt_id": receipt_id, "movement_ids": movement_ids, "status": "committed"}
+    return {
+        "receipt_id": receipt_id,
+        "movement_ids": movement_ids,
+        "status": "committed",
+        "confirmed": confirm and source in _INTAKE_SOURCES,
+    }

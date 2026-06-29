@@ -13,13 +13,21 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import storage
 from app.core.deps import get_rls_session
 from app.core.security import Principal, require_role
+from app.modules.inventory.depletion.conversions import ConversionError
+from app.modules.inventory.services import (
+    ReceiptNothingToCommit,
+    ReceiptReviewRequired,
+    commit_receipt,
+)
 from app.modules.receipts import repo, services
 from app.modules.receipts.schemas import (
+    CommitRequest,
     DismissRequest,
     ReceiptCreate,
     ReceiptDetail,
@@ -180,6 +188,54 @@ async def dismiss_receipt(
     )
     _raise_for_state_outcome(outcome)
     return {"status": "dismissed"}
+
+
+@router.post("/{receipt_id}/commit", status_code=200)
+async def commit_receipt_endpoint(
+    receipt_id: UUID,
+    body: CommitRequest,
+    db: AsyncSession = Depends(get_rls_session),
+    principal: Principal = require_role("manager"),
+) -> dict[str, Any]:
+    """Commit a reviewed receipt into the ledger (the one commit path). The server
+    stamps confirmed_at (D-606-04); the body's confirm/affirmation satisfy the gate."""
+    tenant_id = UUID(principal.tenant_id)
+    # Affirm-at-commit counts as active engagement → set review_started_at if NULL
+    # BEFORE flipping, so a racing extraction is correctly superseded (D-606-22 #8).
+    await db.execute(
+        text(
+            "UPDATE receipts SET review_started_at = COALESCE(review_started_at, now()) "
+            "WHERE id = :r AND tenant_id = :t"
+        ),
+        {"r": receipt_id, "t": tenant_id},
+    )
+    try:
+        result = await commit_receipt(
+            db, tenant_id=tenant_id, receipt_id=receipt_id,
+            confirm=body.confirm, reviewed_affirmation=body.reviewed_affirmation,
+        )
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Receipt not found") from None
+    except ReceiptNothingToCommit:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "RECEIPT_NOTHING_TO_COMMIT", "message": "Nothing to receive."},
+        ) from None
+    except ReceiptReviewRequired as exc:
+        raise HTTPException(
+            status_code=422, detail={"code": "RECEIPT_REVIEW_REQUIRED", "message": str(exc)}
+        ) from None
+    except ConversionError as exc:
+        raise HTTPException(
+            status_code=422, detail={"code": "RECEIPT_UNIT_CONVERSION", "message": str(exc)}
+        ) from None
+    await db.commit()
+    return {
+        "receipt_id": str(result["receipt_id"]),
+        "status": result["status"],
+        "movement_ids": [str(m) for m in result.get("movement_ids", [])],
+        "confirmed": result.get("confirmed", False),
+    }
 
 
 def _raise_for_state_outcome(outcome: str) -> None:

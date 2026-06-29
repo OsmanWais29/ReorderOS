@@ -840,7 +840,7 @@ async def test_7_18_receipt_commit_creates_receive_movement(session) -> None:
         inventory_item_id=item_id,
         received_quantity=Decimal("50"),
     )
-    result = await commit_receipt(session, tenant_id=T7_TENANT_ID, receipt_id=rid)
+    result = await commit_receipt(session, tenant_id=T7_TENANT_ID, receipt_id=rid, confirm=True, reviewed_affirmation=True)
 
     assert result["status"] == "committed"
     assert len(result["movement_ids"]) == 1
@@ -869,7 +869,7 @@ async def test_7_19_receipt_commit_creates_cost_snapshot(session) -> None:
         received_quantity=Decimal("10"),
         unit_cost_cents=750,
     )
-    await commit_receipt(session, tenant_id=T7_TENANT_ID, receipt_id=rid)
+    await commit_receipt(session, tenant_id=T7_TENANT_ID, receipt_id=rid, confirm=True, reviewed_affirmation=True)
 
     snap = await session.execute(
         text(
@@ -899,8 +899,8 @@ async def test_7_20_receipt_commit_is_idempotent(session) -> None:
         received_quantity=Decimal("20"),
     )
 
-    r1 = await commit_receipt(session, tenant_id=T7_TENANT_ID, receipt_id=rid)
-    r2 = await commit_receipt(session, tenant_id=T7_TENANT_ID, receipt_id=rid)
+    r1 = await commit_receipt(session, tenant_id=T7_TENANT_ID, receipt_id=rid, confirm=True, reviewed_affirmation=True)
+    r2 = await commit_receipt(session, tenant_id=T7_TENANT_ID, receipt_id=rid, confirm=True, reviewed_affirmation=True)
 
     assert r1["status"] == "committed"
     assert r2["status"] == "already_committed"

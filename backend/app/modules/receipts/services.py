@@ -12,11 +12,22 @@ import contextlib
 from typing import Any
 from uuid import UUID, uuid4
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import storage
 from app.modules.receipts import repo
 from app.modules.receipts.validation import extension_for, validate_and_clean
+
+
+class ReceiptNotFound(Exception):
+    """No receipt with that id for this tenant (→ 404)."""
+
+
+class ReviewInProgress(Exception):
+    """Extraction re-trigger blocked because a human has begun review
+    (review_started_at set) — a fresh result would be discarded as superseded.
+    Use reset-extraction to discard edits and start over (→ 409)."""
 
 
 def build_photo_key(tenant_id: UUID, receipt_id: UUID, mime_type: str) -> str:
@@ -68,3 +79,68 @@ async def create_receipt_from_upload(
         "mime_type": mime_type,
         "extraction_status": "none",
     }
+
+
+async def enqueue_extraction(
+    db: AsyncSession, *, tenant_id: UUID, receipt_id: UUID
+) -> dict[str, Any]:
+    """Enqueue an extraction job for a draft receipt (idempotent re-trigger). Raises
+    ReceiptNotFound (404) / ReviewInProgress (409). Caller commits.
+
+    Re-extraction is supported but only BEFORE a human edits: once review_started_at
+    is set, the worker would discard any result as superseded, so we reject here and
+    point the operator at reset-extraction. Prior MACHINE lines (extraction_job_id
+    set) are cleared so a re-run doesn't accumulate duplicates; operator-added lines
+    (extraction_job_id NULL) are preserved."""
+    row = (
+        await db.execute(
+            text(
+                "SELECT review_started_at FROM receipts "
+                "WHERE id = :rid AND tenant_id = :tid"
+            ),
+            {"rid": receipt_id, "tid": tenant_id},
+        )
+    ).mappings().fetchone()
+    if row is None:
+        raise ReceiptNotFound
+    if row["review_started_at"] is not None:
+        raise ReviewInProgress
+
+    # Clear stale machine lines from a prior extraction (preserve operator lines).
+    await db.execute(
+        text(
+            "DELETE FROM receipt_lines "
+            "WHERE tenant_id = :tid AND receipt_id = :rid AND extraction_job_id IS NOT NULL"
+        ),
+        {"tid": tenant_id, "rid": receipt_id},
+    )
+
+    next_attempt = (
+        await db.execute(
+            text(
+                "SELECT COALESCE(MAX(job_attempt), 0) + 1 FROM receipt_extraction_jobs "
+                "WHERE tenant_id = :tid AND receipt_id = :rid"
+            ),
+            {"tid": tenant_id, "rid": receipt_id},
+        )
+    ).scalar_one()
+
+    job_id = (
+        await db.execute(
+            text("""
+                INSERT INTO receipt_extraction_jobs (tenant_id, receipt_id, job_attempt, status)
+                VALUES (:tid, :rid, :att, 'pending')
+                RETURNING id
+            """),
+            {"tid": tenant_id, "rid": receipt_id, "att": next_attempt},
+        )
+    ).scalar_one()
+
+    await db.execute(
+        text(
+            "UPDATE receipts SET extraction_status = 'pending', quota_blocked = false, "
+            "updated_at = now() WHERE id = :rid AND tenant_id = :tid"
+        ),
+        {"rid": receipt_id, "tid": tenant_id},
+    )
+    return {"job_id": job_id, "status": "pending"}

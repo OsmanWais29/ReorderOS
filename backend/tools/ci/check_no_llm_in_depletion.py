@@ -103,10 +103,10 @@ def _imported_names(path: Path, base: Path) -> list[str]:
 # ── Scans ────────────────────────────────────────────────────────────────────────
 
 
-def scan_llm(depletion_dir: Path, base: Path) -> list[list[str]]:
+def scan_llm_paths(seeds: list[Path], base: Path) -> list[list[str]]:
     """Return one import chain per LLM-provider reachability (direct or transitive) from any
-    module under `depletion_dir`. Walks `app.*` internally; third-party names are leaves
-    checked against PROHIBITED_PROVIDERS."""
+    of `seeds`. Walks `app.*` internally; third-party names are leaves checked against
+    PROHIBITED_PROVIDERS."""
     violations: list[list[str]] = []
     visited: set[Path] = set()
 
@@ -122,9 +122,14 @@ def scan_llm(depletion_dir: Path, base: Path) -> list[list[str]]:
             if target is not None:
                 walk(target, [*chain, name])
 
-    for seed in sorted(depletion_dir.rglob("*.py")):
+    for seed in seeds:
         walk(seed, [_module_name(seed, base)])
     return violations
+
+
+def scan_llm(depletion_dir: Path, base: Path) -> list[list[str]]:
+    """LLM-provider reachability from any module under `depletion_dir`."""
+    return scan_llm_paths(sorted(depletion_dir.rglob("*.py")), base)
 
 
 def _docstring_constant_ids(tree: ast.AST) -> set[int]:
@@ -173,15 +178,27 @@ def scan_drafts(depletion_dir: Path) -> list[tuple[Path, str]]:
 # ── Entry point ──────────────────────────────────────────────────────────────────
 
 
+# Sprint 6 D-606-07: the COMMIT path must also be LLM-free — an extracted value
+# reaches the ledger only through a human commit, never an inline model call. The
+# commit logic lives in inventory/services.py (commit_receipt).
+_COMMIT_MODULE = _APP_ROOT / "modules" / "inventory" / "services.py"
+
+
 def main() -> int:
     llm = scan_llm(_DEPLETION, _BACKEND)
+    commit_llm = scan_llm_paths([_COMMIT_MODULE], _BACKEND) if _COMMIT_MODULE.exists() else []
     drafts = scan_drafts(_DEPLETION)
-    if not llm and not drafts:
-        print("OK: depletion path is free of LLM imports and draft-table access.")
+    if not llm and not commit_llm and not drafts:
+        print("OK: depletion + commit paths are free of LLM imports; no draft-table access.")
         return 0
     for chain in llm:
         print(
             "FAIL [LLM in depletion path, v5 fail-gate #1]: " + " -> ".join(chain),
+            file=sys.stderr,
+        )
+    for chain in commit_llm:
+        print(
+            "FAIL [LLM in commit path, D-606-07]: " + " -> ".join(chain),
             file=sys.stderr,
         )
     for path, tbl in drafts:

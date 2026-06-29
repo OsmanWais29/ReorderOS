@@ -294,3 +294,62 @@ async def test_http_rejects_heic_with_422(
     )
     assert r.status_code == 422
     assert r.json()["detail"]["code"] == "RECEIPT_HEIC_UNSUPPORTED"
+
+
+async def _seed_receipt_via_conn(conn: AsyncConnection, tid: str, *, review_started: bool = False) -> str:
+    rid = str(uuid7())
+    await conn.execute(
+        text(
+            "INSERT INTO receipts (id, tenant_id, commit_state, source) "
+            "VALUES (:id, :t, 'draft', 'mobile_photo')"
+        ),
+        {"id": rid, "t": tid},
+    )
+    if review_started:
+        await conn.execute(
+            text("UPDATE receipts SET review_started_at = now() WHERE id = :id"), {"id": rid}
+        )
+    return rid
+
+
+async def test_extract_enqueues_job(
+    app_instance: Any, conn: AsyncConnection, client: AsyncClient
+) -> None:
+    tid, uid = str(uuid7()), str(uuid7())
+    await conn.execute(
+        text("INSERT INTO tenants (id, name, slug) VALUES (:id, 'T', :slug)"),
+        {"id": tid, "slug": f"t-{uuid.uuid4().hex[:8]}"},
+    )
+    rid = await _seed_receipt_via_conn(conn, tid)
+    _as(app_instance, tid, uid, "staff")
+
+    r = await client.post(f"/api/v1/receipts/{rid}/extract")
+    assert r.status_code == 202, r.text
+    assert r.json()["status"] == "pending"
+    job = await conn.execute(
+        text("SELECT status FROM receipt_extraction_jobs WHERE receipt_id = :r"), {"r": rid}
+    )
+    assert job.scalar_one() == "pending"
+    es = await conn.execute(text("SELECT extraction_status FROM receipts WHERE id = :r"), {"r": rid})
+    assert es.scalar_one() == "pending"
+
+
+async def test_extract_409_when_review_started(
+    app_instance: Any, conn: AsyncConnection, client: AsyncClient
+) -> None:
+    tid, uid = str(uuid7()), str(uuid7())
+    await conn.execute(
+        text("INSERT INTO tenants (id, name, slug) VALUES (:id, 'T', :slug)"),
+        {"id": tid, "slug": f"t-{uuid.uuid4().hex[:8]}"},
+    )
+    rid = await _seed_receipt_via_conn(conn, tid, review_started=True)
+    _as(app_instance, tid, uid, "staff")
+
+    r = await client.post(f"/api/v1/receipts/{rid}/extract")
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "RECEIPT_REVIEW_IN_PROGRESS"
+    # no job created
+    n = await conn.execute(
+        text("SELECT count(*) FROM receipt_extraction_jobs WHERE receipt_id = :r"), {"r": rid}
+    )
+    assert n.scalar_one() == 0

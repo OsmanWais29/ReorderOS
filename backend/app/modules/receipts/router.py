@@ -78,6 +78,30 @@ async def create_manual_receipt(
     }
 
 
+@router.post("/{receipt_id}/extract", status_code=202)
+async def extract_receipt(
+    receipt_id: UUID,
+    db: AsyncSession = Depends(get_rls_session),
+    principal: Principal = require_role("staff"),
+) -> dict[str, Any]:
+    """Enqueue extraction (idempotent). 202 — the worker processes it asynchronously.
+    409 if a human has already begun review (use reset-extraction instead)."""
+    try:
+        return await services.enqueue_extraction(
+            db, tenant_id=UUID(principal.tenant_id), receipt_id=receipt_id
+        )
+    except services.ReceiptNotFound:
+        raise HTTPException(status_code=404, detail="Receipt not found") from None
+    except services.ReviewInProgress:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "RECEIPT_REVIEW_IN_PROGRESS",
+                "message": "Review already started; use reset-extraction to start over.",
+            },
+        ) from None
+
+
 @router.get("", response_model=list[ReceiptListItem])
 async def list_receipts(
     commit_state: str | None = Query(default=None),

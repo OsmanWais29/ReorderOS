@@ -102,6 +102,18 @@ def put_bytes(key: str, data: bytes, *, content_type: str) -> None:
     )
 
 
+def get_bytes(key: str) -> bytes:
+    """Download an object's bytes (the extraction worker re-reads the stored receipt
+    to re-validate magic bytes and feed the LLM)."""
+    s = get_settings()
+    if not s.spaces_bucket:
+        raise SpacesNotConfigured("DO_SPACES_BUCKET is not set")
+    client = get_spaces_client()
+    resp = client.get_object(Bucket=s.spaces_bucket, Key=key)
+    body: bytes = resp["Body"].read()
+    return body
+
+
 def delete_object(key: str) -> None:
     """Delete a Spaces object — used to clean up an orphaned upload when the draft
     INSERT fails after the PUT (orphan-safe upload, D-606-14 #5)."""

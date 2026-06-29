@@ -469,9 +469,9 @@ async def create_receipt(
     receipt_id = uuid4()
     await session.execute(
         text("""
-            INSERT INTO receipts (id, tenant_id, commit_state, received_at,
+            INSERT INTO receipts (id, tenant_id, commit_state, source, received_at,
                                   created_by, notes)
-            VALUES (:id, :tid, 'draft', COALESCE(:at, NOW()), :by, :notes)
+            VALUES (:id, :tid, 'draft', 'manual', COALESCE(:at, NOW()), :by, :notes)
         """),
         {
             "id": receipt_id,

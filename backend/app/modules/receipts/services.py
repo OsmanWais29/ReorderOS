@@ -9,6 +9,7 @@ fails after the PUT, the just-written object is deleted.
 from __future__ import annotations
 
 import contextlib
+from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -28,6 +29,20 @@ class ReviewInProgress(Exception):
     """Extraction re-trigger blocked because a human has begun review
     (review_started_at set) — a fresh result would be discarded as superseded.
     Use reset-extraction to discard edits and start over (→ 409)."""
+
+
+class ReceiptNotCommitted(Exception):
+    """A post-commit adjustment was attempted on a non-committed receipt (→ 409)."""
+
+
+# adjustment_type → the compensating movement_type (inventory_accounting_semantics §5:
+# corrections are compensating entries, never mutations of the original movement).
+_MOVEMENT_TYPE_FOR_ADJUSTMENT = {
+    "correction": "adjustment",
+    "count_fix": "count_adjust",
+    "return": "waste",
+    "damage": "waste",
+}
 
 
 def build_photo_key(tenant_id: UUID, receipt_id: UUID, mime_type: str) -> str:
@@ -144,3 +159,93 @@ async def enqueue_extraction(
         {"rid": receipt_id, "tid": tenant_id},
     )
     return {"job_id": job_id, "status": "pending"}
+
+
+async def create_adjustment(
+    db: AsyncSession,
+    *,
+    tenant_id: UUID,
+    receipt_id: UUID,
+    adjustment_type: str,
+    inventory_item_id: UUID,
+    delta_quantity: Decimal,
+    delta_unit: str,
+    reason: str | None,
+    receipt_line_id: UUID | None,
+    delta_cost_cents: int | None,
+    created_by: UUID,
+) -> dict[str, Any]:
+    """Record a post-commit correction (Phase 5) — APPEND-ONLY. Inserts a
+    receipt_adjustments row plus a compensating inventory_movement, linked via
+    compensating_movement_id; NEVER mutates the original committed lines/movements
+    (inventory_accounting_semantics §5). Raises ReceiptNotFound (404) /
+    ReceiptNotCommitted (409). delta_quantity is signed and already in storage units.
+
+    Both ids are generated up front so the movement (source_id = the adjustment) and
+    the adjustment row (compensating_movement_id = the movement) reference each other
+    in one direction each — no post-insert UPDATE, which the append-only grant forbids.
+    """
+    state = (
+        await db.execute(
+            text("SELECT commit_state FROM receipts WHERE id = :r AND tenant_id = :t"),
+            {"r": receipt_id, "t": tenant_id},
+        )
+    ).scalar()
+    if state is None:
+        raise ReceiptNotFound
+    if state != "committed":
+        raise ReceiptNotCommitted
+
+    movement_type = _MOVEMENT_TYPE_FOR_ADJUSTMENT[adjustment_type]
+    adjustment_id = uuid4()
+    movement_id = uuid4()
+
+    await db.execute(
+        text("""
+            INSERT INTO inventory_movements
+                (id, tenant_id, inventory_item_id, movement_type, delta,
+                 source_type, source_id, idempotency_key, notes)
+            VALUES (:id, :tid, :iid, :mt, :delta,
+                    'receipt_adjustment', :aid, :key, :reason)
+        """),
+        {
+            "id": movement_id,
+            "tid": tenant_id,
+            "iid": inventory_item_id,
+            "mt": movement_type,
+            "delta": delta_quantity,
+            "aid": adjustment_id,
+            "key": f"receipt_adjustment:{adjustment_id}",
+            "reason": reason,
+        },
+    )
+    await db.execute(
+        text("""
+            INSERT INTO receipt_adjustments
+                (id, tenant_id, receipt_id, receipt_line_id, inventory_item_id,
+                 adjustment_type, delta_quantity, delta_unit, reason, delta_cost_cents,
+                 compensating_movement_id, created_by)
+            VALUES (:id, :tid, :rid, :lid, :iid,
+                    :atype, :dq, :du, :reason, :cost,
+                    :mid, :by)
+        """),
+        {
+            "id": adjustment_id,
+            "tid": tenant_id,
+            "rid": receipt_id,
+            "lid": receipt_line_id,
+            "iid": inventory_item_id,
+            "atype": adjustment_type,
+            "dq": delta_quantity,
+            "du": delta_unit,
+            "reason": reason,
+            "cost": delta_cost_cents,
+            "mid": movement_id,
+            "by": created_by,
+        },
+    )
+    return {
+        "adjustment_id": adjustment_id,
+        "compensating_movement_id": movement_id,
+        "movement_type": movement_type,
+    }

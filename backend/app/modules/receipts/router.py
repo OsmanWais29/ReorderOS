@@ -27,6 +27,7 @@ from app.modules.inventory.services import (
 )
 from app.modules.receipts import repo, services
 from app.modules.receipts.schemas import (
+    AdjustRequest,
     CommitRequest,
     DismissRequest,
     ReceiptCreate,
@@ -235,6 +236,48 @@ async def commit_receipt_endpoint(
         "status": result["status"],
         "movement_ids": [str(m) for m in result.get("movement_ids", [])],
         "confirmed": result.get("confirmed", False),
+    }
+
+
+@router.post("/{receipt_id}/adjust", status_code=201)
+async def adjust_receipt(
+    receipt_id: UUID,
+    body: AdjustRequest,
+    db: AsyncSession = Depends(get_rls_session),
+    principal: Principal = require_role("manager"),
+) -> dict[str, Any]:
+    """Post-commit correction (Phase 5) — append-only; writes a compensating movement,
+    never mutates the committed receipt. 409 if the receipt isn't committed yet."""
+    tenant_id = UUID(principal.tenant_id)
+    try:
+        result = await services.create_adjustment(
+            db,
+            tenant_id=tenant_id,
+            receipt_id=receipt_id,
+            adjustment_type=body.adjustment_type,
+            inventory_item_id=body.inventory_item_id,
+            delta_quantity=body.delta_quantity,
+            delta_unit=body.delta_unit,
+            reason=body.reason,
+            receipt_line_id=body.receipt_line_id,
+            delta_cost_cents=body.delta_cost_cents,
+            created_by=UUID(principal.user_id),
+        )
+    except services.ReceiptNotFound:
+        raise HTTPException(status_code=404, detail="Receipt not found") from None
+    except services.ReceiptNotCommitted:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "RECEIPT_NOT_COMMITTED",
+                "message": "Adjustments apply only to a committed receipt.",
+            },
+        ) from None
+    await db.commit()
+    return {
+        "adjustment_id": str(result["adjustment_id"]),
+        "compensating_movement_id": str(result["compensating_movement_id"]),
+        "movement_type": result["movement_type"],
     }
 
 

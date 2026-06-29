@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ReceiptCreate(BaseModel):
@@ -31,6 +33,23 @@ class CommitRequest(BaseModel):
     confirm: bool = False
     reviewed_affirmation: bool = False
     idempotency_key: UUID | None = None
+
+
+class AdjustRequest(BaseModel):
+    adjustment_type: Literal["correction", "return", "damage", "count_fix"]
+    inventory_item_id: UUID
+    delta_quantity: Decimal = Field(description="Signed, in storage units; must be non-zero")
+    delta_unit: str
+    reason: str | None = None
+    receipt_line_id: UUID | None = None
+    delta_cost_cents: int | None = None
+
+    @field_validator("delta_quantity")
+    @classmethod
+    def _non_zero(cls, v: Decimal) -> Decimal:
+        if v == 0:
+            raise ValueError("delta_quantity must be non-zero")
+        return v
 
 
 class ReceiptLineOut(BaseModel):

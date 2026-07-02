@@ -70,6 +70,12 @@ jobs:
       WORKOS_JWKS_URL: https://api.workos.com/sso/jwks/client_ci_fake
       WORKOS_ISSUER: https://api.workos.com/user_management/client_ci_fake
       WORKOS_VERIFY_AUDIENCE: "false"
+      # Fake Clover creds: the webhook tests send X-Clover-Auth from
+      # settings.clover_webhook_auth_code, and the OAuth connect-URL tests read
+      # the app id/secret — all default to None without env (locally from .env).
+      CLOVER_APP_ID: clover_ci_fake_app
+      CLOVER_APP_SECRET: clover_ci_fake_secret
+      CLOVER_WEBHOOK_AUTH_CODE: clover_ci_fake_webhook_code
       TOKEN_ENCRYPTION_KEY: 4AFFMHOrQq2id_IqqKRcV_QDAfuXZRLY_0B8ugWSZ6M=
     steps:
       - uses: actions/checkout@v4
@@ -118,6 +124,12 @@ jobs:
       WORKOS_JWKS_URL: https://api.workos.com/sso/jwks/client_ci_fake
       WORKOS_ISSUER: https://api.workos.com/user_management/client_ci_fake
       WORKOS_VERIFY_AUDIENCE: "false"
+      # Fake Clover creds: the webhook tests send X-Clover-Auth from
+      # settings.clover_webhook_auth_code, and the OAuth connect-URL tests read
+      # the app id/secret — all default to None without env (locally from .env).
+      CLOVER_APP_ID: clover_ci_fake_app
+      CLOVER_APP_SECRET: clover_ci_fake_secret
+      CLOVER_WEBHOOK_AUTH_CODE: clover_ci_fake_webhook_code
       # TEST-ONLY Fernet key (same rationale as the unit job).
       TOKEN_ENCRYPTION_KEY: 4AFFMHOrQq2id_IqqKRcV_QDAfuXZRLY_0B8ugWSZ6M=
     steps:

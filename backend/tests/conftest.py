@@ -56,9 +56,7 @@ def validate_schema() -> None:
     async def _read_current_rev() -> str | None:
         conn = await asyncpg.connect(DB_URL_SYNC)
         try:
-            row = await conn.fetchrow(
-                "SELECT version_num FROM alembic_version LIMIT 1"
-            )
+            row = await conn.fetchrow("SELECT version_num FROM alembic_version LIMIT 1")
             return row["version_num"] if row else None
         finally:
             await conn.close()
@@ -144,7 +142,10 @@ def idor_guard() -> Any:
                     fh.write(f"[{v.verb.upper()}] {','.join(v.tables)}\n{v.sql}\n\n")
             with open("/tmp/idor_fingerprints.json", "w") as fh:
                 _json.dump(
-                    {v.fingerprint: f"{v.verb}:{','.join(v.tables)}" for v in state.violations.values()},
+                    {
+                        v.fingerprint: f"{v.verb}:{','.join(v.tables)}"
+                        for v in state.violations.values()
+                    },
                     fh,
                     indent=2,
                 )
@@ -226,8 +227,12 @@ def autoclean_committed_test_data() -> Any:
             new_t = list({r["id"] for r in await conn.fetch("SELECT id FROM tenants")} - t0)
             new_u = list({r["id"] for r in await conn.fetch("SELECT id FROM users")} - u0)
             new_w = list({r["id"] for r in await conn.fetch("SELECT id FROM pos_waitlist")} - w0)
-            new_o = list({r["state"] for r in await conn.fetch("SELECT state FROM oauth_states")} - o0)
-            new_m = list({r["id"] for r in await conn.fetch("SELECT id FROM monitoring_alerts")} - m0)
+            new_o = list(
+                {r["state"] for r in await conn.fetch("SELECT state FROM oauth_states")} - o0
+            )
+            new_m = list(
+                {r["id"] for r in await conn.fetch("SELECT id FROM monitoring_alerts")} - m0
+            )
             if not (new_t or new_u or new_w or new_o or new_m):
                 return
             global _TENANT_TABLES_CACHE
@@ -253,9 +258,13 @@ def autoclean_committed_test_data() -> Any:
                 if new_w:
                     await conn.execute("DELETE FROM pos_waitlist WHERE id = ANY($1::uuid[])", new_w)
                 if new_o:
-                    await conn.execute("DELETE FROM oauth_states WHERE state = ANY($1::text[])", new_o)
+                    await conn.execute(
+                        "DELETE FROM oauth_states WHERE state = ANY($1::text[])", new_o
+                    )
                 if new_m:
-                    await conn.execute("DELETE FROM monitoring_alerts WHERE id = ANY($1::uuid[])", new_m)
+                    await conn.execute(
+                        "DELETE FROM monitoring_alerts WHERE id = ANY($1::uuid[])", new_m
+                    )
         finally:
             await conn.close()
 

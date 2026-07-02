@@ -52,9 +52,7 @@ async def conn(app_instance: Any) -> AsyncIterator[AsyncConnection]:
 
 @pytest.fixture
 async def client(app_instance: Any) -> AsyncIterator[AsyncClient]:
-    async with AsyncClient(
-        transport=ASGITransport(app=app_instance), base_url="http://test"
-    ) as c:
+    async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://test") as c:
         yield c
 
 

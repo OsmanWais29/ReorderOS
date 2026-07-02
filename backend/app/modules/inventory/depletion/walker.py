@@ -79,10 +79,7 @@ async def walk_base(
 
     yield_quantity = (
         await session.execute(
-            text(
-                "SELECT yield_quantity FROM recipe_versions"
-                " WHERE id = :rv AND tenant_id = :tid"
-            ),
+            text("SELECT yield_quantity FROM recipe_versions WHERE id = :rv AND tenant_id = :tid"),
             {"rv": recipe_version_id, "tid": tenant_id},
         )
     ).scalar()
@@ -91,8 +88,9 @@ async def walk_base(
     yield_q = Decimal(str(yield_quantity))
 
     rows = (
-        await session.execute(
-            text("""
+        (
+            await session.execute(
+                text("""
                 SELECT ri.inventory_item_id AS iid,
                        ri.quantity          AS recipe_qty,
                        ri.unit              AS recipe_unit,
@@ -103,9 +101,12 @@ async def walk_base(
                 JOIN units_of_measure uom ON uom.id = ii.storage_unit_id
                 WHERE ri.recipe_version_id = :rv AND ri.tenant_id = :tid
             """),
-            {"rv": recipe_version_id, "tid": tenant_id},
+                {"rv": recipe_version_id, "tid": tenant_id},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     if not rows:
         return _no_deplete("failed", "invalid_recipe")
 
@@ -187,8 +188,9 @@ async def walk_modifiers(
     no modifiers), or failed/missing_conversion if any modifier ingredient can't convert.
     No legacy key (modifiers never existed in the legacy format)."""
     rows = (
-        await session.execute(
-            text("""
+        (
+            await session.execute(
+                text("""
                 SELECT slim.id           AS slim_id,
                        slim.modifier_version_id AS mv,
                        slim.quantity      AS mult,
@@ -206,9 +208,12 @@ async def walk_modifiers(
                 JOIN units_of_measure uom ON uom.id = ii.storage_unit_id
                 WHERE slim.sale_line_item_id = :sli AND slim.tenant_id = :tid
             """),
-            {"sli": sale_line_item_id, "tid": tenant_id},
+                {"sli": sale_line_item_id, "tid": tenant_id},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     # aggregate per (slim_id, modifier_version_id, inventory_item) — the modifier key
     agg: dict[tuple[UUID, UUID, UUID], dict[str, object]] = {}
@@ -226,7 +231,9 @@ async def walk_modifiers(
             return _no_deplete("failed", "missing_conversion")
 
         magnitude = (
-            line_quantity * Decimal(str(r["mult"])) * storage_qty
+            line_quantity
+            * Decimal(str(r["mult"]))
+            * storage_qty
             / Decimal(str(r["yield_quantity"]))
         )
         if r["mode"] == "recipe_deducted":

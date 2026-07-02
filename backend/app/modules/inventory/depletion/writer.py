@@ -132,9 +132,7 @@ async def record_sale_reversal(
     )
     orig_row = orig_res.fetchone()
     if not orig_row:
-        raise ValueError(
-            f"movement {original_movement_id} not found for tenant {tenant_id}"
-        )
+        raise ValueError(f"movement {original_movement_id} not found for tenant {tenant_id}")
 
     orig_delta: Decimal = Decimal(str(orig_row[0]))
     orig_type: str = orig_row[1]

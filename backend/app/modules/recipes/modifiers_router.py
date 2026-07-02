@@ -52,9 +52,7 @@ async def get_modifier(
     """Read-only modifier detail (Staff+) — the partner of the recipe-detail GET; parent-scoped,
     pure read (no implicit unskip/409). 404 on wrong parent / cross-tenant."""
     try:
-        return await mrepo.get_modifier(
-            db, UUID(principal.tenant_id), menu_item_id, modifier_id
-        )
+        return await mrepo.get_modifier(db, UUID(principal.tenant_id), menu_item_id, modifier_id)
     except mrepo.ModifierNotFound:
         raise HTTPException(status_code=404, detail="modifier not found") from None
 
@@ -70,8 +68,12 @@ async def patch_modifier(
     ingredients = validate_ingredients(body.ingredients)
     try:
         detail = await mrepo.save_draft(
-            db, UUID(principal.tenant_id), menu_item_id, modifier_id,
-            ingredients, UUID(principal.user_id),
+            db,
+            UUID(principal.tenant_id),
+            menu_item_id,
+            modifier_id,
+            ingredients,
+            UUID(principal.user_id),
         )
     except mrepo.ModifierNotFound:
         raise HTTPException(status_code=404, detail="modifier not found") from None
@@ -101,9 +103,7 @@ async def confirm_modifier(
     except EmptyDraft:
         raise HTTPException(status_code=400, detail="draft has no ingredients to confirm") from None
     except DuplicateIngredient:
-        raise HTTPException(
-            status_code=400, detail="duplicate ingredient names in draft"
-        ) from None
+        raise HTTPException(status_code=400, detail="duplicate ingredient names in draft") from None
     except mrepo.ModifierConfirmed:
         raise HTTPException(status_code=409, detail="modifier is already confirmed") from None
     except mrepo.ModifierSkipped:
@@ -148,9 +148,7 @@ async def skip_modifier(
     principal: Principal = require_role("manager"),
 ) -> dict[str, Any]:
     try:
-        detail = await mrepo.skip_modifier(
-            db, UUID(principal.tenant_id), menu_item_id, modifier_id
-        )
+        detail = await mrepo.skip_modifier(db, UUID(principal.tenant_id), menu_item_id, modifier_id)
     except mrepo.ModifierNotFound:
         raise HTTPException(status_code=404, detail="modifier not found") from None
     except mrepo.ModifierConfirmed:

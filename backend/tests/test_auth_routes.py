@@ -211,7 +211,9 @@ async def test_register_tenant_rolls_back_on_membership_failure(
     slug = f"atomic-{uuid.uuid4().hex[:8]}"
 
     def _boom(*args: Any, **kwargs: Any) -> None:
-        raise IntegrityError("INSERT INTO user_tenants", {}, Exception("injected membership failure"))
+        raise IntegrityError(
+            "INSERT INTO user_tenants", {}, Exception("injected membership failure")
+        )
 
     monkeypatch.setattr(repo_mod, "UserTenant", _boom)
 
@@ -220,10 +222,14 @@ async def test_register_tenant_rolls_back_on_membership_failure(
             "/api/v1/auth/register-tenant",
             json={"slug": slug, "name": "Atomicity Test"},
         )
-        assert r.status_code == 409, f"expected 409 from rollback path, got {r.status_code}: {r.text}"
+        assert r.status_code == 409, (
+            f"expected 409 from rollback path, got {r.status_code}: {r.text}"
+        )
 
         orphan = await admin_conn.fetchval("SELECT count(*) FROM tenants WHERE slug = $1", slug)
-        assert orphan == 0, "orphan tenant persisted after membership-insert failure (F2.6 atomicity broken)"
+        assert orphan == 0, (
+            "orphan tenant persisted after membership-insert failure (F2.6 atomicity broken)"
+        )
     finally:
         await admin_conn.execute(
             "DELETE FROM user_tenants WHERE tenant_id IN (SELECT id FROM tenants WHERE slug = $1)",

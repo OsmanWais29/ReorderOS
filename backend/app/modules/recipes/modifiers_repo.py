@@ -66,14 +66,18 @@ async def _require_modifier(
 ) -> dict[str, Any]:
     """Fetch a modifier scoped to (tenant, menu_item) — guard 1. Raises ModifierNotFound."""
     row = (
-        await db.execute(
-            text(
-                "SELECT id, name, modifier_type, status, current_version_id FROM modifiers"
-                " WHERE id = :mod AND tenant_id = :tid AND menu_item_id = :mid"
-            ),
-            {"mod": modifier_id, "tid": tenant_id, "mid": menu_item_id},
+        (
+            await db.execute(
+                text(
+                    "SELECT id, name, modifier_type, status, current_version_id FROM modifiers"
+                    " WHERE id = :mod AND tenant_id = :tid AND menu_item_id = :mid"
+                ),
+                {"mod": modifier_id, "tid": tenant_id, "mid": menu_item_id},
+            )
         )
-    ).mappings().fetchone()
+        .mappings()
+        .fetchone()
+    )
     if row is None:
         raise ModifierNotFound
     return dict(row)
@@ -104,8 +108,9 @@ async def list_modifiers(
         raise ModifierNotFound
 
     rows = (
-        await db.execute(
-            text("""
+        (
+            await db.execute(
+                text("""
                 SELECT m.id AS modifier_id, m.name AS name, m.modifier_type AS modifier_type,
                        m.status AS status,
                        COALESCE(jsonb_array_length(md.draft_ingredients), 0) AS ingredient_count
@@ -115,9 +120,12 @@ async def list_modifiers(
                 WHERE m.tenant_id = :tid AND m.menu_item_id = :mid
                 ORDER BY m.name
             """),
-            {"tid": tenant_id, "mid": menu_item_id},
+                {"tid": tenant_id, "mid": menu_item_id},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     return [
         {
             "modifier_id": r["modifier_id"],
@@ -229,14 +237,18 @@ async def confirm_modifier(
 
     # serialize same-modifier confirms; the value read here is authoritative
     locked = (
-        await db.execute(
-            text(
-                "SELECT status, modifier_type FROM modifiers"
-                " WHERE id = :mod AND tenant_id = :tid FOR UPDATE"
-            ),
-            {"mod": modifier_id, "tid": tenant_id},
+        (
+            await db.execute(
+                text(
+                    "SELECT status, modifier_type FROM modifiers"
+                    " WHERE id = :mod AND tenant_id = :tid FOR UPDATE"
+                ),
+                {"mod": modifier_id, "tid": tenant_id},
+            )
         )
-    ).mappings().one()
+        .mappings()
+        .one()
+    )
     if locked["status"] == "confirmed":
         raise ModifierConfirmed
     if locked["status"] == "skipped":
@@ -316,8 +328,12 @@ async def confirm_modifier(
         mod,
         "confirmed",
         [
-            {"name": str(ing["name"]), "quantity": float(ing["quantity"]),
-             "unit": str(ing["unit"]), "inventory_item_id": str(item_id)}
+            {
+                "name": str(ing["name"]),
+                "quantity": float(ing["quantity"]),
+                "unit": str(ing["unit"]),
+                "inventory_item_id": str(item_id),
+            }
             for ing, (item_id, _q, _u) in zip(ingredients, lines, strict=True)
         ],
     )
@@ -334,21 +350,26 @@ async def unconfirm_modifier(
     Raises ModifierNotFound (404) / ModifierNotConfirmed (409)."""
     mod = await _require_modifier(db, tenant_id, menu_item_id, modifier_id)
     locked = (
-        await db.execute(
-            text(
-                "SELECT status, current_version_id FROM modifiers"
-                " WHERE id = :mod AND tenant_id = :tid FOR UPDATE"
-            ),
-            {"mod": modifier_id, "tid": tenant_id},
+        (
+            await db.execute(
+                text(
+                    "SELECT status, current_version_id FROM modifiers"
+                    " WHERE id = :mod AND tenant_id = :tid FOR UPDATE"
+                ),
+                {"mod": modifier_id, "tid": tenant_id},
+            )
         )
-    ).mappings().one()
+        .mappings()
+        .one()
+    )
     if locked["status"] != "confirmed":
         raise ModifierNotConfirmed
     mv_id = locked["current_version_id"]
 
     rows = (
-        await db.execute(
-            text("""
+        (
+            await db.execute(
+                text("""
                 SELECT ii.name AS name, mi.quantity AS quantity, mi.unit AS unit,
                        mi.inventory_item_id AS inventory_item_id
                 FROM modifier_ingredients mi
@@ -356,12 +377,19 @@ async def unconfirm_modifier(
                 WHERE mi.tenant_id = :tid AND mi.modifier_version_id = :mv
                 ORDER BY ii.name
             """),
-            {"tid": tenant_id, "mv": mv_id},
+                {"tid": tenant_id, "mv": mv_id},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     draft_ingredients = [
-        {"name": r["name"], "quantity": float(r["quantity"]), "unit": r["unit"],
-         "inventory_item_id": str(r["inventory_item_id"])}
+        {
+            "name": r["name"],
+            "quantity": float(r["quantity"]),
+            "unit": r["unit"],
+            "inventory_item_id": str(r["inventory_item_id"]),
+        }
         for r in rows
     ]
 
@@ -375,8 +403,13 @@ async def unconfirm_modifier(
                     draft_ingredients = CAST(:di AS jsonb),
                     updated_at = now()
         """),
-        {"tid": tenant_id, "mod": modifier_id, "mv": mv_id,
-         "di": json.dumps(draft_ingredients), "uid": created_by},
+        {
+            "tid": tenant_id,
+            "mod": modifier_id,
+            "mv": mv_id,
+            "di": json.dumps(draft_ingredients),
+            "uid": created_by,
+        },
     )
     # current_version_id → NULL is allowed: composite FK is MATCH SIMPLE (NULL skips check)
     await db.execute(

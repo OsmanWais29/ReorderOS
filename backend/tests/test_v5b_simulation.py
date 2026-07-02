@@ -67,11 +67,16 @@ def _sim_world() -> World:
         ],
         conversions=[Conversion("g", "kg", D("0.001"))],
         recipes=[
-            Recipe("bread", D("2"), [Ingredient("flour", D("500"), "g")]),       # g→kg + yield
-            Recipe("latte", D("1"), [Ingredient("milk", D("200"), "ml"),
-                                     Ingredient("beans", D("18"), "g")]),         # Mode A + Mode B
-            Recipe("soup", D("10"), [Ingredient("stock", D("5000"), "ml")]),      # batch yield 10
-            Recipe("special", D("1"), [Ingredient("flour", D("50"), "g")], confirmed=False),  # unmapped
+            Recipe("bread", D("2"), [Ingredient("flour", D("500"), "g")]),  # g→kg + yield
+            Recipe(
+                "latte",
+                D("1"),
+                [Ingredient("milk", D("200"), "ml"), Ingredient("beans", D("18"), "g")],
+            ),  # Mode A + Mode B
+            Recipe("soup", D("10"), [Ingredient("stock", D("5000"), "ml")]),  # batch yield 10
+            Recipe(
+                "special", D("1"), [Ingredient("flour", D("50"), "g")], confirmed=False
+            ),  # unmapped
         ],
         modifiers=[
             Modifier("extra_milk", "latte", D("1"), [Ingredient("milk", D("50"), "ml")]),
@@ -102,8 +107,12 @@ def _build_waves(world: World, per_wave: int, n_waves: int) -> list[list[Order]]
 
 
 async def _simulate(
-    s: AsyncSession, world: World, waves: list[list[Order]], counts_by_wave: dict[int, list[Count]],
-    *, n_workers: int = 3,
+    s: AsyncSession,
+    world: World,
+    waves: list[list[Order]],
+    counts_by_wave: dict[int, list[Count]],
+    *,
+    n_workers: int = 3,
 ) -> None:
     seeded = await seed_world(s, world)
     await s.commit()
@@ -170,6 +179,8 @@ async def test_v5b_simulation_2000_orders(committed_session: AsyncSession) -> No
     barrier. Real-world load test of claim_batch / the F4 MATERIALIZED fix under contention."""
     world = _sim_world()
     waves = _build_waves(world, per_wave=250, n_waves=8)  # 2,000 orders
-    counts = {w: [Count("beans", D(95000 - w * 1000)), Count("stock", D(10000 + w * 100))]
-              for w in range(7)}  # a count after each wave except the last
+    counts = {
+        w: [Count("beans", D(95000 - w * 1000)), Count("stock", D(10000 + w * 100))]
+        for w in range(7)
+    }  # a count after each wave except the last
     await _simulate(committed_session, world, waves, counts, n_workers=3)

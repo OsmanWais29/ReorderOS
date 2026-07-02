@@ -91,7 +91,9 @@ async def test_e2e_credited_order_no_forward_depletion(admin_conn):
     await _seed_menu_item(admin_conn, tid, pos, recipe_version_id=rv)
 
     order = make_clover_order(
-        order_id=seed["vendor_event_id"], state="locked", payment_state="CREDITED",
+        order_id=seed["vendor_event_id"],
+        state="locked",
+        payment_state="CREDITED",
         line_items=[_make_li_with_item(pos, qty=3)],
     )
     respx.get(url__regex=f".*/orders/{seed['vendor_event_id']}.*").mock(
@@ -100,9 +102,12 @@ async def test_e2e_credited_order_no_forward_depletion(admin_conn):
     worker = InboxWorker()
     await worker.process_event((await worker.claim_batch(batch_size=1))[0])
 
-    assert await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id=$1", uuid.UUID(tid)
-    ) == 0, "CREDITED must produce NO forward depletion (the v4 regression)"
+    assert (
+        await admin_conn.fetchval(
+            "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id=$1", uuid.UUID(tid)
+        )
+        == 0
+    ), "CREDITED must produce NO forward depletion (the v4 regression)"
     row = await admin_conn.fetchrow(
         "SELECT depletion_status, depletion_reason FROM sale_line_items WHERE tenant_id=$1",
         uuid.UUID(tid),
@@ -145,9 +150,12 @@ async def test_e2e_voided_line_row_is_failed_sale_ineligible(admin_conn):
         uuid.UUID(tid),
     )
     assert (row["depletion_status"], row["depletion_reason"]) == ("failed", "sale_ineligible")
-    assert await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id=$1", uuid.UUID(tid)
-    ) == 0
+    assert (
+        await admin_conn.fetchval(
+            "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id=$1", uuid.UUID(tid)
+        )
+        == 0
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -179,7 +187,8 @@ async def test_e2e_modifier_edit_does_not_alter_processed_sale_ledger(admin_conn
 
     mod_row = await admin_conn.fetchrow(
         "SELECT id, current_version_id FROM modifiers WHERE tenant_id=$1 AND pos_modifier_id=$2",
-        uuid.UUID(tid), pos_mod_id,
+        uuid.UUID(tid),
+        pos_mod_id,
     )
     modifier_id, mv_id = mod_row["id"], mod_row["current_version_id"]
 
@@ -197,7 +206,9 @@ async def test_e2e_modifier_edit_does_not_alter_processed_sale_ledger(admin_conn
     # ── VACUOUSNESS PRECONDITION: the modifier movement exists, keyed by modifier_version v1 ──
     mod_mv = await admin_conn.fetchrow(
         "SELECT id, delta, idempotency_key FROM inventory_movements"
-        " WHERE tenant_id=$1 AND inventory_item_id=$2", uuid.UUID(tid), uuid.UUID(str(mod_item)),
+        " WHERE tenant_id=$1 AND inventory_item_id=$2",
+        uuid.UUID(tid),
+        uuid.UUID(str(mod_item)),
     )
     assert mod_mv is not None, "precondition: the modifier sale must have depleted"
     assert "modifier" in mod_mv["idempotency_key"]
@@ -207,10 +218,12 @@ async def test_e2e_modifier_edit_does_not_alter_processed_sale_ledger(admin_conn
         "SELECT modifier_version_id FROM sale_line_item_modifiers WHERE tenant_id=$1",
         uuid.UUID(tid),
     )
-    mver_before = dict(await admin_conn.fetchrow(
-        "SELECT id, modifier_id, version_number, yield_quantity FROM modifier_versions WHERE id=$1",
-        mv_id,
-    ))
+    mver_before = dict(
+        await admin_conn.fetchrow(
+            "SELECT id, modifier_id, version_number, yield_quantity FROM modifier_versions WHERE id=$1",
+            mv_id,
+        )
+    )
 
     # ── real modifier un-confirm (operator path) on a committed session ──
     async with engine.connect() as conn:
@@ -223,23 +236,41 @@ async def test_e2e_modifier_edit_does_not_alter_processed_sale_ledger(admin_conn
         await trans.commit()
 
     # pointer cleared (un-confirm semantics)
-    assert await admin_conn.fetchval(
-        "SELECT current_version_id FROM modifiers WHERE id=$1", modifier_id
-    ) is None
+    assert (
+        await admin_conn.fetchval(
+            "SELECT current_version_id FROM modifiers WHERE id=$1", modifier_id
+        )
+        is None
+    )
 
     # the processed sale is UNTOUCHED
-    assert dict(await admin_conn.fetchrow(
-        "SELECT id, delta, idempotency_key FROM inventory_movements"
-        " WHERE tenant_id=$1 AND inventory_item_id=$2", uuid.UUID(tid), uuid.UUID(str(mod_item)),
-    )) == mod_mv_before, "modifier edit must not alter the processed sale's ledger (gate 26)"
-    assert await admin_conn.fetchval(
-        "SELECT modifier_version_id FROM sale_line_item_modifiers WHERE tenant_id=$1",
-        uuid.UUID(tid),
-    ) == slim_mv_before, "frozen slim modifier_version_id must be unchanged"
-    assert dict(await admin_conn.fetchrow(
-        "SELECT id, modifier_id, version_number, yield_quantity FROM modifier_versions WHERE id=$1",
-        mv_id,
-    )) == mver_before, "modifier_versions row must be byte-identical (fail-gate 7 modifier half)"
+    assert (
+        dict(
+            await admin_conn.fetchrow(
+                "SELECT id, delta, idempotency_key FROM inventory_movements"
+                " WHERE tenant_id=$1 AND inventory_item_id=$2",
+                uuid.UUID(tid),
+                uuid.UUID(str(mod_item)),
+            )
+        )
+        == mod_mv_before
+    ), "modifier edit must not alter the processed sale's ledger (gate 26)"
+    assert (
+        await admin_conn.fetchval(
+            "SELECT modifier_version_id FROM sale_line_item_modifiers WHERE tenant_id=$1",
+            uuid.UUID(tid),
+        )
+        == slim_mv_before
+    ), "frozen slim modifier_version_id must be unchanged"
+    assert (
+        dict(
+            await admin_conn.fetchrow(
+                "SELECT id, modifier_id, version_number, yield_quantity FROM modifier_versions WHERE id=$1",
+                mv_id,
+            )
+        )
+        == mver_before
+    ), "modifier_versions row must be byte-identical (fail-gate 7 modifier half)"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -267,14 +298,18 @@ async def test_confirm_zero_ingredient_draft_raises_emptydraft(db) -> None:
     ).scalar_one()
     recipe_id = (
         await db.execute(
-            text("INSERT INTO recipes (tenant_id, menu_item_id, status) VALUES (:t,:mi,'draft')"
-                 " RETURNING id"),
+            text(
+                "INSERT INTO recipes (tenant_id, menu_item_id, status) VALUES (:t,:mi,'draft')"
+                " RETURNING id"
+            ),
             {"t": tid, "mi": mi_id},
         )
     ).scalar_one()
     await db.execute(
-        text("INSERT INTO recipe_drafts (tenant_id, recipe_id, draft_ingredients)"
-             " VALUES (:t,:r, CAST('[]' AS jsonb))"),
+        text(
+            "INSERT INTO recipe_drafts (tenant_id, recipe_id, draft_ingredients)"
+            " VALUES (:t,:r, CAST('[]' AS jsonb))"
+        ),
         {"t": tid, "r": recipe_id},
     )
     await db.flush()
@@ -289,9 +324,7 @@ async def test_confirm_zero_ingredient_draft_raises_emptydraft(db) -> None:
         )
     ).scalar() == 0, "EmptyDraft must raise before any recipe_versions row is created"
     assert (
-        await db.execute(
-            text("SELECT status FROM recipes WHERE id=:r"), {"r": recipe_id}
-        )
+        await db.execute(text("SELECT status FROM recipes WHERE id=:r"), {"r": recipe_id})
     ).scalar() == "draft"
     assert (
         await db.execute(
@@ -323,7 +356,9 @@ async def test_depleted_status_and_movements_are_atomic_injected_rollback(admin_
     await _seed_menu_item(admin_conn, tid, pos, recipe_version_id=rv)
 
     order = make_clover_order(
-        order_id=seed["vendor_event_id"], state="locked", payment_state="PAID",
+        order_id=seed["vendor_event_id"],
+        state="locked",
+        payment_state="PAID",
         line_items=[_make_li_with_item(pos, qty=2)],
     )
     respx.get(url__regex=f".*/orders/{seed['vendor_event_id']}.*").mock(
@@ -343,10 +378,16 @@ async def test_depleted_status_and_movements_are_atomic_injected_rollback(admin_
 
     m.assert_called()  # the injection point actually fired (guards a future rename/inline)
     # the rollback erased EVERYTHING the txn would have written:
-    assert await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id=$1", uuid.UUID(tid)
-    ) == 0, "movements written in the same txn must roll back with the failed status"
-    assert await admin_conn.fetchval(
-        "SELECT depletion_status FROM sale_line_items WHERE tenant_id=$1", uuid.UUID(tid)
-    ) == "pending", "no depleted-without-movements; the line stays pending and retries"
+    assert (
+        await admin_conn.fetchval(
+            "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id=$1", uuid.UUID(tid)
+        )
+        == 0
+    ), "movements written in the same txn must roll back with the failed status"
+    assert (
+        await admin_conn.fetchval(
+            "SELECT depletion_status FROM sale_line_items WHERE tenant_id=$1", uuid.UUID(tid)
+        )
+        == "pending"
+    ), "no depleted-without-movements; the line stays pending and retries"
     assert await _event_state(admin_conn, seed["inbox_id"]) == "failed"

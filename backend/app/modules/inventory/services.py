@@ -258,7 +258,8 @@ async def _emit_count_adjust(
 ) -> None:
     """Emit the Mode-A `count_adjust` ledger movement for a count event. Extracted as the autospec
     seam for the atomicity test — it is the count-event/correction boundary. Runs in the CALLER's
-    session/txn at the SAME sequence point as the prior inline INSERT; introduces NO new boundary."""
+    session/txn at the SAME sequence point as the prior inline INSERT; introduces NO new
+    boundary."""
     await session.execute(
         text("""
             INSERT INTO inventory_movements
@@ -520,9 +521,7 @@ async def add_receipt_line(
     return line_id
 
 
-async def _mark_receipt_committed(
-    session: AsyncSession, tenant_id: UUID, receipt_id: UUID
-) -> None:
+async def _mark_receipt_committed(session: AsyncSession, tenant_id: UUID, receipt_id: UUID) -> None:
     """Set the receipt's terminal committed state. Extracted as the autospec seam for the
     atomicity test — it is the movements/status boundary. Runs in the CALLER's session/txn at the
     SAME sequence point as the prior inline UPDATE (after the movement loop, before the flush);

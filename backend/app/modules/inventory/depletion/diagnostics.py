@@ -46,8 +46,9 @@ async def stuck_pending_lines(
     by ingestion time (created_at). v5 exit-gate 29 / operational-concern 5: pending rows
     >5 min old must be queryable so ops can alert on a wedged worker. Ordered oldest-first."""
     rows = (
-        await session.execute(
-            text("""
+        (
+            await session.execute(
+                text("""
                 SELECT id, order_id,
                        EXTRACT(EPOCH FROM (now() - created_at)) AS age_seconds
                 FROM sale_line_items
@@ -56,9 +57,12 @@ async def stuck_pending_lines(
                   AND created_at < now() - make_interval(mins => :mins)
                 ORDER BY created_at ASC
             """),
-            {"tid": tenant_id, "mins": older_than_minutes},
+                {"tid": tenant_id, "mins": older_than_minutes},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     return [
         StuckPendingLine(
             sale_line_item_id=r["id"],
@@ -85,8 +89,9 @@ async def failed_reason_breakdown(
     line with a NULL reason impossible, so an 'unknown' with a nonzero count is a loud signal
     that the invariant was violated/bypassed — exactly what a diagnostic should show."""
     rows = (
-        await session.execute(
-            text("""
+        (
+            await session.execute(
+                text("""
                 SELECT COALESCE(depletion_reason, 'unknown') AS reason, COUNT(*) AS n
                 FROM sale_line_items
                 WHERE tenant_id = :tid
@@ -94,7 +99,10 @@ async def failed_reason_breakdown(
                   AND created_at > now() - make_interval(days => :days)
                 GROUP BY COALESCE(depletion_reason, 'unknown')
             """),
-            {"tid": tenant_id, "days": window_days},
+                {"tid": tenant_id, "days": window_days},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     return {r["reason"]: int(r["n"]) for r in rows}

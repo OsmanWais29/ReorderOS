@@ -56,13 +56,15 @@ async def _maybe_late_signal_alert(
     )
     if boundary.first() is None:
         return
-    payload = json.dumps({
-        "inventory_item_id": str(inventory_item_id),
-        "movement_id": str(movement_id),
-        "recorded_at": recorded_at.isoformat(),
-        "created_at": now.isoformat(),
-        "gap_seconds": round((now - recorded_at).total_seconds()),
-    })
+    payload = json.dumps(
+        {
+            "inventory_item_id": str(inventory_item_id),
+            "movement_id": str(movement_id),
+            "recorded_at": recorded_at.isoformat(),
+            "created_at": now.isoformat(),
+            "gap_seconds": round((now - recorded_at).total_seconds()),
+        }
+    )
     await session.execute(
         text("""
             INSERT INTO monitoring_alerts
@@ -110,8 +112,9 @@ async def process_line(
     transaction boundary so one line's failure can't roll back another's depletion.
     Returns the terminal (status, reason)."""
     line = (
-        await session.execute(
-            text("""
+        (
+            await session.execute(
+                text("""
                 SELECT s.quantity AS qty, s.is_voided AS is_voided,
                        s.is_refunded AS is_refunded, s.recipe_version_id AS rv,
                        s.menu_item_id AS mid, s.depletion_status AS dep_status,
@@ -121,9 +124,12 @@ async def process_line(
                 JOIN orders o ON o.id = s.order_id
                 WHERE s.id = :sli AND s.tenant_id = :tid
             """),
-            {"sli": sale_line_item_id, "tid": tenant_id},
+                {"sli": sale_line_item_id, "tid": tenant_id},
+            )
         )
-    ).mappings().fetchone()
+        .mappings()
+        .fetchone()
+    )
     if line is None:
         raise ValueError(f"sale_line {sale_line_item_id} not found (tenant {tenant_id})")
 
@@ -154,14 +160,20 @@ async def process_line(
     # while under-depleted).
     line_qty = Decimal(str(line["qty"]))
     base = await walker.walk_base(
-        session, tenant_id, sale_line_item_id=sale_line_item_id,
-        recipe_version_id=line["rv"], line_quantity=line_qty,
+        session,
+        tenant_id,
+        sale_line_item_id=sale_line_item_id,
+        recipe_version_id=line["rv"],
+        line_quantity=line_qty,
     )
     if base.status != "depleted":
         await _set_status(session, tenant_id, sale_line_item_id, base.status, base.reason)
         return base.status, base.reason
     mods = await walker.walk_modifiers(
-        session, tenant_id, sale_line_item_id=sale_line_item_id, line_quantity=line_qty,
+        session,
+        tenant_id,
+        sale_line_item_id=sale_line_item_id,
+        line_quantity=line_qty,
     )
     if mods.status != "depleted":  # modifier conversion failure → whole line, no base writes
         await _set_status(session, tenant_id, sale_line_item_id, mods.status, mods.reason)
@@ -218,17 +230,21 @@ async def reverse_line(
     status (ADR D5); the reversal rows net it to zero. Returns the count of NEW reversal rows
     written (0 on replay or no forward movement)."""
     forward = (
-        await session.execute(
-            text("""
+        (
+            await session.execute(
+                text("""
                 SELECT id, inventory_item_id
                 FROM inventory_movements
                 WHERE tenant_id = :tid
                   AND movement_type IN ('sale_depletion', 'sale_signal')
                   AND idempotency_key LIKE 'sale_line:' || :sli || ':%'
             """),
-            {"tid": tenant_id, "sli": str(sale_line_item_id)},
+                {"tid": tenant_id, "sli": str(sale_line_item_id)},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     reversed_count = 0
     for mv in forward:

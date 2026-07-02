@@ -38,9 +38,14 @@ _QUERY = text(
 
 def _interpret(current_user: str, is_super: bool, bypass_rls: bool, owner: str | None) -> str:
     if is_super or bypass_rls:
-        return "BYPASSES RLS -> 0022 is defense-in-depth for this role (RLS not the relied-upon control)."
+        return (
+            "BYPASSES RLS -> 0022 is defense-in-depth for this role "
+            "(RLS not the relied-upon control)."
+        )
     if owner is not None and current_user == owner:
-        return "NON-SUPERUSER OWNER -> FORCE is load-bearing for this role; 0022 closed a real hole."
+        return (
+            "NON-SUPERUSER OWNER -> FORCE is load-bearing for this role; 0022 closed a real hole."
+        )
     return "NON-OWNER -> already bound by ENABLE; FORCE is defense-in-depth for this role."
 
 

@@ -41,12 +41,16 @@ jobs:
     name: unit tests
     runs-on: ubuntu-latest
     # Unit tests mock JWT/JWKS — WorkOS vars are fake but must be non-empty
-    # so Settings validation passes.
+    # so Settings validation passes. TOKEN_ENCRYPTION_KEY is a TEST-ONLY Fernet
+    # key (generated for CI, never used anywhere real): tests/helpers/* construct
+    # TokenEncryption() at import time, so collection itself fails without it
+    # (moving that construction inside fixtures is a tracked follow-up).
     env:
       WORKOS_CLIENT_ID: client_ci_fake
       WORKOS_JWKS_URL: https://api.workos.com/sso/jwks/client_ci_fake
       WORKOS_ISSUER: https://api.workos.com/user_management/client_ci_fake
       WORKOS_VERIFY_AUDIENCE: "false"
+      TOKEN_ENCRYPTION_KEY: 4AFFMHOrQq2id_IqqKRcV_QDAfuXZRLY_0B8ugWSZ6M=
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -89,6 +93,8 @@ jobs:
       WORKOS_JWKS_URL: https://api.workos.com/sso/jwks/client_ci_fake
       WORKOS_ISSUER: https://api.workos.com/user_management/client_ci_fake
       WORKOS_VERIFY_AUDIENCE: "false"
+      # TEST-ONLY Fernet key (same rationale as the unit job).
+      TOKEN_ENCRYPTION_KEY: 4AFFMHOrQq2id_IqqKRcV_QDAfuXZRLY_0B8ugWSZ6M=
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

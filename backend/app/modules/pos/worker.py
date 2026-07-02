@@ -324,15 +324,19 @@ class InboxWorker:
                     {"tid": tenant_id},
                 )
                 pending_ids = (
-                    await q.execute(
-                        text(
-                            "SELECT id FROM sale_line_items"
-                            " WHERE tenant_id = :tid AND order_id = :oid"
-                            "   AND (depletion_status IS NULL OR depletion_status = 'pending')"
-                        ),
-                        {"tid": tenant_id, "oid": order_row_id},
+                    (
+                        await q.execute(
+                            text(
+                                "SELECT id FROM sale_line_items"
+                                " WHERE tenant_id = :tid AND order_id = :oid"
+                                "   AND (depletion_status IS NULL OR depletion_status = 'pending')"
+                            ),
+                            {"tid": tenant_id, "oid": order_row_id},
+                        )
                     )
-                ).scalars().all()
+                    .scalars()
+                    .all()
+                )
         except Exception as exc:
             await self.mark_failed(event, f"depletion-scan: {type(exc).__name__}: {exc!s}")
             return
@@ -350,8 +354,11 @@ class InboxWorker:
                     # reconcile pass above reliably flips is_refunded on refunded lines first —
                     # the gate and its is_refunded precondition move together, lockstep (edit 4).
                     await handler.process_line(
-                        ds, UUID(tenant_id), sli_id,
-                        recorded_at=vendor_ts, partial_refunds_enabled=True,
+                        ds,
+                        UUID(tenant_id),
+                        sli_id,
+                        recorded_at=vendor_ts,
+                        partial_refunds_enabled=True,
                     )
             except Exception as exc:  # isolate: leave this line pending, keep going
                 any_line_failed = True

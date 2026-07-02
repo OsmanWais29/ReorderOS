@@ -46,9 +46,7 @@ async def list_recipes(
     db: AsyncSession = Depends(get_rls_session),
     principal: Principal = require_role("staff"),
 ) -> list[dict[str, Any]]:
-    return await repo.list_recipes(
-        db, UUID(principal.tenant_id), include_skipped=include_skipped
-    )
+    return await repo.list_recipes(db, UUID(principal.tenant_id), include_skipped=include_skipped)
 
 
 @router.get("/recipes/{menu_item_id}", response_model=RecipeDetail)
@@ -117,9 +115,7 @@ async def confirm_recipe(
     except repo.NoDraft:
         raise HTTPException(status_code=400, detail="no draft to confirm") from None
     except repo.EmptyDraft:
-        raise HTTPException(
-            status_code=400, detail="draft has no ingredients to confirm"
-        ) from None
+        raise HTTPException(status_code=400, detail="draft has no ingredients to confirm") from None
     except repo.DuplicateIngredient:
         raise HTTPException(
             status_code=400,

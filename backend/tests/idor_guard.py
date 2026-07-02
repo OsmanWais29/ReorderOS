@@ -90,48 +90,35 @@ ALLOWLIST: dict[str, str] = {
     # ── invitations: bootstrap + tenant-scoped-load-then-act ──────────────────
     "select invitations.id, invitations.tenant_id, invitations.email, invitations.role, "
     "invitations.token, invitations.accepted_at, invitations.expires_at, invitations.created_by, "
-    "invitations.created_at from invitations where invitations.token = $1::varchar for update":
-        "accept-invite bootstrap: invite located by its unguessable secret token before any "
-        "tenant context exists; the token is the capability.",
-    "update invitations set accepted_at=$1::timestamp with time zone where invitations.id = $2::uuid":
-        "accept-invite: id comes from the token-scoped load above, not a raw request id.",
-    "delete from invitations where invitations.id = $1::uuid":
-        "revoke_invitation: id comes from a tenant-scoped SELECT (WHERE id AND tenant_id, 404s "
-        "cross-tenant — the 0d7973c fix); DELETE acts on a tenant-authorized id.",
+    "invitations.created_at from invitations where invitations.token = $1::varchar for update": "accept-invite bootstrap: invite located by its unguessable secret token before any "
+    "tenant context exists; the token is the capability.",
+    "update invitations set accepted_at=$1::timestamp with time zone where invitations.id = $2::uuid": "accept-invite: id comes from the token-scoped load above, not a raw request id.",
+    "delete from invitations where invitations.id = $1::uuid": "revoke_invitation: id comes from a tenant-scoped SELECT (WHERE id AND tenant_id, 404s "
+    "cross-tenant — the 0d7973c fix); DELETE acts on a tenant-authorized id.",
     # ── server-generated read-backs of just-inserted rows (tenant-scoped insert) ─
-    "select created_at from inventory_count_events where id = $1":
-        "router read-back of the server-generated id from the tenant-scoped record_count_event "
-        "insert; id is not request-supplied.",
-    "select id, commit_state, received_at, notes from receipts where id = $1":
-        "router read-back of the server-generated receipt id from the tenant-scoped create_receipt "
-        "insert; id is not request-supplied.",
+    "select created_at from inventory_count_events where id = $1": "router read-back of the server-generated id from the tenant-scoped record_count_event "
+    "insert; id is not request-supplied.",
+    "select id, commit_state, received_at, notes from receipts where id = $1": "router read-back of the server-generated receipt id from the tenant-scoped create_receipt "
+    "insert; id is not request-supplied.",
     # ── recipes: entry-guard (menu_items WHERE id AND tenant_id → 404) then by-id write ─
     # Entry-guard removal is caught by test_sprint5_phase3_recipes.test_cross_tenant_returns_404
     # (skip/patch) and test_sprint5_phase4_confirm.test_confirm_unconfirm_cross_tenant_404 — so the
     # by-id write's safety lives in those tests, not (and cannot, by fingerprint) in this allowlist.
-    "update recipes set status = 'draft', updated_at = now() where id = $1":
-        "recipe save_draft: recipe_id derived from a tenant-scoped menu_items+recipes load (route "
-        "keyed by menu_item_id, 404-gated at entry). Backed by test_cross_tenant_returns_404 (PATCH).",
-    "update recipes set status = 'skipped', updated_at = now() where id = $1":
-        "recipe skip_recipe: tenant-scoped entry load first. Backed by test_cross_tenant_returns_404 (skip).",
-    "update recipes set status = 'confirmed', updated_at = now() where id = $1":
-        "recipe confirm_recipe (verified menu_items WHERE id AND tenant_id → 404 at entry). "
-        "Backed by test_confirm_unconfirm_cross_tenant_404.",
+    "update recipes set status = 'draft', updated_at = now() where id = $1": "recipe save_draft: recipe_id derived from a tenant-scoped menu_items+recipes load (route "
+    "keyed by menu_item_id, 404-gated at entry). Backed by test_cross_tenant_returns_404 (PATCH).",
+    "update recipes set status = 'skipped', updated_at = now() where id = $1": "recipe skip_recipe: tenant-scoped entry load first. Backed by test_cross_tenant_returns_404 (skip).",
+    "update recipes set status = 'confirmed', updated_at = now() where id = $1": "recipe confirm_recipe (verified menu_items WHERE id AND tenant_id → 404 at entry). "
+    "Backed by test_confirm_unconfirm_cross_tenant_404.",
     # ── modifiers: _require_modifier (WHERE id AND tenant_id AND menu_item_id → 404) then by-id ─
     # Single shared chokepoint; its removal fails test_sprint5_phase6_modifiers.
     # test_cross_tenant_and_cross_item_404 (confirm + patch + wrong-parent).
-    "update modifiers set status = 'draft', current_version_id = null, updated_at = now() where id = $1":
-        "modifiers unconfirm: _require_modifier 404-gates (id, tenant_id, menu_item_id). "
-        "Backed by test_cross_tenant_and_cross_item_404.",
-    "update modifiers set status = 'skipped', updated_at = now() where id = $1":
-        "modifiers skip_modifier: _require_modifier 404-gates. Backed by test_cross_tenant_and_cross_item_404.",
-    "select draft_ingredients from modifier_drafts where modifier_id = $1":
-        "modifiers: modifier_id 404-gated by _require_modifier upstream. "
-        "Backed by test_cross_tenant_and_cross_item_404.",
-    "update modifiers set status = 'draft', updated_at = now() where id = $1":
-        "modifiers save_draft: _require_modifier 404-gates. Backed by test_cross_tenant_and_cross_item_404.",
-    "update modifiers set current_version_id = $1, status = 'confirmed', updated_at = now() where id = $2":
-        "modifiers confirm_modifier: _require_modifier 404-gates. Backed by test_cross_tenant_and_cross_item_404.",
+    "update modifiers set status = 'draft', current_version_id = null, updated_at = now() where id = $1": "modifiers unconfirm: _require_modifier 404-gates (id, tenant_id, menu_item_id). "
+    "Backed by test_cross_tenant_and_cross_item_404.",
+    "update modifiers set status = 'skipped', updated_at = now() where id = $1": "modifiers skip_modifier: _require_modifier 404-gates. Backed by test_cross_tenant_and_cross_item_404.",
+    "select draft_ingredients from modifier_drafts where modifier_id = $1": "modifiers: modifier_id 404-gated by _require_modifier upstream. "
+    "Backed by test_cross_tenant_and_cross_item_404.",
+    "update modifiers set status = 'draft', updated_at = now() where id = $1": "modifiers save_draft: _require_modifier 404-gates. Backed by test_cross_tenant_and_cross_item_404.",
+    "update modifiers set current_version_id = $1, status = 'confirmed', updated_at = now() where id = $2": "modifiers confirm_modifier: _require_modifier 404-gates. Backed by test_cross_tenant_and_cross_item_404.",
 }
 
 _FROM_RE = re.compile(r"\bfrom\s+([a-z_][a-z0-9_]*)", re.IGNORECASE)

@@ -114,7 +114,7 @@ async def session(app_instance):
             "pos_event_inbox",
         ):
             await conn.execute(
-                text(f"DELETE FROM {tbl} WHERE tenant_id = :tid"),  # noqa: S608
+                text(f"DELETE FROM {tbl} WHERE tenant_id = :tid"),
                 {"tid": T7_TENANT_ID},
             )
 

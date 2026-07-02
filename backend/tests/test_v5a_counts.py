@@ -71,9 +71,9 @@ async def test_mode_b_reanchor_window(db: AsyncSession) -> None:
         recipes=[Recipe("latte", D("1"), [Ingredient("beans", D("50"), "g")])],
     )
     timeline = [
-        Order([Line("latte", D("2"))]),       # +100 signal (pre-count)
-        Count("beans", D("800")),             # re-anchor
-        Order([Line("latte", D("3"))]),       # +150 signal (post-count)
+        Order([Line("latte", D("2"))]),  # +100 signal (pre-count)
+        Count("beans", D("800")),  # re-anchor
+        Order([Line("latte", D("3"))]),  # +150 signal (post-count)
     ]
     await _assert_timeline(db, world, timeline)  # on_hand 650, ledger {beans:+250}
 
@@ -87,9 +87,9 @@ async def test_mode_b_reanchor_with_yield_factor(db: AsyncSession) -> None:
         recipes=[Recipe("latte", D("1"), [Ingredient("beans", D("50"), "g")])],
     )
     timeline = [
-        Order([Line("latte", D("2"))]),   # +100 pre
+        Order([Line("latte", D("2"))]),  # +100 pre
         Count("beans", D("900")),
-        Order([Line("latte", D("5"))]),   # +250 post
+        Order([Line("latte", D("5"))]),  # +250 post
     ]
     await _assert_timeline(db, world, timeline)  # on_hand 700
 
@@ -103,9 +103,9 @@ async def test_mode_a_count_adjust_on_drift(db: AsyncSession) -> None:
         recipes=[Recipe("bun", D("1"), [Ingredient("flour", D("100"), "g")])],
     )
     timeline = [
-        Order([Line("bun", D("3"))]),   # -300
-        Count("flour", D("20")),        # adjust +320 → running 20
-        Order([Line("bun", D("1"))]),   # -100 → running -80
+        Order([Line("bun", D("3"))]),  # -300
+        Count("flour", D("20")),  # adjust +320 → running 20
+        Order([Line("bun", D("1"))]),  # -100 → running -80
     ]
     await _assert_timeline(db, world, timeline)  # on_hand -80, ledger {flour:-80}
 
@@ -119,8 +119,8 @@ async def test_mode_a_no_drift_emits_no_movement(db: AsyncSession) -> None:
         recipes=[Recipe("bun", D("1"), [Ingredient("flour", D("100"), "g")])],
     )
     timeline = [
-        Count("flour", D("0")),          # predicted 0, counted 0 → no adjust
-        Order([Line("bun", D("2"))]),    # -200
+        Count("flour", D("0")),  # predicted 0, counted 0 → no adjust
+        Order([Line("bun", D("2"))]),  # -200
     ]
     await _assert_timeline(db, world, timeline)  # on_hand -200, ledger {flour:-200}
 
@@ -134,17 +134,21 @@ async def test_mixed_modes_counted_together(db: AsyncSession) -> None:
             Item("oil", MODE_B, "ml", opening_count=D("500")),
         ],
         recipes=[
-            Recipe("flatbread", D("2"), [
-                Ingredient("flour", D("400"), "g"),
-                Ingredient("oil", D("40"), "ml"),
-            ]),
+            Recipe(
+                "flatbread",
+                D("2"),
+                [
+                    Ingredient("flour", D("400"), "g"),
+                    Ingredient("oil", D("40"), "ml"),
+                ],
+            ),
         ],
     )
     timeline = [
-        Order([Line("flatbread", D("4"))]),   # flour -800 ; oil +80
-        Count("flour", D("100")),             # adjust +900 → flour running 100
-        Count("oil", D("300")),               # re-anchor oil to 300, reset window
-        Order([Line("flatbread", D("2"))]),   # flour -400 → -300 ; oil +40 (post)
+        Order([Line("flatbread", D("4"))]),  # flour -800 ; oil +80
+        Count("flour", D("100")),  # adjust +900 → flour running 100
+        Count("oil", D("300")),  # re-anchor oil to 300, reset window
+        Order([Line("flatbread", D("2"))]),  # flour -400 → -300 ; oil +40 (post)
     ]
     # on_hand flour -300 ; oil 300-40=260. ledger flour -300 ; oil +120 (all signals)
     await _assert_timeline(db, world, timeline)

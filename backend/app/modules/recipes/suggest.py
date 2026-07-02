@@ -104,15 +104,17 @@ def _validate_payload(
     return base, modifiers, issues
 
 
-async def _gather_inputs(
-    db: AsyncSession, tenant_id: UUID, menu_item_id: UUID
-) -> dict[str, Any]:
+async def _gather_inputs(db: AsyncSession, tenant_id: UUID, menu_item_id: UUID) -> dict[str, Any]:
     mi = (
-        await db.execute(
-            text("SELECT id, name FROM menu_items WHERE id = :mid AND tenant_id = :tid"),
-            {"mid": menu_item_id, "tid": tenant_id},
+        (
+            await db.execute(
+                text("SELECT id, name FROM menu_items WHERE id = :mid AND tenant_id = :tid"),
+                {"mid": menu_item_id, "tid": tenant_id},
+            )
         )
-    ).mappings().fetchone()
+        .mappings()
+        .fetchone()
+    )
     if mi is None:
         raise MenuItemNotFound
 
@@ -129,7 +131,9 @@ async def _gather_inputs(
                 ),
                 {"tid": tenant_id},
             )
-        ).mappings().all()
+        )
+        .mappings()
+        .all()
     ]
     mods = [
         {"modifier_id": str(r["id"]), "name": r["name"]}
@@ -141,7 +145,9 @@ async def _gather_inputs(
                 ),
                 {"tid": tenant_id, "mid": menu_item_id},
             )
-        ).mappings().all()
+        )
+        .mappings()
+        .all()
     ]
     # cuisine_type is not a column on tenants; the full menu carries cuisine context (v5 §2).
     return {
@@ -167,9 +173,7 @@ def _log_cost(
     higher-spend case) is not undercounted."""
     price = _PRICES.get(model_version)
     est_cost = (
-        round(input_tokens / 1e6 * price[0] + output_tokens / 1e6 * price[1], 6)
-        if price
-        else None
+        round(input_tokens / 1e6 * price[0] + output_tokens / 1e6 * price[1], 6) if price else None
     )
     log.info(
         "llm.suggest",
@@ -203,9 +207,7 @@ async def suggest_recipe(
     # rather than 503-ing away usable output.
     if issues:
         try:
-            retry = await llm.infer_recipe(
-                prompt_inputs=inputs, repair_feedback="; ".join(issues)
-            )
+            retry = await llm.infer_recipe(prompt_inputs=inputs, repair_feedback="; ".join(issues))
         except LLMUnavailable:
             log.warning(
                 "llm.suggest.repair_failed",

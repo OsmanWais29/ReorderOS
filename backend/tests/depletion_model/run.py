@@ -36,8 +36,11 @@ async def run_stream(
     tid = UUID(seeded.tenant_id)
     for sli_id, line in lines:
         status, reason = await handler.process_line(
-            session, tid, UUID(sli_id),
-            recorded_at=SALE_AT, partial_refunds_enabled=partial_refunds_enabled,
+            session,
+            tid,
+            UUID(sli_id),
+            recorded_at=SALE_AT,
+            partial_refunds_enabled=partial_refunds_enabled,
         )
         if line.refund_after_deplete:
             await handler.reverse_line(session, tid, UUID(sli_id))
@@ -65,8 +68,11 @@ async def run_timeline(
             lines = await seed_orders(session, world, [event], seeded)
             for sli_id, line in lines:
                 await handler.process_line(
-                    session, tid, UUID(sli_id),
-                    recorded_at=ts, partial_refunds_enabled=partial_refunds_enabled,
+                    session,
+                    tid,
+                    UUID(sli_id),
+                    recorded_at=ts,
+                    partial_refunds_enabled=partial_refunds_enabled,
                 )
                 if line.refund_after_deplete:
                     await handler.reverse_line(session, tid, UUID(sli_id))
@@ -85,16 +91,20 @@ async def actual_ledger(session: Any, seeded: Seeded) -> dict[str, Decimal]:
     net of exactly zero are dropped so the comparison matches expected_ledger (which omits
     no-movement items). A refunded-then-reversed item nets to 0 → dropped (= absent in both)."""
     rows = (
-        await session.execute(
-            text("""
+        (
+            await session.execute(
+                text("""
                 SELECT inventory_item_id, COALESCE(SUM(delta), 0) AS net
                   FROM inventory_movements
                  WHERE tenant_id = :t
                  GROUP BY inventory_item_id
             """),
-            {"t": seeded.tenant_id},
+                {"t": seeded.tenant_id},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     by_id_to_key = {v: k for k, v in seeded.item_ids.items()}
     out: dict[str, Decimal] = {}
     for r in rows:

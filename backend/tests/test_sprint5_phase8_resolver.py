@@ -111,16 +111,12 @@ def test_partial_refund_gated_off_is_ineligible() -> None:
 
 
 def test_partial_refund_gated_on_nonrefunded_line_eligible() -> None:
-    res = _r(
-        payment_state="PARTIALLY_REFUNDED", is_refunded=False, partial_refunds_enabled=True
-    )
+    res = _r(payment_state="PARTIALLY_REFUNDED", is_refunded=False, partial_refunds_enabled=True)
     assert res.eligible is True and res.reason is None
 
 
 def test_partial_refund_gated_on_refunded_line_is_line_refunded() -> None:
-    res = _r(
-        payment_state="PARTIALLY_REFUNDED", is_refunded=True, partial_refunds_enabled=True
-    )
+    res = _r(payment_state="PARTIALLY_REFUNDED", is_refunded=True, partial_refunds_enabled=True)
     assert res.eligible is False and res.reason == LINE_REFUNDED
 
 

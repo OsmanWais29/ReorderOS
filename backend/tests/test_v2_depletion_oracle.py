@@ -82,11 +82,15 @@ async def test_mode_a_aggregation_conversion_yield(db: AsyncSession) -> None:
         ],
         conversions=[Conversion("g", "kg", D("0.001"))],
         recipes=[
-            Recipe("cake", yield_quantity=D("2"), ingredients=[
-                Ingredient("flour", D("300"), "g"),  # → 0.3 kg
-                Ingredient("flour", D("200"), "g"),  # → 0.2 kg (same item: aggregate)
-                Ingredient("sugar", D("200"), "g"),  # identity
-            ]),
+            Recipe(
+                "cake",
+                yield_quantity=D("2"),
+                ingredients=[
+                    Ingredient("flour", D("300"), "g"),  # → 0.3 kg
+                    Ingredient("flour", D("200"), "g"),  # → 0.2 kg (same item: aggregate)
+                    Ingredient("sugar", D("200"), "g"),  # identity
+                ],
+            ),
         ],
     )
     orders = [Order([Line("cake", D("3"))])]
@@ -102,7 +106,9 @@ async def test_mode_b_signal_applies_yield_factor(db: AsyncSession) -> None:
     world = World(
         items=[Item("beans", MODE_B, "g", yield_factor=D("0.8"), opening_count=D("1000"))],
         recipes=[
-            Recipe("latte", yield_quantity=D("3"), ingredients=[Ingredient("beans", D("150"), "g")]),
+            Recipe(
+                "latte", yield_quantity=D("3"), ingredients=[Ingredient("beans", D("150"), "g")]
+            ),
         ],
     )
     orders = [Order([Line("latte", D("3"))])]
@@ -116,11 +122,17 @@ async def test_base_plus_modifier_shared_item(db: AsyncSession) -> None:
     world = World(
         items=[Item("milk", MODE_A, "ml")],
         recipes=[
-            Recipe("latte", yield_quantity=D("1"), ingredients=[Ingredient("milk", D("200"), "ml")]),
+            Recipe(
+                "latte", yield_quantity=D("1"), ingredients=[Ingredient("milk", D("200"), "ml")]
+            ),
         ],
         modifiers=[
-            Modifier("extra_milk", menu_item="latte", yield_quantity=D("2"),
-                     ingredients=[Ingredient("milk", D("100"), "ml")]),
+            Modifier(
+                "extra_milk",
+                menu_item="latte",
+                yield_quantity=D("2"),
+                ingredients=[Ingredient("milk", D("100"), "ml")],
+            ),
         ],
     )
     # base: 2*200/1 = 400 ; modifier: 2*(×3)*100/2 = 300 ; net δ milk = -(400+300) = -700
@@ -135,7 +147,9 @@ async def test_mixed_eligibility_stream(db: AsyncSession) -> None:
     world = World(
         items=[Item("cheese", MODE_A, "g")],
         recipes=[
-            Recipe("pizza", yield_quantity=D("1"), ingredients=[Ingredient("cheese", D("50"), "g")]),
+            Recipe(
+                "pizza", yield_quantity=D("1"), ingredients=[Ingredient("cheese", D("50"), "g")]
+            ),
         ],
     )
     orders = [
@@ -157,7 +171,9 @@ async def test_refund_after_deplete_nets_to_zero(db: AsyncSession) -> None:
     world = World(
         items=[Item("tomato", MODE_A, "g")],
         recipes=[
-            Recipe("sauce", yield_quantity=D("1"), ingredients=[Ingredient("tomato", D("80"), "g")]),
+            Recipe(
+                "sauce", yield_quantity=D("1"), ingredients=[Ingredient("tomato", D("80"), "g")]
+            ),
         ],
     )
     orders = [
@@ -177,10 +193,14 @@ async def test_mixed_modes_one_world(db: AsyncSession) -> None:
             Item("oil", MODE_B, "ml", yield_factor=D("1.25"), opening_count=D("500")),
         ],
         recipes=[
-            Recipe("flatbread", yield_quantity=D("4"), ingredients=[
-                Ingredient("dough", D("400"), "g"),
-                Ingredient("oil", D("40"), "ml"),
-            ]),
+            Recipe(
+                "flatbread",
+                yield_quantity=D("4"),
+                ingredients=[
+                    Ingredient("dough", D("400"), "g"),
+                    Ingredient("oil", D("40"), "ml"),
+                ],
+            ),
         ],
     )
     orders = [Order([Line("flatbread", D("8"))])]
@@ -199,13 +219,17 @@ async def test_unmapped_and_missing_conversion_contribute_nothing(db: AsyncSessi
         recipes=[
             Recipe("soda", yield_quantity=D("1"), ingredients=[Ingredient("syrup", D("30"), "ml")]),
             Recipe("tea", yield_quantity=D("1"), ingredients=[Ingredient("water", D("10"), "g")]),
-            Recipe("juice", yield_quantity=D("1"),
-                   ingredients=[Ingredient("syrup", D("20"), "ml")], confirmed=False),
+            Recipe(
+                "juice",
+                yield_quantity=D("1"),
+                ingredients=[Ingredient("syrup", D("20"), "ml")],
+                confirmed=False,
+            ),
         ],
     )
     orders = [
-        Order([Line("soda", D("2"))]),   # eligible, convertible → syrup -60
-        Order([Line("tea", D("5"))]),    # missing g->ml conversion → 0
+        Order([Line("soda", D("2"))]),  # eligible, convertible → syrup -60
+        Order([Line("tea", D("5"))]),  # missing g->ml conversion → 0
         Order([Line("juice", D("9"))]),  # unconfirmed recipe → unmapped → 0
     ]
     await _assert_world(db, world, orders)

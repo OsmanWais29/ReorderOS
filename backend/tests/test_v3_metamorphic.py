@@ -110,8 +110,12 @@ async def test_inert_isolation_unmapped_line(db: AsyncSession) -> None:
         items=[Item("flour", MODE_A, "g")],
         recipes=[
             Recipe("bun", yield_quantity=D("2"), ingredients=[Ingredient("flour", D("100"), "g")]),
-            Recipe("special", yield_quantity=D("1"),
-                   ingredients=[Ingredient("flour", D("50"), "g")], confirmed=False),
+            Recipe(
+                "special",
+                yield_quantity=D("1"),
+                ingredients=[Ingredient("flour", D("50"), "g")],
+                confirmed=False,
+            ),
         ],
     )
     stream = [Order([Line("bun", D("4"))])]
@@ -208,8 +212,7 @@ async def test_batch_ratio_invariant_across_yield(db: AsyncSession) -> None:
         world = World(
             items=[Item("stock", MODE_A, "ml")],
             recipes=[
-                Recipe("soup", yield_quantity=D(n),
-                       ingredients=[Ingredient("stock", batch, "ml")]),
+                Recipe("soup", yield_quantity=D(n), ingredients=[Ingredient("stock", batch, "ml")]),
             ],
         )
         ledger = await _run(db, world, [Order([Line("soup", D(n))])])  # sell N servings
@@ -228,7 +231,9 @@ async def test_conversion_invariance_unit_relabel(db: AsyncSession) -> None:
     grams = World(
         items=[Item("milk", MODE_A, "g")],
         recipes=[
-            Recipe("latte", yield_quantity=D("1"), ingredients=[Ingredient("milk", D("1000"), "g")]),
+            Recipe(
+                "latte", yield_quantity=D("1"), ingredients=[Ingredient("milk", D("1000"), "g")]
+            ),
         ],
     )
     kilos = World(

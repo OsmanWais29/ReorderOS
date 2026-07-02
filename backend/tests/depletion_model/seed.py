@@ -87,9 +87,13 @@ async def seed_world(session: Any, world: World) -> Seeded:
                     RETURNING id
                 """),
                 {
-                    "t": tid, "n": f"{it.key}-{uuid.uuid4().hex[:6]}", "mode": it.mode,
-                    "su": s.uom_ids[it.storage_unit], "cad": cadence,
-                    "lca": last_count_at, "lcq": it.opening_count,
+                    "t": tid,
+                    "n": f"{it.key}-{uuid.uuid4().hex[:6]}",
+                    "mode": it.mode,
+                    "su": s.uom_ids[it.storage_unit],
+                    "cad": cadence,
+                    "lca": last_count_at,
+                    "lcq": it.opening_count,
                 },
             )
         ).scalar_one()
@@ -113,15 +117,22 @@ async def seed_world(session: Any, world: World) -> Seeded:
                     (tenant_id, inventory_item_id, from_unit, to_unit, factor, dimension)
                 VALUES (:t, NULL, :f, :to, :factor, :dim)
             """),
-            {"t": tid, "f": c.from_unit, "to": c.to_unit, "factor": c.factor,
-             "dim": DIMENSION_OF.get(c.from_unit, "count")},
+            {
+                "t": tid,
+                "f": c.from_unit,
+                "to": c.to_unit,
+                "factor": c.factor,
+                "dim": DIMENSION_OF.get(c.from_unit, "count"),
+            },
         )
 
     # recipes → recipe_versions → recipe_ingredients (reuse the suite helper)
     for r in world.recipes:
         ingredients = [(s.item_ids[ing.item], ing.qty, ing.unit) for ing in r.ingredients]
         seeded = await seed_recipe_version_session(
-            session, tid, ingredients=ingredients,
+            session,
+            tid,
+            ingredients=ingredients,
             yield_quantity=r.yield_quantity,
             status="confirmed" if r.confirmed else "draft",
         )
@@ -148,7 +159,12 @@ async def seed_world(session: Any, world: World) -> Seeded:
                             (tenant_id, menu_item_id, name, modifier_type, status, pos_modifier_id)
                         VALUES (:t, :m, :n, 'additive', 'confirmed', :pm) RETURNING id
                     """),
-                    {"t": tid, "m": mi_id, "n": f"{m.key}-{uuid.uuid4().hex[:5]}", "pm": pos_modifier_id},
+                    {
+                        "t": tid,
+                        "m": mi_id,
+                        "n": f"{m.key}-{uuid.uuid4().hex[:5]}",
+                        "pm": pos_modifier_id,
+                    },
                 )
             ).scalar_one()
         )
@@ -210,8 +226,14 @@ async def seed_orders(
                      state, payment_state, processed_at)
                 VALUES (:oid, :t, :iid, :cord, 0, :st, :ps, now())
             """),
-            {"oid": order_id, "t": tid, "iid": inbox_id, "cord": f"ord_{uuid.uuid4().hex[:8]}",
-             "st": order.order_state, "ps": order.payment_state},
+            {
+                "oid": order_id,
+                "t": tid,
+                "iid": inbox_id,
+                "cord": f"ord_{uuid.uuid4().hex[:8]}",
+                "st": order.order_state,
+                "ps": order.payment_state,
+            },
         )
         for line in order.lines:
             sli_id = str(uuid.uuid4())
@@ -225,10 +247,15 @@ async def seed_orders(
                     VALUES (:id, :t, :oid, :cli, :mid, 'L', :qty, 0, 0, :ref, :void, :rv, 'pending')
                 """),
                 {
-                    "id": sli_id, "t": tid, "oid": order_id,
+                    "id": sli_id,
+                    "t": tid,
+                    "oid": order_id,
                     "cli": f"cli_{uuid.uuid4().hex[:8]}",
                     "mid": seeded.menu_item_ids.get(line.menu_item),
-                    "qty": line.qty, "ref": line.is_refunded, "void": line.is_voided, "rv": rv,
+                    "qty": line.qty,
+                    "ref": line.is_refunded,
+                    "void": line.is_voided,
+                    "rv": rv,
                 },
             )
             for mod_key, slim_qty in line.modifiers:
@@ -240,8 +267,14 @@ async def seed_orders(
                              quantity, pos_modifier_id)
                         VALUES (gen_random_uuid(), :t, :sli, :mod, :mv, :q, :pid)
                     """),
-                    {"t": tid, "sli": sli_id, "mod": mod_id, "mv": mv_id, "q": slim_qty,
-                     "pid": f"pos_{uuid.uuid4().hex[:6]}"},
+                    {
+                        "t": tid,
+                        "sli": sli_id,
+                        "mod": mod_id,
+                        "mv": mv_id,
+                        "q": slim_qty,
+                        "pid": f"pos_{uuid.uuid4().hex[:6]}",
+                    },
                 )
             out.append((sli_id, line))
     await session.flush()

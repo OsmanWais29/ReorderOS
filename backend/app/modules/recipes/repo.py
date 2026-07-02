@@ -91,8 +91,9 @@ async def list_recipes(
     Volume is the 30-day sum(quantity) of active (non-refunded, non-voided) sale
     lines, served by the idx_sli_active_sales partial index (0006)."""
     rows = (
-        await db.execute(
-            text("""
+        (
+            await db.execute(
+                text("""
                 SELECT
                     mi.id                                        AS menu_item_id,
                     mi.name                                      AS name,
@@ -123,9 +124,12 @@ async def list_recipes(
                   AND (:include_skipped OR COALESCE(r.status, 'none') <> 'skipped')
                 ORDER BY COALESCE(v.qty, 0) DESC, mi.name ASC
             """),
-            {"tid": tenant_id, "include_skipped": include_skipped},
+                {"tid": tenant_id, "include_skipped": include_skipped},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     return [
         {
             "menu_item_id": row["menu_item_id"],
@@ -146,8 +150,9 @@ async def get_recipe(
     """Single menu item's recipe state + draft ingredients. None if the menu item
     isn't this tenant's (→ 404)."""
     row = (
-        await db.execute(
-            text("""
+        (
+            await db.execute(
+                text("""
                 SELECT mi.id AS menu_item_id, mi.name AS name,
                        COALESCE(r.status, 'none') AS status,
                        rd.draft_ingredients AS ingredients
@@ -158,9 +163,12 @@ async def get_recipe(
                     ON rd.tenant_id = mi.tenant_id AND rd.recipe_id = r.id
                 WHERE mi.id = :mid AND mi.tenant_id = :tid
             """),
-            {"mid": menu_item_id, "tid": tenant_id},
+                {"mid": menu_item_id, "tid": tenant_id},
+            )
         )
-    ).mappings().fetchone()
+        .mappings()
+        .fetchone()
+    )
     if row is None:
         return None
     return {
@@ -185,23 +193,30 @@ async def save_draft(
 
     Raises MenuItemNotFound (404) / RecipeConfirmed (409)."""
     mi = (
-        await db.execute(
-            text("SELECT id, name FROM menu_items WHERE id = :mid AND tenant_id = :tid"),
-            {"mid": menu_item_id, "tid": tenant_id},
+        (
+            await db.execute(
+                text("SELECT id, name FROM menu_items WHERE id = :mid AND tenant_id = :tid"),
+                {"mid": menu_item_id, "tid": tenant_id},
+            )
         )
-    ).mappings().fetchone()
+        .mappings()
+        .fetchone()
+    )
     if mi is None:
         raise MenuItemNotFound
 
     rec = (
-        await db.execute(
-            text(
-                "SELECT id, status FROM recipes"
-                " WHERE tenant_id = :tid AND menu_item_id = :mid"
-            ),
-            {"tid": tenant_id, "mid": menu_item_id},
+        (
+            await db.execute(
+                text(
+                    "SELECT id, status FROM recipes WHERE tenant_id = :tid AND menu_item_id = :mid"
+                ),
+                {"tid": tenant_id, "mid": menu_item_id},
+            )
         )
-    ).mappings().fetchone()
+        .mappings()
+        .fetchone()
+    )
     if rec is not None and rec["status"] == "confirmed":
         raise RecipeConfirmed
 
@@ -240,9 +255,7 @@ async def save_draft(
     }
 
 
-async def skip_recipe(
-    db: AsyncSession, tenant_id: UUID, menu_item_id: UUID
-) -> dict[str, Any]:
+async def skip_recipe(db: AsyncSession, tenant_id: UUID, menu_item_id: UUID) -> dict[str, Any]:
     """Move a recipe to skipped, preserving any existing draft. Creates the recipe
     row if none exists. Returns the resulting detail (no post-commit re-query).
     Caller commits. Skip is for UN-configured items; a confirmed recipe must be
@@ -250,21 +263,31 @@ async def skip_recipe(
     menu_items.recipe_version_id, which Phase 9 base depletion reads). Raises
     MenuItemNotFound (404) / RecipeConfirmed (409)."""
     mi = (
-        await db.execute(
-            text("SELECT id, name FROM menu_items WHERE id = :mid AND tenant_id = :tid"),
-            {"mid": menu_item_id, "tid": tenant_id},
+        (
+            await db.execute(
+                text("SELECT id, name FROM menu_items WHERE id = :mid AND tenant_id = :tid"),
+                {"mid": menu_item_id, "tid": tenant_id},
+            )
         )
-    ).mappings().fetchone()
+        .mappings()
+        .fetchone()
+    )
     if mi is None:
         raise MenuItemNotFound
 
     # Upsert recipe status to skipped; recipe_drafts is left untouched (preserved).
     rec = (
-        await db.execute(
-            text("SELECT id, status FROM recipes WHERE tenant_id = :tid AND menu_item_id = :mid"),
-            {"tid": tenant_id, "mid": menu_item_id},
+        (
+            await db.execute(
+                text(
+                    "SELECT id, status FROM recipes WHERE tenant_id = :tid AND menu_item_id = :mid"
+                ),
+                {"tid": tenant_id, "mid": menu_item_id},
+            )
         )
-    ).mappings().fetchone()
+        .mappings()
+        .fetchone()
+    )
     if rec is None:
         await db.execute(
             text(
@@ -304,8 +327,9 @@ async def get_progress(db: AsyncSession, tenant_id: UUID) -> dict[str, Any]:
     """confirmed / (active_total - skipped). percent is None when the denominator
     is 0 (no configurable items)."""
     row = (
-        await db.execute(
-            text("""
+        (
+            await db.execute(
+                text("""
                 SELECT
                     count(*) FILTER (WHERE mi.active)                              AS total,
                     count(*) FILTER (WHERE mi.active AND r.status = 'confirmed')   AS confirmed,
@@ -315,9 +339,12 @@ async def get_progress(db: AsyncSession, tenant_id: UUID) -> dict[str, Any]:
                     ON r.tenant_id = mi.tenant_id AND r.menu_item_id = mi.id
                 WHERE mi.tenant_id = :tid
             """),
-            {"tid": tenant_id},
+                {"tid": tenant_id},
+            )
         )
-    ).mappings().fetchone()
+        .mappings()
+        .fetchone()
+    )
     total = int(row["total"]) if row else 0
     confirmed = int(row["confirmed"]) if row else 0
     skipped = int(row["skipped"]) if row else 0
@@ -332,9 +359,7 @@ async def get_progress(db: AsyncSession, tenant_id: UUID) -> dict[str, Any]:
     }
 
 
-async def _resolve_inventory_item(
-    db: AsyncSession, tenant_id: UUID, name: str, unit: str
-) -> UUID:
+async def _resolve_inventory_item(db: AsyncSession, tenant_id: UUID, name: str, unit: str) -> UUID:
     """Step 1 of confirm, per ingredient — resolve-or-create the storage unit and
     dedup-or-create the inventory_item, race-safe via existing unique constraints.
 
@@ -361,14 +386,18 @@ async def _resolve_inventory_item(
         {"tid": tenant_id, "name": unit, "ut": dimension},
     )
     uom = (
-        await db.execute(
-            text(
-                "SELECT id, unit_type FROM units_of_measure"
-                " WHERE tenant_id = :tid AND name = :name"
-            ),
-            {"tid": tenant_id, "name": unit},
+        (
+            await db.execute(
+                text(
+                    "SELECT id, unit_type FROM units_of_measure"
+                    " WHERE tenant_id = :tid AND name = :name"
+                ),
+                {"tid": tenant_id, "name": unit},
+            )
         )
-    ).mappings().one()
+        .mappings()
+        .one()
+    )
     if uom["unit_type"] != dimension:
         raise UnitTypeConflict(
             f"unit {unit!r} exists for this tenant with unit_type "
@@ -401,9 +430,7 @@ async def _resolve_inventory_item(
     return item_id
 
 
-async def confirm_recipe(
-    db: AsyncSession, tenant_id: UUID, menu_item_id: UUID
-) -> dict[str, Any]:
+async def confirm_recipe(db: AsyncSession, tenant_id: UUID, menu_item_id: UUID) -> dict[str, Any]:
     """Confirm a draft into an immutable recipe_version (v5 §7), as ONE transaction.
 
     Locks the parent recipe row (FOR UPDATE) to serialize confirms of the *same*
@@ -424,24 +451,32 @@ async def confirm_recipe(
     DuplicateIngredient(400) / RecipeConfirmed(409) / RecipeSkipped(409) /
     UnitTypeConflict(409)."""
     mi = (
-        await db.execute(
-            text("SELECT id, name FROM menu_items WHERE id = :mid AND tenant_id = :tid"),
-            {"mid": menu_item_id, "tid": tenant_id},
+        (
+            await db.execute(
+                text("SELECT id, name FROM menu_items WHERE id = :mid AND tenant_id = :tid"),
+                {"mid": menu_item_id, "tid": tenant_id},
+            )
         )
-    ).mappings().fetchone()
+        .mappings()
+        .fetchone()
+    )
     if mi is None:
         raise MenuItemNotFound
 
     # Serialize same-recipe confirms; the value read here is authoritative.
     rec = (
-        await db.execute(
-            text(
-                "SELECT id, status FROM recipes"
-                " WHERE tenant_id = :tid AND menu_item_id = :mid FOR UPDATE"
-            ),
-            {"tid": tenant_id, "mid": menu_item_id},
+        (
+            await db.execute(
+                text(
+                    "SELECT id, status FROM recipes"
+                    " WHERE tenant_id = :tid AND menu_item_id = :mid FOR UPDATE"
+                ),
+                {"tid": tenant_id, "mid": menu_item_id},
+            )
         )
-    ).mappings().fetchone()
+        .mappings()
+        .fetchone()
+    )
     if rec is None:
         raise NoDraft
     if rec["status"] == "confirmed":
@@ -470,9 +505,7 @@ async def confirm_recipe(
     # step 1 — resolve units + inventory items (side effects roll back on any failure)
     lines: list[tuple[UUID, float, str]] = []
     for ing in ingredients:
-        item_id = await _resolve_inventory_item(
-            db, tenant_id, str(ing["name"]), str(ing["unit"])
-        )
+        item_id = await _resolve_inventory_item(db, tenant_id, str(ing["name"]), str(ing["unit"]))
         lines.append((item_id, float(ing["quantity"]), str(ing["unit"])))
 
     # step 2 — allocate version_number under the lock, insert the immutable version
@@ -510,10 +543,7 @@ async def confirm_recipe(
 
     # step 4 — link the menu item to the new version
     await db.execute(
-        text(
-            "UPDATE menu_items SET recipe_version_id = :rv"
-            " WHERE id = :mid AND tenant_id = :tid"
-        ),
+        text("UPDATE menu_items SET recipe_version_id = :rv WHERE id = :mid AND tenant_id = :tid"),
         {"rv": rv_id, "mid": menu_item_id, "tid": tenant_id},
     )
 
@@ -559,34 +589,43 @@ async def unconfirm_recipe(
 
     Raises MenuItemNotFound(404) / NotConfirmed(409)."""
     mi = (
-        await db.execute(
-            text(
-                "SELECT id, name, recipe_version_id FROM menu_items"
-                " WHERE id = :mid AND tenant_id = :tid"
-            ),
-            {"mid": menu_item_id, "tid": tenant_id},
+        (
+            await db.execute(
+                text(
+                    "SELECT id, name, recipe_version_id FROM menu_items"
+                    " WHERE id = :mid AND tenant_id = :tid"
+                ),
+                {"mid": menu_item_id, "tid": tenant_id},
+            )
         )
-    ).mappings().fetchone()
+        .mappings()
+        .fetchone()
+    )
     if mi is None:
         raise MenuItemNotFound
 
     rec = (
-        await db.execute(
-            text(
-                "SELECT id, status FROM recipes"
-                " WHERE tenant_id = :tid AND menu_item_id = :mid FOR UPDATE"
-            ),
-            {"tid": tenant_id, "mid": menu_item_id},
+        (
+            await db.execute(
+                text(
+                    "SELECT id, status FROM recipes"
+                    " WHERE tenant_id = :tid AND menu_item_id = :mid FOR UPDATE"
+                ),
+                {"tid": tenant_id, "mid": menu_item_id},
+            )
         )
-    ).mappings().fetchone()
+        .mappings()
+        .fetchone()
+    )
     if rec is None or rec["status"] != "confirmed":
         raise NotConfirmed
     recipe_id = rec["id"]
     rv_id = mi["recipe_version_id"]
 
     rows = (
-        await db.execute(
-            text("""
+        (
+            await db.execute(
+                text("""
                 SELECT ii.name AS name, ri.quantity AS quantity, ri.unit AS unit,
                        ri.inventory_item_id AS inventory_item_id
                 FROM recipe_ingredients ri
@@ -594,9 +633,12 @@ async def unconfirm_recipe(
                 WHERE ri.tenant_id = :tid AND ri.recipe_version_id = :rv
                 ORDER BY ii.name
             """),
-            {"tid": tenant_id, "rv": rv_id},
+                {"tid": tenant_id, "rv": rv_id},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     draft_ingredients = [
         {
             "name": r["name"],
@@ -630,10 +672,7 @@ async def unconfirm_recipe(
         {"rid": recipe_id},
     )
     await db.execute(
-        text(
-            "UPDATE menu_items SET recipe_version_id = NULL"
-            " WHERE id = :mid AND tenant_id = :tid"
-        ),
+        text("UPDATE menu_items SET recipe_version_id = NULL WHERE id = :mid AND tenant_id = :tid"),
         {"mid": menu_item_id, "tid": tenant_id},
     )
 

@@ -40,9 +40,9 @@ from decimal import Decimal
 
 import asyncpg
 
-RECIPE_QTY = "2.0"          # grams of the ingredient per 1 unit of the menu item
-LINE_QTY = 3               # units sold in the simulated order
-EXPECT_DELTA = Decimal(RECIPE_QTY) * LINE_QTY * -1   # -6.0 (sale_depletion is negative)
+RECIPE_QTY = "2.0"  # grams of the ingredient per 1 unit of the menu item
+LINE_QTY = 3  # units sold in the simulated order
+EXPECT_DELTA = Decimal(RECIPE_QTY) * LINE_QTY * -1  # -6.0 (sale_depletion is negative)
 POLL_SECONDS = int(os.environ.get("SIM_POLL_SECONDS", "60"))
 
 
@@ -71,35 +71,49 @@ async def seed(conn: asyncpg.Connection) -> dict:
     h = tid.hex[:8]
     await conn.execute(
         "INSERT INTO tenants (id, slug, name) VALUES ($1,$2,$3)",
-        tid, f"v7sim-{h}", f"V7Sim_{h}",
+        tid,
+        f"v7sim-{h}",
+        f"V7Sim_{h}",
     )
     uom = await conn.fetchval(
         "INSERT INTO units_of_measure (tenant_id,name,abbreviation,unit_type)"
-        " VALUES ($1,'g','g','weight') RETURNING id", tid,
+        " VALUES ($1,'g','g','weight') RETURNING id",
+        tid,
     )
     inv = await conn.fetchval(
         "INSERT INTO inventory_items"
         " (tenant_id,name,inventory_mode,storage_unit_id,storage_to_recipe_factor)"
         " VALUES ($1,$2,'recipe_deducted',$3,1.0) RETURNING id",
-        tid, f"flour-{h}", uom,
+        tid,
+        f"flour-{h}",
+        uom,
     )
     pos_item_id = f"SIMITEM_{h}"
     mi = await conn.fetchval(
         "INSERT INTO menu_items (tenant_id,pos_item_id,name) VALUES ($1,$2,$3) RETURNING id",
-        tid, pos_item_id, f"Sim Burger {h}",
+        tid,
+        pos_item_id,
+        f"Sim Burger {h}",
     )
     rec = await conn.fetchval(
         "INSERT INTO recipes (tenant_id,menu_item_id,status) VALUES ($1,$2,'confirmed') RETURNING id",
-        tid, mi,
+        tid,
+        mi,
     )
     rv = await conn.fetchval(
         "INSERT INTO recipe_versions (tenant_id,recipe_id,version_number,yield_quantity)"
-        " VALUES ($1,$2,1,1) RETURNING id", tid, rec,
+        " VALUES ($1,$2,1,1) RETURNING id",
+        tid,
+        rec,
     )
     await conn.execute(
         "INSERT INTO recipe_ingredients"
         " (tenant_id,recipe_version_id,inventory_item_id,quantity,unit)"
-        " VALUES ($1,$2,$3,$4::numeric,'g')", tid, rv, inv, RECIPE_QTY,
+        " VALUES ($1,$2,$3,$4::numeric,'g')",
+        tid,
+        rv,
+        inv,
+        RECIPE_QTY,
     )
     await conn.execute("UPDATE menu_items SET recipe_version_id=$1 WHERE id=$2", rv, mi)
 
@@ -109,12 +123,24 @@ async def seed(conn: asyncpg.Connection) -> dict:
     li_id = f"li_{h}"
     now_ms = int(time.time() * 1000)
     order = {
-        "id": order_id, "state": "locked", "paymentState": "PAID", "total": 4200,
-        "createdTime": now_ms - 60000, "modifiedTime": now_ms,
-        "lineItems": {"elements": [
-            {"id": li_id, "item": {"id": pos_item_id}, "name": "Sim Burger",
-             "price": 1400, "unitQty": LINE_QTY, "discountAmount": 0},
-        ]},
+        "id": order_id,
+        "state": "locked",
+        "paymentState": "PAID",
+        "total": 4200,
+        "createdTime": now_ms - 60000,
+        "modifiedTime": now_ms,
+        "lineItems": {
+            "elements": [
+                {
+                    "id": li_id,
+                    "item": {"id": pos_item_id},
+                    "name": "Sim Burger",
+                    "price": 1400,
+                    "unitQty": LINE_QTY,
+                    "discountAmount": 0,
+                },
+            ]
+        },
     }
     inbox_id = uuid.uuid4()
     await conn.execute(
@@ -124,11 +150,20 @@ async def seed(conn: asyncpg.Connection) -> dict:
         "  fetched_payload,fetched_at)"
         " VALUES ($1,$2,NULL,'clover',$3,'O','UPDATE',$4,$5::jsonb,true,'webhook','pending',"
         "         $6::jsonb,now())",
-        inbox_id, tid, order_id, now_ms, json.dumps({"sim": True}), json.dumps(order),
+        inbox_id,
+        tid,
+        order_id,
+        now_ms,
+        json.dumps({"sim": True}),
+        json.dumps(order),
     )
     return {
-        "tid": tid, "inv": inv, "li_id": li_id, "order_id": order_id,
-        "inbox_id": inbox_id, "pos_item_id": pos_item_id,
+        "tid": tid,
+        "inv": inv,
+        "li_id": li_id,
+        "order_id": order_id,
+        "inbox_id": inbox_id,
+        "pos_item_id": pos_item_id,
     }
 
 
@@ -136,7 +171,8 @@ async def wait_for_worker(conn: asyncpg.Connection, s: dict) -> str:
     deadline = time.time() + POLL_SECONDS
     while time.time() < deadline:
         state = await conn.fetchval(
-            "SELECT state FROM pos_event_inbox WHERE inbox_id=$1", s["inbox_id"],
+            "SELECT state FROM pos_event_inbox WHERE inbox_id=$1",
+            s["inbox_id"],
         )
         if state in ("processed", "failed"):
             return state
@@ -152,37 +188,48 @@ async def report(conn: asyncpg.Connection, s: dict, final_state: str) -> bool:
         "SELECT state, retry_count, last_error FROM pos_event_inbox WHERE inbox_id=$1",
         s["inbox_id"],
     )
-    print(f"1-2 inbox       : state={row['state']} retries={row['retry_count']} "
-          f"err={row['last_error']!r}")
+    print(
+        f"1-2 inbox       : state={row['state']} retries={row['retry_count']} "
+        f"err={row['last_error']!r}"
+    )
     # hop 3: order
     o = await conn.fetchrow(
         "SELECT state, payment_state, total_amount_cents FROM orders"
-        " WHERE tenant_id=$1 AND clover_order_id=$2", s["tid"], s["order_id"],
+        " WHERE tenant_id=$1 AND clover_order_id=$2",
+        s["tid"],
+        s["order_id"],
     )
     print(f"3   order       : {dict(o) if o else 'MISSING'}")
     # hop 4: line item
     li = await conn.fetchrow(
         "SELECT quantity, depletion_status, depletion_reason FROM sale_line_items"
-        " WHERE tenant_id=$1 AND clover_line_item_id=$2", s["tid"], s["li_id"],
+        " WHERE tenant_id=$1 AND clover_line_item_id=$2",
+        s["tid"],
+        s["li_id"],
     )
     print(f"4   line        : {dict(li) if li else 'MISSING'}")
     # hop 5: inventory movement (the depletion ledger)
     mv = await conn.fetch(
         "SELECT movement_type, delta, source_type FROM inventory_movements"
-        " WHERE tenant_id=$1 AND inventory_item_id=$2 ORDER BY created_at", s["tid"], s["inv"],
+        " WHERE tenant_id=$1 AND inventory_item_id=$2 ORDER BY created_at",
+        s["tid"],
+        s["inv"],
     )
     print(f"5   movements   : {[dict(m) for m in mv]}")
     print(f"    expected delta = {EXPECT_DELTA} (recipe {RECIPE_QTY}g x {LINE_QTY} units)")
 
     ok = (
         final_state == "processed"
-        and li is not None and li["depletion_status"] == "depleted"
+        and li is not None
+        and li["depletion_status"] == "depleted"
         and len(mv) == 1
         and mv[0]["movement_type"] == "sale_depletion"
         and mv[0]["delta"] == EXPECT_DELTA
     )
-    print("\nRESULT:", "✅ PASS — staging worker depleted correctly"
-          if ok else "❌ FAIL — see trace above")
+    print(
+        "\nRESULT:",
+        "✅ PASS — staging worker depleted correctly" if ok else "❌ FAIL — see trace above",
+    )
     return ok
 
 
@@ -190,8 +237,10 @@ async def main() -> int:
     conn = await _connect()
     try:
         s = await seed(conn)
-        print(f"seeded inbox event {s['inbox_id']} (order {s['order_id']}); "
-              f"waiting up to {POLL_SECONDS}s for the live staging worker…")
+        print(
+            f"seeded inbox event {s['inbox_id']} (order {s['order_id']}); "
+            f"waiting up to {POLL_SECONDS}s for the live staging worker…"
+        )
         final_state = await wait_for_worker(conn, s)
         ok = await report(conn, s, final_state)
         return 0 if ok else 1

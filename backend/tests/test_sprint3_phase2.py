@@ -85,6 +85,12 @@ async def _mv(
     )
 
 
+# ⚠️ NOT the canonical on_hand — DO NOT copy as a reference (V1 finding F3.1-oracle).
+# This test-local approximation uses SUM(ABS(delta)) for signals, counts only 'sale_signal'
+# (excludes sale_signal_reversal), and ignores yield_factor_applied. It coincides with the
+# production on_hand ONLY on reversal-free, yield-1 data (all this file uses). The canonical
+# formula is inventory_accounting_semantics.md §3 (SUM(delta × yield) over signal AND reversal);
+# the single correct reference lands in V2 (tests/reference_models/depletion.py), which replaces this.
 async def _on_hand(conn: asyncpg.Connection, tenant_id: str, item_id: str) -> Decimal | None:
     row = await conn.fetchrow(
         """

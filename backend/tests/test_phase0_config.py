@@ -45,3 +45,67 @@ def test_sprint4_config_key_is_present(attr):
         f"Sprint 4 config '{attr}' is missing or empty. "
         f"Set the corresponding env var before deploying."
     )
+
+
+# ── F1.3: production fail-closed on missing security secrets ───────────────────
+
+_PROD_REQUIRED_ENV = [
+    "TOKEN_ENCRYPTION_KEY",
+    "SERVICE_DATABASE_URL",
+    "WORKOS_CLIENT_ID",
+    "WORKOS_JWKS_URL",
+    "CLOVER_APP_ID",
+    "CLOVER_APP_SECRET",
+    "CLOVER_WEBHOOK_AUTH_CODE",
+]
+
+
+def _set_all_prod_secrets(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@h:5432/d")
+    vals = {
+        "TOKEN_ENCRYPTION_KEY": "k",
+        "SERVICE_DATABASE_URL": "postgresql://u:p@h:5432/d",
+        "WORKOS_CLIENT_ID": "client",
+        "WORKOS_JWKS_URL": "https://jwks",
+        "CLOVER_APP_ID": "app",
+        "CLOVER_APP_SECRET": "secret",
+        "CLOVER_WEBHOOK_AUTH_CODE": "whc",
+    }
+    for k, v in vals.items():
+        monkeypatch.setenv(k, v)
+
+
+@pytest.mark.parametrize("missing", _PROD_REQUIRED_ENV)
+def test_production_fails_closed_on_missing_secret(monkeypatch, missing):
+    """F1.3: in production, an absent required secret must FAIL THE BOOT (not boot silently deaf).
+    Injects the failure (drops one secret) — reddens if the production validator is removed."""
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    _set_all_prod_secrets(monkeypatch)
+    monkeypatch.delenv(missing, raising=False)
+    with pytest.raises(ValidationError) as exc:
+        Settings(_env_file=None)
+    assert "fail-closed" in str(exc.value) and missing in str(exc.value)
+
+
+def test_production_boots_with_all_secrets(monkeypatch):
+    """All required secrets present → production boots (no false-positive)."""
+    from app.core.config import Settings
+
+    _set_all_prod_secrets(monkeypatch)
+    s = Settings(_env_file=None)
+    assert s.is_production
+
+
+def test_non_production_boots_without_secrets(monkeypatch):
+    """local/dev/test never require the secrets — the validator is production-only."""
+    from app.core.config import Settings
+
+    monkeypatch.setenv("APP_ENV", "local")
+    for var in _PROD_REQUIRED_ENV:
+        monkeypatch.delenv(var, raising=False)
+    s = Settings(_env_file=None)
+    assert not s.is_production

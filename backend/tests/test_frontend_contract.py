@@ -30,6 +30,7 @@ pytestmark = pytest.mark.integration
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+
 def _unique_slug() -> str:
     return f"test-{uuid.uuid4().hex[:8]}"
 
@@ -65,6 +66,7 @@ async def _register_tenant(client: AsyncClient, slug: str, name: str) -> dict[st
 
 # ── Fixture: authenticated client with a fresh tenant ─────────────────────────
 
+
 @pytest.fixture
 async def authed(client: AsyncClient):
     """Client with owner identity + a freshly registered tenant."""
@@ -94,6 +96,7 @@ async def authed(client: AsyncClient):
 #   X-Tenant-Id: <tenant_id>
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 @pytest.mark.asyncio
 async def test_clover_status_shape_when_not_connected(authed):
     """Returns {connected: false} with the expected keys when no connection exists."""
@@ -115,8 +118,9 @@ async def test_clover_status_requires_auth(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_clover_status_after_connection(authed, admin_conn):
     """Returns {connected: true, merchant_id: <id>} once a connection is seeded."""
-    from app.core.encryption import TokenEncryption
     from uuid6 import uuid7
+
+    from app.core.encryption import TokenEncryption
 
     tid = authed["tenant_id"]
     mid = f"merch_{uuid.uuid4().hex[:8]}"
@@ -132,8 +136,11 @@ async def test_clover_status_after_connection(authed, admin_conn):
                   $4, now()+interval'1 hour',
                   $5, now()+interval'30 days', 'active')
         """,
-        str(uuid7()), tid, mid,
-        enc.encrypt("test_access"), enc.encrypt("test_refresh"),
+        str(uuid7()),
+        tid,
+        mid,
+        enc.encrypt("test_access"),
+        enc.encrypt("test_refresh"),
     )
 
     client: AsyncClient = authed["client"]
@@ -150,6 +157,7 @@ async def test_clover_status_after_connection(authed, admin_conn):
 # Called by more.tsx and connecting.tsx (owner only).
 # Returns {"url": "<clover_oauth_url>"}
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 @pytest.mark.asyncio
 async def test_connect_url_shape(authed):
@@ -202,6 +210,7 @@ async def test_connect_url_requires_auth(client: AsyncClient):
 # Body: {slug, name}  Returns: {tenant, user, membership}
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 @pytest.mark.asyncio
 async def test_register_tenant_shape(client: AsyncClient):
     """Returns {tenant, user, membership} with correct sub-keys."""
@@ -252,6 +261,7 @@ async def test_register_tenant_slug_validation(client: AsyncClient):
 # Must return {user, tenants, active_tenant_id}.
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 @pytest.mark.asyncio
 async def test_me_shape_new_user(client: AsyncClient):
     """New user gets {user: {...}, tenants: [], active_tenant_id: null}."""
@@ -287,6 +297,7 @@ async def test_me_shows_tenant_after_registration(client: AsyncClient):
 # Called by Clover (not the frontend), but verified here because the
 # frontend test plan expects orders to flow through.
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 @pytest.mark.asyncio
 async def test_webhook_verification_ping(client: AsyncClient):

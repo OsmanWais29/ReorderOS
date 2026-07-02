@@ -16,9 +16,9 @@ from app.modules.inventory.services import (
     create_receipt,
     record_count_event,
     record_opening_balance,
-    record_sale_inventory_effect,
 )
 from tests.conftest import seed_tenant, seed_user
+from tests.helpers.sprint5 import seed_recipe_version
 
 pytestmark = pytest.mark.integration
 
@@ -96,24 +96,10 @@ async def _mk_recipe(
     recipe_qty: float,
 ) -> tuple[str, str]:
     """Returns (recipe_version_id, recipe_ingredient_id)."""
-    rv_row = await conn.fetchrow(
-        "INSERT INTO recipe_versions (tenant_id, name) VALUES ($1, $2) RETURNING id",
-        uuid.UUID(tenant_id),
-        f"rv-{uuid.uuid4().hex[:6]}",
+    seeded = await seed_recipe_version(
+        conn, tenant_id, ingredients=[(inventory_item_id, recipe_qty)]
     )
-    rv_id = str(rv_row["id"])
-    ri_row = await conn.fetchrow(
-        """
-        INSERT INTO recipe_ingredients
-            (tenant_id, recipe_version_id, inventory_item_id, quantity)
-        VALUES ($1, $2, $3, $4) RETURNING id
-        """,
-        uuid.UUID(tenant_id),
-        uuid.UUID(rv_id),
-        uuid.UUID(inventory_item_id),
-        recipe_qty,
-    )
-    return rv_id, str(ri_row["id"])
+    return seeded.recipe_version_id, seeded.ingredient_ids[0]
 
 
 async def _mk_sale_line(
@@ -162,6 +148,12 @@ async def _mk_sale_line(
     return str(row["id"])
 
 
+# ⚠️ NOT the canonical on_hand — DO NOT copy as a reference (V1 finding F3.1-oracle).
+# This test-local approximation uses SUM(ABS(delta)) for signals, counts only 'sale_signal'
+# (excludes sale_signal_reversal), and ignores yield_factor_applied. It coincides with the
+# production on_hand ONLY on reversal-free, yield-1 data (all this file uses). The canonical
+# formula is inventory_accounting_semantics.md §3 (SUM(delta × yield) over signal AND reversal);
+# the single correct reference lands in V2 (tests/reference_models/depletion.py), which replaces this.
 async def _on_hand(conn: asyncpg.Connection, tenant_id: str, item_id: str) -> Decimal | None:
     row = await conn.fetchrow(
         """
@@ -321,172 +313,6 @@ async def test_4_3_opening_balance_cannot_be_second(
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TEST 4.4 — Mode A sale depletion
-# ═════════════════════════════════════════════════════════════════════════════
-
-
-@pytest.mark.asyncio
-async def test_4_4_mode_a_sale_depletion(
-    admin_conn: asyncpg.Connection,
-    db_session: AsyncSession,
-) -> None:
-    t = await seed_tenant(admin_conn)
-    tid = str(t["id"])
-    uom = await _mk_uom(admin_conn, tid)
-    # storage_to_recipe_factor = 1.0
-    item = await _mk_item(admin_conn, tid, uom, mode="recipe_deducted", factor=1.0)
-
-    # Set on_hand to 500
-    await record_opening_balance(
-        db_session,
-        tenant_id=uuid.UUID(tid),
-        inventory_item_id=uuid.UUID(item),
-        quantity=Decimal("500"),
-    )
-    await db_session.commit()
-
-    # Recipe: 150g per unit, sale qty = 2 → theoretical = 2 * 150 / 1.0 = 300
-    rv_id, _ = await _mk_recipe(admin_conn, tid, item, recipe_qty=150)
-    sl_id = await _mk_sale_line(admin_conn, tid, rv_id, qty=2)
-
-    await record_sale_inventory_effect(
-        db_session,
-        tenant_id=uuid.UUID(tid),
-        sale_line_item_id=uuid.UUID(sl_id),
-        inventory_item_id=uuid.UUID(item),
-    )
-    await db_session.commit()
-
-    mv_row = await admin_conn.fetchrow(
-        "SELECT delta, movement_type FROM inventory_movements"
-        " WHERE tenant_id = $1 AND inventory_item_id = $2"
-        " AND movement_type = 'sale_depletion'",
-        uuid.UUID(tid),
-        uuid.UUID(item),
-    )
-    assert mv_row is not None, "sale_depletion movement not created"
-    assert mv_row["delta"] == Decimal("-300")
-    assert await _on_hand(admin_conn, tid, item) == Decimal("200")
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# TEST 4.5 — Mode B sale signal
-# ═════════════════════════════════════════════════════════════════════════════
-
-
-@pytest.mark.asyncio
-async def test_4_5_mode_b_sale_signal(
-    admin_conn: asyncpg.Connection,
-    db_session: AsyncSession,
-) -> None:
-    t = await seed_tenant(admin_conn)
-    tid = str(t["id"])
-    uom = await _mk_uom(admin_conn, tid)
-    item = await _mk_item(admin_conn, tid, uom, mode="count_anchored", factor=1.0)
-
-    # Anchor at 300
-    await record_opening_balance(
-        db_session,
-        tenant_id=uuid.UUID(tid),
-        inventory_item_id=uuid.UUID(item),
-        quantity=Decimal("300"),
-    )
-    await db_session.commit()
-
-    # Yield factor = 1.25
-    await admin_conn.execute(
-        "INSERT INTO inventory_yield_factors (tenant_id, inventory_item_id, yield_factor)"
-        " VALUES ($1, $2, 1.25)",
-        uuid.UUID(tid),
-        uuid.UUID(item),
-    )
-
-    # Recipe: 200g per unit, qty = 1 → theoretical = 1 * 200 / 1.0 = 200
-    rv_id, _ = await _mk_recipe(admin_conn, tid, item, recipe_qty=200)
-    sl_id = await _mk_sale_line(admin_conn, tid, rv_id, qty=1)
-
-    await record_sale_inventory_effect(
-        db_session,
-        tenant_id=uuid.UUID(tid),
-        sale_line_item_id=uuid.UUID(sl_id),
-        inventory_item_id=uuid.UUID(item),
-    )
-    await db_session.commit()
-
-    mv_row = await admin_conn.fetchrow(
-        "SELECT delta, movement_type FROM inventory_movements"
-        " WHERE tenant_id = $1 AND inventory_item_id = $2"
-        " AND movement_type = 'sale_signal'",
-        uuid.UUID(tid),
-        uuid.UUID(item),
-    )
-    assert mv_row is not None, "sale_signal movement not created"
-    assert mv_row["delta"] == Decimal("200")
-
-    # on_hand = 300 - (200 * 1.25) = 50
-    assert await _on_hand(admin_conn, tid, item) == Decimal("50")
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# TEST 4.6 — Sale effect idempotency
-# ═════════════════════════════════════════════════════════════════════════════
-
-
-@pytest.mark.asyncio
-async def test_4_6_sale_effect_idempotency(
-    admin_conn: asyncpg.Connection,
-    db_session: AsyncSession,
-) -> None:
-    t = await seed_tenant(admin_conn)
-    tid = str(t["id"])
-    uom = await _mk_uom(admin_conn, tid)
-    item = await _mk_item(admin_conn, tid, uom, mode="count_anchored", factor=1.0)
-
-    await record_opening_balance(
-        db_session,
-        tenant_id=uuid.UUID(tid),
-        inventory_item_id=uuid.UUID(item),
-        quantity=Decimal("300"),
-    )
-    await db_session.commit()
-
-    rv_id, _ = await _mk_recipe(admin_conn, tid, item, recipe_qty=50)
-    sl_id = await _mk_sale_line(admin_conn, tid, rv_id, qty=1)
-
-    # First call
-    first_mv = await record_sale_inventory_effect(
-        db_session,
-        tenant_id=uuid.UUID(tid),
-        sale_line_item_id=uuid.UUID(sl_id),
-        inventory_item_id=uuid.UUID(item),
-    )
-    await db_session.commit()
-    oh_after_first = await _on_hand(admin_conn, tid, item)
-
-    # Second call — must return None (replay) and create no new movement
-    second_mv = await record_sale_inventory_effect(
-        db_session,
-        tenant_id=uuid.UUID(tid),
-        sale_line_item_id=uuid.UUID(sl_id),
-        inventory_item_id=uuid.UUID(item),
-    )
-    await db_session.commit()
-
-    assert first_mv is not None
-    assert second_mv is None, "idempotent replay should return None"
-
-    count = await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM inventory_movements"
-        " WHERE tenant_id = $1 AND inventory_item_id = $2"
-        " AND movement_type = 'sale_signal'",
-        uuid.UUID(tid),
-        uuid.UUID(item),
-    )
-    assert count == 1, f"expected 1 movement, got {count}"
-    assert await _on_hand(admin_conn, tid, item) == oh_after_first
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# TEST 4.7 — Mode A count with drift creates monitoring alert
 # ═════════════════════════════════════════════════════════════════════════════
 
 
@@ -745,3 +571,114 @@ async def test_4_10_receipt_commit_idempotency(
         uuid.UUID(item),
     )
     assert n_mv == 1, f"expected 1 receive movement, got {n_mv}"
+
+
+@pytest.mark.integration
+async def test_receipt_commit_atomic_injected_rollback(admin_conn):
+    """F2.6-template atomicity (commit_receipt, V1 gap): inject a failure AFTER the receive
+    movements are written but BEFORE the committed-status write; the per-transaction rollback must
+    leave NEITHER — no receive movements AND the receipt still 'draft'. autospec + assert_called
+    guard the injection point so a rename/inline of _mark_receipt_committed fails loudly, not
+    vacuously. (Sprint-6 POS-commit baseline is deferred — revisit when Sprint 6 starts.)"""
+    from unittest.mock import patch
+
+    import app.modules.inventory.services as svc
+    from app.core.database import get_sessionmaker
+
+    t = await seed_tenant(admin_conn)
+    u = await seed_user(admin_conn)
+    tid = uuid.UUID(str(t["id"]))
+    uid = uuid.UUID(str(u["id"]))
+    uom = await _mk_uom(admin_conn, str(tid))
+    item = await _mk_item(admin_conn, str(tid), uom, mode="recipe_deducted")
+
+    sm = get_sessionmaker()
+    async with sm() as seed_s:
+        rid = await svc.create_receipt(seed_s, tenant_id=tid, created_by=uid)
+        line_id = await svc.add_receipt_line(
+            seed_s,
+            tenant_id=tid,
+            receipt_id=rid,
+            inventory_item_id=uuid.UUID(item),
+            received_quantity=Decimal("10"),
+            unit_cost_cents=500,
+        )
+        await seed_s.commit()
+
+    idem = f"receipt_line:{line_id}"
+    with (
+        patch.object(
+            svc,
+            "_mark_receipt_committed",
+            autospec=True,
+            side_effect=RuntimeError("injected: between movement-writes and status-commit"),
+        ) as m,
+        pytest.raises(RuntimeError),
+    ):
+        async with sm() as session:
+            await svc.commit_receipt(session, tenant_id=tid, receipt_id=rid)
+            await session.commit()
+    m.assert_called()  # the seam fired → movements were written before it
+
+    # SEPARATE read (admin_conn, outside the rolled-back txn): rollback left neither
+    mv = await admin_conn.fetchval(
+        "SELECT count(*) FROM inventory_movements WHERE tenant_id=$1 AND idempotency_key=$2",
+        tid,
+        idem,
+    )
+    assert mv == 0, "receive movement persisted despite the failed commit (atomicity broken)"
+    state = await admin_conn.fetchval("SELECT commit_state FROM receipts WHERE id=$1", rid)
+    assert state == "draft", f"receipt left {state!r}, not rolled back to draft"
+
+
+@pytest.mark.integration
+async def test_count_event_atomic_injected_rollback(admin_conn):
+    """F2.6-template atomicity (record_count_event, Mode A): inject a failure AFTER the count_event
+    row is written but AT the count_adjust movement; the per-transaction rollback must leave NEITHER
+    — no count_event AND no count_adjust movement. autospec + assert_called guard the seam (drift
+    forces it to fire, so the count_event was written before it)."""
+    from unittest.mock import patch
+
+    import app.modules.inventory.services as svc
+    from app.core.database import get_sessionmaker
+
+    t = await seed_tenant(admin_conn)
+    tid = uuid.UUID(str(t["id"]))
+    uom = await _mk_uom(admin_conn, str(tid))
+    item = uuid.UUID(await _mk_item(admin_conn, str(tid), uom, mode="recipe_deducted"))
+
+    sm = get_sessionmaker()
+    # opening_balance 100 → predicted on_hand 100; counting 80 → drift -20 → count_adjust emitted
+    async with sm() as s:
+        await svc.record_opening_balance(
+            s, tenant_id=tid, inventory_item_id=item, quantity=Decimal("100")
+        )
+        await s.commit()
+
+    with (
+        patch.object(
+            svc,
+            "_emit_count_adjust",
+            autospec=True,
+            side_effect=RuntimeError("injected: between count-event and count_adjust"),
+        ) as m,
+        pytest.raises(RuntimeError),
+    ):
+        async with sm() as session:
+            await svc.record_count_event(
+                session, tenant_id=tid, inventory_item_id=item, counted_quantity=Decimal("80")
+            )
+            await session.commit()
+    m.assert_called()  # drift fired the seam → the count_event row was written before it
+
+    events = await admin_conn.fetchval(
+        "SELECT count(*) FROM inventory_count_events WHERE tenant_id=$1 AND inventory_item_id=$2",
+        tid,
+        item,
+    )
+    assert events == 0, "count_event persisted despite the failed correction (atomicity broken)"
+    adjusts = await admin_conn.fetchval(
+        "SELECT count(*) FROM inventory_movements WHERE tenant_id=$1 AND movement_type='count_adjust'",
+        tid,
+    )
+    assert adjusts == 0, "count_adjust movement persisted despite rollback"

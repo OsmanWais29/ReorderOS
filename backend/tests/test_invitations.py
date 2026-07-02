@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 import pytest
@@ -324,3 +325,104 @@ async def test_double_accept_returns_409(owner_client: AsyncClient, admin_conn: 
     await admin_conn.execute("DELETE FROM invitations WHERE tenant_id = $1", tenant["id"])
     await admin_conn.execute("DELETE FROM tenants WHERE id = $1", tenant["id"])
     await admin_conn.execute("DELETE FROM users WHERE workos_id = 'user_double'")
+
+
+# ── DELETE /api/v1/invitations/{id} — revoke (F2.2 cross-tenant guard) ─────────
+
+
+@pytest.mark.integration
+async def test_owner_revokes_own_invitation(owner_client: AsyncClient, admin_conn: Any) -> None:
+    """Baseline: an owner can revoke a pending invitation in their own tenant."""
+    sfx = uuid.uuid4().hex[:8]
+    user = await seed_user(admin_conn, workos_id=f"user_revoke_own_{sfx}", email=f"o_{sfx}@ex.com")
+    tenant = await seed_tenant(admin_conn)
+    try:
+        await seed_membership(admin_conn, str(user["id"]), str(tenant["id"]))  # owner
+        inv = await admin_conn.fetchrow(
+            "INSERT INTO invitations (tenant_id, email, role, token, expires_at)"
+            " VALUES ($1, $2, 'staff', $3, now() + interval '7 days') RETURNING id",
+            tenant["id"],
+            f"new_{sfx}@ex.com",
+            "tok_" + uuid.uuid4().hex,
+        )
+
+        from app.core.security import get_principal
+        from app.main import app
+
+        app.dependency_overrides[get_principal] = lambda: _make_principal(
+            str(user["id"]), str(tenant["id"])
+        )
+        try:
+            r = await owner_client.delete(
+                f"/api/v1/invitations/{inv['id']}",
+                headers={"X-Tenant-Id": str(tenant["id"])},
+            )
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+
+        assert r.status_code == 204, r.text
+        gone = await admin_conn.fetchval(
+            "SELECT count(*) FROM invitations WHERE id = $1", inv["id"]
+        )
+        assert gone == 0
+    finally:
+        await admin_conn.execute("DELETE FROM invitations WHERE tenant_id = $1", tenant["id"])
+        await admin_conn.execute("DELETE FROM user_tenants WHERE tenant_id = $1", tenant["id"])
+        await admin_conn.execute("DELETE FROM tenants WHERE id = $1", tenant["id"])
+        await admin_conn.execute("DELETE FROM users WHERE id = $1", user["id"])
+
+
+@pytest.mark.integration
+async def test_revoke_cross_tenant_invitation_blocked(
+    owner_client: AsyncClient, admin_conn: Any
+) -> None:
+    """F2.2 IDOR guard: an owner of tenant A cannot revoke tenant B's invitation.
+
+    Tests run as the superuser DB role (RLS bypassed), so this proves the APP-LAYER
+    tenant filter — not RLS — blocks the cross-tenant delete. invitations has no DELETE
+    policy, so without the WHERE tenant_id filter this revoke would succeed cross-tenant
+    under the (superuser) deployment. Expected: 404 + tenant B's invitation survives.
+    """
+    sfx = uuid.uuid4().hex[:8]
+    user_a = await seed_user(admin_conn, workos_id=f"user_revoke_a_{sfx}", email=f"a_{sfx}@ex.com")
+    tenant_a = await seed_tenant(admin_conn)
+    tenant_b = await seed_tenant(admin_conn)
+    try:
+        await seed_membership(admin_conn, str(user_a["id"]), str(tenant_a["id"]))  # owner of A
+        inv_b = await admin_conn.fetchrow(
+            "INSERT INTO invitations (tenant_id, email, role, token, expires_at)"
+            " VALUES ($1, $2, 'staff', $3, now() + interval '7 days') RETURNING id",
+            tenant_b["id"],
+            f"victim_{sfx}@ex.com",
+            "tok_" + uuid.uuid4().hex,
+        )
+
+        from app.core.security import get_principal
+        from app.main import app
+
+        app.dependency_overrides[get_principal] = lambda: _make_principal(
+            str(user_a["id"]), str(tenant_a["id"])
+        )
+        try:
+            r = await owner_client.delete(
+                f"/api/v1/invitations/{inv_b['id']}",
+                headers={"X-Tenant-Id": str(tenant_a["id"])},
+            )
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+
+        assert r.status_code == 404, r.text  # not found for the caller's tenant
+        survived = await admin_conn.fetchval(
+            "SELECT count(*) FROM invitations WHERE id = $1", inv_b["id"]
+        )
+        assert survived == 1, "cross-tenant revoke deleted another tenant's invitation (IDOR)"
+    finally:
+        await admin_conn.execute(
+            "DELETE FROM invitations WHERE tenant_id = ANY($1::uuid[])",
+            [tenant_a["id"], tenant_b["id"]],
+        )
+        await admin_conn.execute("DELETE FROM user_tenants WHERE tenant_id = $1", tenant_a["id"])
+        await admin_conn.execute(
+            "DELETE FROM tenants WHERE id = ANY($1::uuid[])", [tenant_a["id"], tenant_b["id"]]
+        )
+        await admin_conn.execute("DELETE FROM users WHERE id = $1", user_a["id"])

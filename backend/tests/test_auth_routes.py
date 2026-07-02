@@ -188,3 +188,52 @@ async def test_get_identity_works_with_no_tenant(
     assert r.json()["user"]["workos_id"] == "user_test_fixed"
 
     await admin_conn.execute("DELETE FROM users WHERE id = $1", user["id"])
+
+
+@pytest.mark.integration
+async def test_register_tenant_rolls_back_on_membership_failure(
+    owner_client: AsyncClient, admin_conn: Any, monkeypatch: Any
+) -> None:
+    """F2.6 atomicity — the dangerous leg: if the owner-membership INSERT fails AFTER the
+    tenant INSERT, NEITHER row may persist (no orphan tenant without an owner).
+
+    The duplicate-slug test only fails at the FIRST write; this injects a failure BETWEEN
+    the two writes by making repo.UserTenant raise IntegrityError after tenant.flush(),
+    exercising the route's real `except IntegrityError -> rollback` path. A surviving tenant
+    row means atomicity is broken.
+    """
+    import uuid
+
+    from sqlalchemy.exc import IntegrityError
+
+    import app.modules.tenants.repo as repo_mod
+
+    slug = f"atomic-{uuid.uuid4().hex[:8]}"
+
+    def _boom(*args: Any, **kwargs: Any) -> None:
+        raise IntegrityError(
+            "INSERT INTO user_tenants", {}, Exception("injected membership failure")
+        )
+
+    monkeypatch.setattr(repo_mod, "UserTenant", _boom)
+
+    try:
+        r = await owner_client.post(
+            "/api/v1/auth/register-tenant",
+            json={"slug": slug, "name": "Atomicity Test"},
+        )
+        assert r.status_code == 409, (
+            f"expected 409 from rollback path, got {r.status_code}: {r.text}"
+        )
+
+        orphan = await admin_conn.fetchval("SELECT count(*) FROM tenants WHERE slug = $1", slug)
+        assert orphan == 0, (
+            "orphan tenant persisted after membership-insert failure (F2.6 atomicity broken)"
+        )
+    finally:
+        await admin_conn.execute(
+            "DELETE FROM user_tenants WHERE tenant_id IN (SELECT id FROM tenants WHERE slug = $1)",
+            slug,
+        )
+        await admin_conn.execute("DELETE FROM tenants WHERE slug = $1", slug)
+        await admin_conn.execute("DELETE FROM users WHERE workos_id = 'user_test_fixed'")

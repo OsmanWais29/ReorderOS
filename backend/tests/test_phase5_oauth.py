@@ -130,6 +130,11 @@ async def test_connect_owner_redirects_with_state(client, admin_conn):
 
     location = response.headers["location"]
     assert "clover.com" in location
+    # v2/OAuth flow: authorize path MUST be /oauth/v2/authorize to match the /oauth/v2/token
+    # exchange in the callback. Legacy /oauth/authorize pairs with a different (legacy) token
+    # flow and returns to the callback without a v2-usable code (docs-confirmed 2026-06).
+    assert "/oauth/v2/authorize" in location
+    assert "/oauth/authorize?" not in location  # not the legacy path
     assert f"client_id={settings.clover_app_id}" in location
     assert "state=" in location
 

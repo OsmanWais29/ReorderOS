@@ -1,0 +1,86 @@
+# DigitalOcean App Platform spec for ReorderOS STAGING — STRUCTURE ONLY (no secret values).
+#
+# All F1.3-required vars are APP-LEVEL so BOTH the api and the inbox-worker pass config validation.
+# Secrets are declared `type: SECRET` with NO value — set the 6 values in the DO CONSOLE after
+# applying (never in this file or in chat; the console keeps them out of the transcript).
+#
+# Apply structure:
+#   doctl apps update 70e351c1-3c5f-4699-b85b-05a2346e7f84 --spec .do/staging.app.yaml
+# Then in the console set values (each at the ONE location shown below; just edit the empty value,
+# do NOT add new keys, or you recreate duplicates):
+#   App-Level:  DATABASE_URL, SERVICE_DATABASE_URL (both = doadmin), TOKEN_ENCRYPTION_KEY,
+#               CLOVER_APP_SECRET, CLOVER_WEBHOOK_AUTH_CODE   (Encrypt each)
+#   api:        WORKOS_SECRET_KEY                              (Encrypt)
+
+name: reorderos-staging
+region: tor1
+
+envs:
+  - { key: APP_ENV, scope: RUN_AND_BUILD_TIME, value: production }
+  - { key: APP_LOG_LEVEL, scope: RUN_AND_BUILD_TIME, value: INFO }
+  - { key: CLOVER_APP_ID, scope: RUN_TIME, value: "DJFFAT14DS7QM" }
+  - { key: CLOVER_ENVIRONMENT, scope: RUN_TIME, value: sandbox }
+  - { key: CLOVER_API_BASE_URL, scope: RUN_TIME, value: https://apisandbox.dev.clover.com }
+  - { key: WORKOS_CLIENT_ID, scope: RUN_TIME, value: client_01KQT0CRCZP8W8AMAYE5Y1F9SP }
+  - { key: WORKOS_JWKS_URL, scope: RUN_TIME, value: https://api.workos.com/sso/jwks/client_01KQT0CRCZP8W8AMAYE5Y1F9SP }
+  - { key: WORKOS_ISSUER, scope: RUN_TIME, value: https://api.workos.com/user_management/client_01KQT0CRCZP8W8AMAYE5Y1F9SP }
+  - { key: WORKOS_VERIFY_AUDIENCE, scope: RUN_TIME, value: "false" }
+  # ── secrets (app-level → inherited by api AND worker). NO values here — set in console. ──
+  - { key: DATABASE_URL, scope: RUN_TIME, type: SECRET }
+  - { key: SERVICE_DATABASE_URL, scope: RUN_TIME, type: SECRET }
+  - { key: TOKEN_ENCRYPTION_KEY, scope: RUN_TIME, type: SECRET }
+  # CLOVER_APP_SECRET + CLOVER_WEBHOOK_AUTH_CODE are NOT app-level: their app-level entries went
+  # into a dangling state (showed SET but didn't inject). Declared per-component below instead
+  # (component-level is the proven-to-inject path — the api booted with component secrets).
+
+services:
+  - name: api
+    github:
+      repo: OsmanWais29/ReorderOS
+      branch: sprint-5-recipe-depletion
+      deploy_on_push: true
+    source_dir: backend
+    dockerfile_path: backend/Dockerfile
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    health_check:
+      http_path: /health/ready
+      initial_delay_seconds: 20
+      period_seconds: 15
+      timeout_seconds: 5
+      success_threshold: 1
+      failure_threshold: 3
+    routes:
+      - path: /
+    envs:
+      - { key: CLOVER_OAUTH_BASE_URL, scope: RUN_TIME, value: https://sandbox.dev.clover.com }
+      - { key: CLOVER_OAUTH_CALLBACK_URL, scope: RUN_TIME, value: https://reorderos-staging-3ez2g.ondigitalocean.app/api/v1/pos/clover/callback }
+      - { key: CLOVER_POST_CONNECT_REDIRECT, scope: RUN_TIME, value: http://localhost:8081/onboarding/found-summary }
+      - { key: CORS_ORIGINS, scope: RUN_TIME, value: '["http://localhost:8081"]' }
+      - { key: WORKOS_SECRET_KEY, scope: RUN_TIME, type: SECRET }
+      - { key: CLOVER_APP_SECRET, scope: RUN_TIME, type: SECRET }
+      - { key: CLOVER_WEBHOOK_AUTH_CODE, scope: RUN_TIME, type: SECRET }
+
+workers:
+  - name: inbox-worker
+    github:
+      repo: OsmanWais29/ReorderOS
+      branch: sprint-5-recipe-depletion
+      deploy_on_push: true
+    source_dir: backend
+    dockerfile_path: backend/Dockerfile
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    run_command: python -m app.workers.inbox_worker
+    envs:
+      # Per-component (not app-level — see note above). Worker needs both for F1.3.
+      - { key: CLOVER_APP_SECRET, scope: RUN_TIME, type: SECRET }
+      - { key: CLOVER_WEBHOOK_AUTH_CODE, scope: RUN_TIME, type: SECRET }
+
+databases:
+  - name: reorderos-staging-pg
+    engine: PG
+    version: "17"
+    production: false
+    cluster_name: reorderos-staging-pg

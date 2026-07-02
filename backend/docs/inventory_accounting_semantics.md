@@ -78,6 +78,25 @@ all rows. There is no anchor, no approximation, no reference table dependency.
 **Appropriate for**: any ingredient where per-unit tracking matters — proteins,
 premium ingredients, controlled stock.
 
+**Sprint 5 sale-depletion formula (v5 §11)** — the per-ingredient quantity is:
+
+```
+delta = -1 * line_quantity
+           * (recipe_ingredient.quantity / recipe_versions.yield_quantity)
+           * unit_conversion_factor
+```
+
+where `unit_conversion_factor` converts the recipe ingredient's unit to the inventory
+item's storage unit via `unit_conversions` (the `convert()` service). Mode B is identical
+with a positive sign (`sale_signal`).
+
+> **`inventory_items.storage_to_recipe_factor` is NOT consulted by Sprint 5 sale
+> depletion.** Sprint 3/4 used it (`sale_qty * recipe_qty / factor`); v5 replaces it with
+> unit conversion. The column still exists in the schema but is **vestigial for depletion**
+> — the walker never reads it. It is intentionally left in place (no cleanup migration in
+> Sprint 5; a future migration may drop it). A reader seeing the column must not assume
+> depletion uses it.
+
 ---
 
 ## 3. Mode B — Count-Anchored (Approximation)
@@ -87,12 +106,18 @@ accounting figure. The system explicitly models this as an operational estimate.
 
 ```
 on_hand = last_count_quantity
-        + SUM(delta of receive/transfer_in/count_adjust movements)
+        + SUM(delta of receive/transfer_in/count_adjust/opening_balance movements)
             WHERE created_at > reconciliation_cutoff_created_at
         - SUM(delta_i × yield_factor_applied_i, per row)
             for each sale_signal and sale_signal_reversal movement i
             WHERE created_at > reconciliation_cutoff_created_at
 ```
+
+**`opening_balance` in the receipts term**: included to match the implementation
+(`services.py` `receipts_since`). In practice an `opening_balance` is written once at item
+creation, *before* any count, so it is excluded by `created_at > cutoff` and the term is empty;
+it is listed only so a re-initialization edge case (an `opening_balance` after a count) is
+counted consistently by the formula and the code.
 
 **Sign convention**: `sale_signal` rows store a positive delta (theoretical units consumed);
 `sale_signal_reversal` rows store the arithmetic negation (negative delta). Summing both
@@ -219,15 +244,23 @@ times produces exactly one row and returns the original result.
 | Operation | Key format |
 |---|---|
 | Opening balance | `opening_balance:{inventory_item_id}` |
-| Sale effect | `sale_line:{sale_line_item_id}:{inventory_item_id}` |
+| Sale effect — base (v5) | `sale_line:{sale_line_item_id}:base:{recipe_version_id}:{inventory_item_id}` |
+| Sale effect — modifier (v5) | `sale_line:{sale_line_item_id}:modifier:{sale_line_item_modifier_id}:{modifier_version_id}:{inventory_item_id}` |
 | Count event | `count:{inventory_item_id}:{counted_at.isoformat()}:{counted_quantity}` |
 | Count adjust | `count_adjust:{count_event_id}` |
 | Receipt line | `receipt_line:{receipt_line_id}` |
 | Sale reversal | `reversal:{original_movement_id}:{inventory_item_id}` |
 
 The unique constraint `UNIQUE (tenant_id, idempotency_key)` on `inventory_movements`
-enforces this at the DB level. A duplicate key raises a `UniqueViolationError`,
-which the service layer treats as "already done" and returns the original result.
+enforces this at the DB level. The Sprint 5 writer uses `INSERT ... ON CONFLICT
+(tenant_id, idempotency_key) DO NOTHING` (the constraint is the concurrency arbiter; two
+workers racing the same sale cannot both insert).
+
+**Legacy key (superseded).** Sprint 3/4 used `sale_line:{sale_line_item_id}:{inventory_item_id}`
+(no `base:`/version segment). v5 supersedes it; no production rows exist in that format. The
+writer still performs a **read-only** check for the legacy key before writing the new-format
+base movement and skips if present — defense-in-depth against double depletion in dev/legacy
+environments. The legacy format is referenced (read) but never written.
 
 **Rule**: Any new write operation added to the service layer must have an
 idempotency key. No exceptions. Writes without idempotency keys are not safe to
@@ -403,6 +436,28 @@ recipe changes do not affect historical sales.
 
 **Rule**: No code path may UPDATE `sale_line_items.recipe_version_id` after it has
 been set. This column is immutable once written.
+
+---
+
+## 10b. Depletion-status reason fidelity (Sprint 5)
+
+The Sprint 5 depletion worker runs as `service_worker`, which cannot read the
+operator-owned `recipes` table (least-privilege boundary). Consequently, when a sale line
+has no confirmed recipe version (`recipe_version_id` is NULL), the worker records
+`depletion_status='unmapped', depletion_reason='no_recipe'` for **all** such cases — it
+cannot distinguish *never configured* from *draft* from *operator-skipped*, because that
+requires reading `recipes`.
+
+**This conflation is intentional, and the finer breakdown is NOT lost — it is just not
+stamped on the depletion row.** Operator-facing reporting (running as `app_user`, which can
+read `recipes`) recovers draft-vs-skipped-vs-absent by joining `recipes` on
+`menu_items`. A dashboard reading raw `depletion_reason='no_recipe'` coverage must NOT
+conclude "nothing was configured" — some of those may be deliberately skipped or
+in-draft; query the operator side for the real breakdown.
+
+(Minor: late-signal is detected per written movement, so a single sale line crossing a
+count boundary with N movements — base + modifiers — increments the alert's `alert_count`
+N times. It is a frequency counter on a single tenant-level alert, not N alert rows.)
 
 ---
 

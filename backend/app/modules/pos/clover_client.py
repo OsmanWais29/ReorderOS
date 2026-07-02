@@ -178,3 +178,62 @@ class CloverClient:
 
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
+
+    # ── Catalog (Sprint 5 menu sync) ──────────────────────────────────────────
+
+    async def _get_elements(
+        self, url: str, what: str, max_retries: int = 3
+    ) -> list[dict[str, Any]]:
+        """GET a Clover collection endpoint; return its ``elements`` list.
+
+        Shared by the catalog list_* methods. Retries on 429 via Retry-After;
+        empty list = end-of-results.
+        """
+        for attempt in range(max_retries):
+            await _app_bucket.acquire()
+            await self._token_bucket.acquire()
+
+            async with httpx.AsyncClient(timeout=30) as http:
+                resp = await http.get(url, headers={"Authorization": f"Bearer {self.access_token}"})
+
+            if resp.status_code == 401:
+                raise TokenExpiredError(f"401 {what} for merchant {self.merchant_id}")
+            if resp.status_code == 429:
+                if attempt < max_retries - 1:
+                    retry_after = max(0, int(resp.headers.get("Retry-After", "1")))
+                    await asyncio.sleep(retry_after)
+                    continue
+                raise RateLimitedError(f"429 {what} for merchant {self.merchant_id}")
+
+            resp.raise_for_status()
+            data: dict[str, Any] = resp.json()
+            return data.get("elements") or []
+
+        raise RateLimitedError(  # pragma: no cover
+            f"429 {what} for merchant {self.merchant_id}"
+        )
+
+    async def list_inventory_items(
+        self, offset: int = 0, limit: int = 100, max_retries: int = 3
+    ) -> list[dict[str, Any]]:
+        """Fetch a page of catalog items with modifier-group associations.
+
+        ``expand=modifierGroups`` gives each item's modifier group ids so we can
+        link item -> group; the modifier detail (id, name) comes from
+        list_modifier_groups() — collection-level expand is not relied on for it.
+        """
+        url = (
+            f"{self.base_url}/v3/merchants/{self.merchant_id}/items"
+            f"?expand=modifierGroups&limit={limit}&offset={offset}"
+        )
+        return await self._get_elements(url, "listing items", max_retries)
+
+    async def list_modifier_groups(
+        self, offset: int = 0, limit: int = 100, max_retries: int = 3
+    ) -> list[dict[str, Any]]:
+        """Fetch a page of modifier groups with their modifiers expanded."""
+        url = (
+            f"{self.base_url}/v3/merchants/{self.merchant_id}/modifier_groups"
+            f"?expand=modifiers&limit={limit}&offset={offset}"
+        )
+        return await self._get_elements(url, "listing modifier_groups", max_retries)

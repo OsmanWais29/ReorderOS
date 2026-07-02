@@ -56,9 +56,7 @@ def validate_schema() -> None:
     async def _read_current_rev() -> str | None:
         conn = await asyncpg.connect(DB_URL_SYNC)
         try:
-            row = await conn.fetchrow(
-                "SELECT version_num FROM alembic_version LIMIT 1"
-            )
+            row = await conn.fetchrow("SELECT version_num FROM alembic_version LIMIT 1")
             return row["version_num"] if row else None
         finally:
             await conn.close()
@@ -71,6 +69,206 @@ def validate_schema() -> None:
         "Run:  alembic upgrade head\n"
         "then re-run the tests.\n"
     )
+
+
+# ── TH-1: test-data leak detector ─────────────────────────────────────────────
+# Proves test data self-cleans: snapshot every base table's row count at session
+# start, assert return-to-baseline at session end. A non-zero delta = a test that
+# committed rows and did not clean them up (the TH-1 accumulation defect). This is
+# what keeps "tests self-clean" from being an atomic-by-construction, untested claim.
+
+
+@pytest.fixture(scope="session", autouse=True)
+def assert_no_test_data_leak(validate_schema: None) -> Any:
+    import asyncio
+
+    async def _counts() -> dict[str, int]:
+        conn = await asyncpg.connect(DB_URL_SYNC)
+        try:
+            tables = [
+                r["relname"]
+                for r in await conn.fetch(
+                    "SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace"
+                    " WHERE n.nspname='public' AND c.relkind='r' AND relname <> 'alembic_version'"
+                )
+            ]
+            return {t: await conn.fetchval(f'SELECT count(*) FROM "{t}"') for t in tables}
+        finally:
+            await conn.close()
+
+    before = asyncio.run(_counts())
+    yield
+    after = asyncio.run(_counts())
+    deltas = {t: after[t] - before.get(t, 0) for t in after if after[t] != before.get(t, 0)}
+    if deltas:
+        print("\n\n===== TH-1 LEAK DETECTOR: tables not returned to pre-suite counts =====")
+        for t, d in sorted(deltas.items(), key=lambda kv: -kv[1]):
+            print(f"  {t:32s} {d:+d}")
+        print("=" * 70)
+    assert not deltas, f"test data leaked (did not self-clean): {deltas}"
+
+
+# ── Tenant-isolation lint guard (revoke-IDOR class backstop) ──────────────────
+# Attaches a SQL listener to the APP engine only and flags any SELECT/UPDATE/DELETE
+# on a tenant-scoped table that lacks a tenant_id predicate (and isn't ALLOWLISTed).
+# IDOR_GUARD_MEASURE=1 => collect+report, never fail (sizing the audit).
+# See tests/idor_guard.py for the why (the read is the primary case for this codebase).
+
+
+@pytest.fixture(scope="session", autouse=True)
+def idor_guard() -> Any:
+    """Session-scoped collector. The per-test `_idor_guard_attach` fixture binds a
+    listener to each test's app engine (the engine is disposed+recreated per test by
+    `reset_sa_engine`, so a one-time session listener would be stranded) and funnels
+    violations here. At session end: report + (unless IDOR_GUARD_MEASURE=1) fail."""
+    from tests import idor_guard as guard
+
+    state = guard.GuardState(measure_only=os.environ.get("IDOR_GUARD_MEASURE") == "1")
+    yield state
+
+    print(f"\n[idor_guard] statements inspected: {state.seen}")
+    if state.violations:
+        print("\n\n===== IDOR GUARD: tenant-scoped queries with no tenant_id filter =====")
+        print("(runtime guard — only test-EXERCISED paths are visible; green != IDOR-impossible)")
+        for v in state.violations.values():
+            print(f"\n  [{v.verb.upper()}] tables={','.join(v.tables)}")
+            print(f"  {v.sql}")
+        print("=" * 70)
+        try:
+            import json as _json
+
+            with open("/tmp/idor_violations.txt", "w") as fh:
+                for v in state.violations.values():
+                    fh.write(f"[{v.verb.upper()}] {','.join(v.tables)}\n{v.sql}\n\n")
+            with open("/tmp/idor_fingerprints.json", "w") as fh:
+                _json.dump(
+                    {
+                        v.fingerprint: f"{v.verb}:{','.join(v.tables)}"
+                        for v in state.violations.values()
+                    },
+                    fh,
+                    indent=2,
+                )
+        except OSError:
+            pass
+    if not state.measure_only:
+        assert not state.violations, (
+            f"{len(state.violations)} tenant-scoped query/queries lack a tenant_id filter "
+            "(potential cross-tenant IDOR). See output above / tests/idor_guard.py ALLOWLIST."
+        )
+
+
+@pytest.fixture(autouse=True)
+def _idor_guard_attach(idor_guard: Any) -> Any:
+    """Attach the IDOR listener to THIS test's app engine instance (fresh per test)."""
+    from sqlalchemy import event
+
+    from app.core.database import get_engine
+    from tests import idor_guard as guard
+
+    state = idor_guard
+
+    def _on_exec(conn: Any, cursor: Any, statement: str, *args: Any) -> None:
+        state.seen += 1
+        v = guard.inspect(statement)
+        if v is None:
+            return
+        if not guard.app_origin():  # police app-issued queries only, not test reads
+            return
+        state.violations.setdefault(v.fingerprint, v)
+
+    engine = get_engine()  # creates/returns this test's engine; app reuses the cached one
+    event.listen(engine.sync_engine, "before_cursor_execute", _on_exec)
+    try:
+        yield
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", _on_exec)
+
+
+_TENANT_TABLES_CACHE: list[str] | None = None
+
+
+@pytest.fixture(autouse=True)
+def autoclean_committed_test_data() -> Any:
+    """TH-1: per-test, delete the committed `tenants`/`users`/`pos_waitlist` rows THIS test
+    created — captured-id discipline (the exact ids that appeared, never "where it looks like
+    residue"). Rollback-fixture tests commit nothing → the diff is empty → no-op. Committing
+    tests (admin_conn-seeded e2e/worker) self-clean even on failure: the finalizer runs
+    regardless of the assert outcome (unlike inline cleanup-after-assert, which skips on
+    failure and was the accumulation source). Tenant deletion cascades to every `tenant_id`
+    table under `session_replication_role=replica` (order-independent; superuser only).
+
+    SYNC fixture (+ asyncio.run) so it runs for SYNC tests too — an async autouse fixture
+    errors on a sync test (no loop). Same pattern as the leak detector."""
+    import asyncio
+
+    async def _snapshot() -> tuple[set, set, set, set, set]:
+        conn = await asyncpg.connect(DB_URL_SYNC)
+        try:
+            return (
+                {r["id"] for r in await conn.fetch("SELECT id FROM tenants")},
+                {r["id"] for r in await conn.fetch("SELECT id FROM users")},
+                {r["id"] for r in await conn.fetch("SELECT id FROM pos_waitlist")},
+                # oauth_states / monitoring_alerts can carry a tenant_id with NO tenant row
+                # (e.g. state_manager unit tests) so the tenant-cascade misses them — diff
+                # them directly by their own PK.
+                {r["state"] for r in await conn.fetch("SELECT state FROM oauth_states")},
+                {r["id"] for r in await conn.fetch("SELECT id FROM monitoring_alerts")},
+            )
+        finally:
+            await conn.close()
+
+    t0, u0, w0, o0, m0 = asyncio.run(_snapshot())
+    yield
+
+    async def _clean() -> None:
+        conn = await asyncpg.connect(DB_URL_SYNC)
+        try:
+            new_t = list({r["id"] for r in await conn.fetch("SELECT id FROM tenants")} - t0)
+            new_u = list({r["id"] for r in await conn.fetch("SELECT id FROM users")} - u0)
+            new_w = list({r["id"] for r in await conn.fetch("SELECT id FROM pos_waitlist")} - w0)
+            new_o = list(
+                {r["state"] for r in await conn.fetch("SELECT state FROM oauth_states")} - o0
+            )
+            new_m = list(
+                {r["id"] for r in await conn.fetch("SELECT id FROM monitoring_alerts")} - m0
+            )
+            if not (new_t or new_u or new_w or new_o or new_m):
+                return
+            global _TENANT_TABLES_CACHE
+            if _TENANT_TABLES_CACHE is None:
+                _TENANT_TABLES_CACHE = [
+                    r["relname"]
+                    for r in await conn.fetch(
+                        "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace"
+                        " JOIN pg_attribute a ON a.attrelid=c.oid WHERE n.nspname='public'"
+                        " AND c.relkind='r' AND a.attname='tenant_id' AND a.attnum>0"
+                    )
+                ]
+            async with conn.transaction():
+                await conn.execute("SET LOCAL session_replication_role = replica")
+                if new_t:
+                    for tbl in _TENANT_TABLES_CACHE:
+                        await conn.execute(
+                            f'DELETE FROM "{tbl}" WHERE tenant_id = ANY($1::uuid[])', new_t
+                        )
+                    await conn.execute("DELETE FROM tenants WHERE id = ANY($1::uuid[])", new_t)
+                if new_u:
+                    await conn.execute("DELETE FROM users WHERE id = ANY($1::uuid[])", new_u)
+                if new_w:
+                    await conn.execute("DELETE FROM pos_waitlist WHERE id = ANY($1::uuid[])", new_w)
+                if new_o:
+                    await conn.execute(
+                        "DELETE FROM oauth_states WHERE state = ANY($1::text[])", new_o
+                    )
+                if new_m:
+                    await conn.execute(
+                        "DELETE FROM monitoring_alerts WHERE id = ANY($1::uuid[])", new_m
+                    )
+        finally:
+            await conn.close()
+
+    asyncio.run(_clean())
 
 
 # ── Engine reset between tests ────────────────────────────────────────────────

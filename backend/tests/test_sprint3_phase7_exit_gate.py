@@ -44,7 +44,7 @@ from sqlalchemy import text
 from app.core.database import engine, get_db_session, make_bound_session
 from app.core.security import Principal, get_principal
 from app.main import create_app
-from app.modules.inventory.services import record_sale_inventory_effect
+from tests.helpers.sprint5 import seed_recipe_version_session, seed_sale_effect_session
 
 pytestmark = pytest.mark.integration
 
@@ -124,7 +124,7 @@ async def session(app_instance):
             "pos_event_inbox",
         ):
             await conn.execute(
-                text(f"DELETE FROM {tbl} WHERE tenant_id = :tid"),  # noqa: S608
+                text(f"DELETE FROM {tbl} WHERE tenant_id = :tid"),
                 {"tid": TENANT_ID},
             )
 
@@ -331,36 +331,19 @@ async def create_recipe_for_item(
     inventory_item_id: uuid.UUID,
     qty_per_serving: float,
 ) -> None:
-    """Create a recipe_version + recipe_ingredient using Sprint 3 schema.
+    """Create a 0016-valid menu_item -> recipe -> recipe_version chain at the
+    given (fixed) recipe_version_id, idempotently.
 
-    Sprint 3 uses recipe_versions / recipe_ingredients directly.
-    There are no menu_items or recipes tables in this sprint.
+    Uses the shared Sprint-5 seed helper. The explicit recipe_version_id makes a
+    repeated call (fixed RECIPE_A / RECIPE_B against the no-teardown dev DB) a
+    no-op, preserving the old ON CONFLICT DO NOTHING behaviour.
     """
-    await session.execute(
-        text("""
-        INSERT INTO recipe_versions (id, tenant_id, name)
-        VALUES (:id, :tid, :name) ON CONFLICT (id) DO NOTHING
-    """),
-        {
-            "id": recipe_version_id,
-            "tid": TENANT_ID,
-            "name": f"rv-{str(recipe_version_id)[-4:]}",
-        },
+    await seed_recipe_version_session(
+        session,
+        TENANT_ID,
+        recipe_version_id=recipe_version_id,
+        ingredients=[(inventory_item_id, qty_per_serving)],
     )
-    await session.execute(
-        text("""
-        INSERT INTO recipe_ingredients (tenant_id, recipe_version_id, inventory_item_id, quantity)
-        VALUES (:tid, :rvid, :iid, :qty)
-        ON CONFLICT DO NOTHING
-    """),
-        {
-            "tid": TENANT_ID,
-            "rvid": recipe_version_id,
-            "iid": inventory_item_id,
-            "qty": qty_per_serving,
-        },
-    )
-    await session.flush()
 
 
 async def create_sale_line(
@@ -468,7 +451,7 @@ async def test_scenario_a_mode_a_full_lifecycle(session, client):
     for _ in range(3):
         sl_id = uuid.uuid4()
         await create_sale_line(session, sl_id, RECIPE_A, qty_sold=1)
-        await record_sale_inventory_effect(
+        await seed_sale_effect_session(
             session,
             tenant_id=TENANT_ID,
             sale_line_item_id=sl_id,
@@ -624,7 +607,7 @@ async def test_scenario_b_mode_b_full_lifecycle(session, client):
     # Steps 3-4: Sale signals via service (200 g + 350 g)
     sl1 = uuid.uuid4()
     await create_sale_line(session, sl1, RECIPE_B, qty_sold=1)
-    await record_sale_inventory_effect(
+    await seed_sale_effect_session(
         session,
         tenant_id=TENANT_ID,
         sale_line_item_id=sl1,
@@ -633,7 +616,7 @@ async def test_scenario_b_mode_b_full_lifecycle(session, client):
 
     sl2 = uuid.uuid4()
     await create_sale_line(session, sl2, RECIPE_B, qty_sold=Decimal("1.75"))
-    await record_sale_inventory_effect(
+    await seed_sale_effect_session(
         session,
         tenant_id=TENANT_ID,
         sale_line_item_id=sl2,
@@ -699,12 +682,12 @@ async def test_scenario_b_mode_b_full_lifecycle(session, client):
     assert await read_on_hand(session, ITEM_B) == 2700
 
     # Step 8: Post-recount signal via service (0.5 x 200g = 100g).
-    # record_sale_inventory_effect computes the delta and inserts the movement.
+    # seed_sale_effect_session writes the forward sale movement (test helper).
     # We then update recorded_at via clock_timestamp() to ensure it lands
     # strictly AFTER the recount anchor (T_wall), so on_hand() includes it.
     sl3 = uuid.uuid4()
     await create_sale_line(session, sl3, RECIPE_B, qty_sold=Decimal("0.5"))
-    mv_id3 = await record_sale_inventory_effect(
+    mv_id3 = await seed_sale_effect_session(
         session,
         tenant_id=TENANT_ID,
         sale_line_item_id=sl3,

@@ -1254,22 +1254,33 @@ async def test_cross_tenant_same_order_id(admin_conn):
         total=2000,
     )
 
-    respx.get(url__regex=f".*/orders/{shared_order_id}.*").mock(
-        side_effect=[
-            httpx.Response(200, json=order_a),
-            httpx.Response(200, json=order_b),
-        ]
+    # Per-MERCHANT mocks: each tenant's order is keyed to its own merchant_id in the fetch URL,
+    # so the total is bound to the tenant — not to call order. (The previous call-ordered
+    # side_effect made totals depend on which event was claimed first.)
+    respx.get(url__regex=f".*/merchants/{seed_a['merchant_id']}/orders/.*").mock(
+        return_value=httpx.Response(200, json=order_a)
+    )
+    respx.get(url__regex=f".*/merchants/{seed_b['merchant_id']}/orders/.*").mock(
+        return_value=httpx.Response(200, json=order_b)
     )
 
     worker = InboxWorker()
 
-    claimed_a = await worker.claim_batch(batch_size=1)
-    if claimed_a:
-        await worker.process_event(claimed_a[0])
-
-    claimed_b = await worker.claim_batch(batch_size=1)
-    if claimed_b:
-        await worker.process_event(claimed_b[0])
+    # Process THIS test's two events the way the production worker loop does — every claimed
+    # row (run() iterates `for event in events: process_event(event)`), not just claimed[0].
+    # claim_batch can occasionally return more than batch_size; a test that processed only
+    # claimed[0] silently dropped the extra event (the flake's root cause). Filter to our two
+    # inbox_ids so an unrelated claimed event can't be fetched against an unmocked merchant.
+    mine = {str(seed_a["inbox_id"]), str(seed_b["inbox_id"])}
+    processed: set[str] = set()
+    for _ in range(5):  # bounded; SKIP LOCKED + processing-state guarantees forward progress
+        if mine <= processed:
+            break
+        for ev in await worker.claim_batch(batch_size=10):
+            if str(ev["inbox_id"]) in mine:
+                await worker.process_event(ev)
+                processed.add(str(ev["inbox_id"]))
+    assert mine <= processed, f"both events must be processed, got {processed}"
 
     total_a = await admin_conn.fetchval(
         "SELECT total_amount_cents FROM orders WHERE tenant_id = $1 AND clover_order_id = $2",
@@ -1282,6 +1293,8 @@ async def test_cross_tenant_same_order_id(admin_conn):
         shared_order_id,
     )
 
+    # Cross-tenant isolation: each tenant gets its OWN order with its OWN total (per-merchant
+    # mock makes this deterministic regardless of claim order).
     assert total_a == 1000
     assert total_b == 2000
 

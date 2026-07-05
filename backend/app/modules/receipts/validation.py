@@ -63,8 +63,19 @@ def _detect_type(data: bytes) -> str:
     if data.startswith(_JPEG):
         return MIME_JPEG
     # HEIC/HEIF: ISO-BMFF `ftyp` box with a heic-family brand at bytes 4..12.
-    if len(data) >= 12 and data[4:8] == b"ftyp" and data[8:12] in (
-        b"heic", b"heix", b"hevc", b"heim", b"heis", b"mif1", b"msf1",
+    if (
+        len(data) >= 12
+        and data[4:8] == b"ftyp"
+        and data[8:12]
+        in (
+            b"heic",
+            b"heix",
+            b"hevc",
+            b"heim",
+            b"heis",
+            b"mif1",
+            b"msf1",
+        )
     ):
         raise ReceiptValidationError(
             "RECEIPT_HEIC_UNSUPPORTED",
@@ -129,9 +140,7 @@ def validate_and_clean(data: bytes, *, filename: str | None = None) -> tuple[str
     if not data:
         raise ReceiptValidationError("RECEIPT_EMPTY", "The file is empty.")
     if len(data) > MAX_BYTES:
-        raise ReceiptValidationError(
-            "RECEIPT_TOO_LARGE", "File is larger than the 50 MB limit."
-        )
+        raise ReceiptValidationError("RECEIPT_TOO_LARGE", "File is larger than the 50 MB limit.")
     mime_type = _detect_type(data)
     _reject_polyglot(data, mime_type)
     cleaned = _strip_exif(data, mime_type)

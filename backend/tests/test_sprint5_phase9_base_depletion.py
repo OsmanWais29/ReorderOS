@@ -86,8 +86,14 @@ async def _seed(
                      storage_to_recipe_factor, count_cadence_days, count_grace_days)
                 VALUES (:t, :n, :mode, :su, :su, :factor, :cad, :cad) RETURNING id
             """),
-            {"t": tid, "n": f"it-{uuid.uuid4().hex[:6]}", "mode": mode, "su": su_id,
-             "cad": cadence, "factor": factor},
+            {
+                "t": tid,
+                "n": f"it-{uuid.uuid4().hex[:6]}",
+                "mode": mode,
+                "su": su_id,
+                "cad": cadence,
+                "factor": factor,
+            },
         )
     ).scalar_one()
 
@@ -128,8 +134,14 @@ async def _seed(
             VALUES (:id,:t,:oid,:cli,:mid,'Item',:qty,0,0,:ref,:void,:rv,'pending')
         """),
         {
-            "id": sli_id, "t": tid, "oid": order_id, "cli": f"cli_{uuid.uuid4().hex[:8]}",
-            "mid": seeded.menu_item_id, "qty": line_qty, "ref": is_refunded, "void": is_voided,
+            "id": sli_id,
+            "t": tid,
+            "oid": order_id,
+            "cli": f"cli_{uuid.uuid4().hex[:8]}",
+            "mid": seeded.menu_item_id,
+            "qty": line_qty,
+            "ref": is_refunded,
+            "void": is_voided,
             "rv": seeded.recipe_version_id if snapshot_rv else None,
         },
     )
@@ -139,14 +151,18 @@ async def _seed(
 
 async def _movements(db: AsyncSession, tid: str, item_id: str) -> list[Any]:
     return (
-        await db.execute(
-            text(
-                "SELECT movement_type, delta, idempotency_key FROM inventory_movements"
-                " WHERE tenant_id = :t AND inventory_item_id = :i ORDER BY idempotency_key"
-            ),
-            {"t": tid, "i": item_id},
+        (
+            await db.execute(
+                text(
+                    "SELECT movement_type, delta, idempotency_key FROM inventory_movements"
+                    " WHERE tenant_id = :t AND inventory_item_id = :i ORDER BY idempotency_key"
+                ),
+                {"t": tid, "i": item_id},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
 
 # ── Mode A / Mode B ──────────────────────────────────────────────────────────
@@ -161,7 +177,10 @@ async def test_mode_a_depletes_negative(db) -> None:
     assert len(mvs) == 1
     assert mvs[0]["movement_type"] == "sale_depletion"
     assert Decimal(str(mvs[0]["delta"])) == Decimal("-6")  # -(3*2/1)
-    assert mvs[0]["idempotency_key"] == f"sale_line:{s['sli_id']}:base:{s['seeded'].recipe_version_id}:{s['item_id']}"
+    assert (
+        mvs[0]["idempotency_key"]
+        == f"sale_line:{s['sli_id']}:base:{s['seeded'].recipe_version_id}:{s['item_id']}"
+    )
 
 
 @pytest.mark.integration
@@ -188,8 +207,12 @@ async def test_yield_quantity_divides(db) -> None:
 @pytest.mark.integration
 @pytest.mark.parametrize(
     "payment_state,order_state,reason",
-    [("OPEN", "locked", "sale_ineligible"), ("PAID", "open", "sale_ineligible"),
-     ("REFUNDED", "locked", "sale_ineligible"), ("CREDITED", "locked", "sale_ineligible")],
+    [
+        ("OPEN", "locked", "sale_ineligible"),
+        ("PAID", "open", "sale_ineligible"),
+        ("REFUNDED", "locked", "sale_ineligible"),
+        ("CREDITED", "locked", "sale_ineligible"),
+    ],
 )
 async def test_ineligible_fails_no_rows(db, payment_state, order_state, reason) -> None:
     s = await _seed(db, payment_state=payment_state, order_state=order_state)
@@ -361,8 +384,12 @@ async def test_legacy_key_guard_skips_new_write(db) -> None:
                  source_id, idempotency_key)
             VALUES (:t,:i,'sale_depletion',-6,'sale_line_item',:sid,:k)
         """),
-        {"t": s["tid"], "i": s["item_id"], "sid": s["sli_id"],
-         "k": f"sale_line:{s['sli_id']}:{s['item_id']}"},
+        {
+            "t": s["tid"],
+            "i": s["item_id"],
+            "sid": s["sli_id"],
+            "k": f"sale_line:{s['sli_id']}:{s['item_id']}",
+        },
     )
     await handler.process_line(db, UUID(s["tid"]), UUID(s["sli_id"]))
     mvs = await _movements(db, s["tid"], s["item_id"])
@@ -421,15 +448,19 @@ async def _count_event(db: AsyncSession, tid: str, item_id: str) -> None:
 
 async def _active_late_alert(db: AsyncSession, tid: str) -> Any:
     return (
-        await db.execute(
-            text(
-                "SELECT severity, alert_count FROM monitoring_alerts"
-                " WHERE tenant_id = :t AND monitor_name = 'late_signal_reconciliation'"
-                "   AND resolved_at IS NULL"
-            ),
-            {"t": tid},
+        (
+            await db.execute(
+                text(
+                    "SELECT severity, alert_count FROM monitoring_alerts"
+                    " WHERE tenant_id = :t AND monitor_name = 'late_signal_reconciliation'"
+                    "   AND resolved_at IS NULL"
+                ),
+                {"t": tid},
+            )
         )
-    ).mappings().fetchone()
+        .mappings()
+        .fetchone()
+    )
 
 
 @pytest.mark.integration
@@ -439,9 +470,7 @@ async def test_late_signal_fires_on_boundary_cross(db) -> None:
     s = await _seed(db, mode="count_anchored")  # eligible PAID line, Mode B
     await _count_event(db, s["tid"], s["item_id"])
     late = datetime.now(UTC) - timedelta(hours=2)
-    status, _ = await handler.process_line(
-        db, UUID(s["tid"]), UUID(s["sli_id"]), recorded_at=late
-    )
+    status, _ = await handler.process_line(db, UUID(s["tid"]), UUID(s["sli_id"]), recorded_at=late)
     assert status == "depleted"
     alert = await _active_late_alert(db, s["tid"])
     assert alert is not None and alert["severity"] == "warn"
@@ -468,9 +497,7 @@ async def test_late_signal_does_not_refire_on_replay(db) -> None:
     a1 = await _active_late_alert(db, s["tid"])
     assert a1 is not None and a1["alert_count"] == 1
     # replay: line is terminal (depleted) → process_line short-circuits → no re-fire
-    status, _ = await handler.process_line(
-        db, UUID(s["tid"]), UUID(s["sli_id"]), recorded_at=late
-    )
+    status, _ = await handler.process_line(db, UUID(s["tid"]), UUID(s["sli_id"]), recorded_at=late)
     assert status == "depleted"
     a2 = await _active_late_alert(db, s["tid"])
     assert a2["alert_count"] == 1  # not bumped — late-signal did not re-fire

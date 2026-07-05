@@ -330,9 +330,7 @@ async def test_h0_3_count_event_stores_watermark(
     )
     cutoff = row["reconciliation_cutoff_created_at"]
     assert cutoff is not None, "reconciliation_cutoff_created_at must not be NULL"
-    assert before <= cutoff <= after, (
-        f"cutoff {cutoff} outside capture window [{before}, {after}]"
-    )
+    assert before <= cutoff <= after, f"cutoff {cutoff} outside capture window [{before}, {after}]"
 
 
 # ═════════════════════════════════════════════════════════════════════════════

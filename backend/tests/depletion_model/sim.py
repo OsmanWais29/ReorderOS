@@ -94,9 +94,12 @@ async def seed_inbox_payload(
                     CAST(:fp AS jsonb), now(), true, 'webhook', 'pending')
         """),
         {
-            "iid": str(uuid.uuid4()), "t": seeded.tenant_id, "vev": payload["id"],
+            "iid": str(uuid.uuid4()),
+            "t": seeded.tenant_id,
+            "vev": payload["id"],
             "vet": vendor_event_type,
-            "vts": int(payload.get("createdTime") or _BASE_MS), "fp": json.dumps(payload),
+            "vts": int(payload.get("createdTime") or _BASE_MS),
+            "fp": json.dumps(payload),
         },
     )
 
@@ -133,6 +136,7 @@ async def drain_concurrent(
     real contention on claim_batch (3 terminals in a rush = the realistic F4 conditions). Loops
     until no pending / claim-expired events remain (a worker that breaks on a momentary empty
     can't strand work)."""
+
     async def worker_loop() -> None:
         w = InboxWorker()
         while True:

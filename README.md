@@ -21,8 +21,8 @@ ReOrderOS/
 |--------|-------|--------|
 | 1 | Platform skeleton — health, version, DO deploy | ✅ Done |
 | 2 | WorkOS JWT auth, multi-tenant RLS, invitations, RBAC | ✅ Done |
-| 3 | Clover POS sync, inventory, stock levels, purchase orders | 🔜 Next |
-| 4 | Sales analytics, forecasting, supplier management | Planned |
+| 3 | Clover POS sync, inventory, stock levels, purchase orders | Needs Verification |
+| 4 | Sales analytics, forecasting, supplier management | Working In Progress |
 | 5 | Onboarding flow, billing (Stripe), notifications | Planned |
 
 ## Quick start

@@ -25,9 +25,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def _alembic(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["alembic", *args], cwd=_BACKEND, capture_output=True, text=True
-    )
+    return subprocess.run(["alembic", *args], cwd=_BACKEND, capture_output=True, text=True)
 
 
 @pytest.mark.asyncio
@@ -48,9 +46,7 @@ async def test_migration_round_trip_head_base_head() -> None:
         forced = await conn.fetchval(
             "SELECT relforcerowsecurity FROM pg_class WHERE relname='inventory_movements'"
         )
-        seed = await conn.fetchval(
-            "SELECT count(*) FROM unit_conversions WHERE tenant_id IS NULL"
-        )
+        seed = await conn.fetchval("SELECT count(*) FROM unit_conversions WHERE tenant_id IS NULL")
     finally:
         await conn.close()
     assert roles == 2, "round-trip did not recreate app_user + service_worker"

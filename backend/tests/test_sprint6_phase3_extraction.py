@@ -30,16 +30,22 @@ pytestmark = pytest.mark.integration
 
 
 class FakeExtractionClient:
-    def __init__(self, payload: dict[str, Any] | None = None, *, raise_exc: Exception | None = None):
+    def __init__(
+        self, payload: dict[str, Any] | None = None, *, raise_exc: Exception | None = None
+    ):
         self.payload = payload or {}
         self.raise_exc = raise_exc
         self.calls = 0
 
-    async def extract_invoice(self, *, file_bytes: bytes, mime_type: str, repair_feedback: Any = None) -> ExtractionResult:
+    async def extract_invoice(
+        self, *, file_bytes: bytes, mime_type: str, repair_feedback: Any = None
+    ) -> ExtractionResult:
         self.calls += 1
         if self.raise_exc is not None:
             raise self.raise_exc
-        return ExtractionResult(payload=self.payload, model_version="fake-1", input_tokens=10, output_tokens=20)
+        return ExtractionResult(
+            payload=self.payload, model_version="fake-1", input_tokens=10, output_tokens=20
+        )
 
 
 _INVOICE = {
@@ -74,25 +80,31 @@ async def _seed(
     rid = uuid.uuid4()
     await admin_conn.execute(
         "INSERT INTO tenants (id, slug, name) VALUES ($1, $2, 'S3 Extract')",
-        tid, f"s3-{tid.hex[:8]}",
+        tid,
+        f"s3-{tid.hex[:8]}",
     )
     await admin_conn.execute(
         """INSERT INTO receipts (id, tenant_id, commit_state, source, photo_object_key,
                mime_type, extraction_status, review_started_at)
            VALUES ($1, $2, 'draft', 'mobile_photo', $3, 'image/jpeg', 'pending', $4)""",
-        rid, tid, f"receipts/{tid}/{rid}/x.jpg",
+        rid,
+        tid,
+        f"receipts/{tid}/{rid}/x.jpg",
         datetime.now(UTC) if review_started else None,
     )
     if daily_cap is not None:
         await admin_conn.execute(
             "INSERT INTO tenant_extraction_rate_limits (tenant_id, daily_cap, jobs_today, window_started_at) "
             "VALUES ($1, $2, $3, (now() AT TIME ZONE 'utc')::date)",
-            tid, daily_cap, jobs_today,
+            tid,
+            daily_cap,
+            jobs_today,
         )
     jid = await admin_conn.fetchval(
         "INSERT INTO receipt_extraction_jobs (tenant_id, receipt_id, status) "
         "VALUES ($1, $2, 'pending') RETURNING id",
-        tid, rid,
+        tid,
+        rid,
     )
     return tid, rid, jid
 
@@ -107,7 +119,9 @@ def _valid_jpeg() -> bytes:
     return buf.getvalue()
 
 
-async def _run(admin_conn: Any, monkeypatch: Any, fake: FakeExtractionClient, raw: bytes | None = None) -> bool:
+async def _run(
+    admin_conn: Any, monkeypatch: Any, fake: FakeExtractionClient, raw: bytes | None = None
+) -> bool:
     monkeypatch.setattr(storage, "get_bytes", lambda key: raw if raw is not None else _valid_jpeg())
     return await ExtractionWorker(fake).process_once()
 
@@ -120,15 +134,20 @@ async def _cleanup(admin_conn: Any, tid: uuid.UUID) -> None:
     await admin_conn.execute("DELETE FROM tenants WHERE id = $1", tid)
 
 
-async def test_happy_path_writes_lines_and_min_confidence(admin_conn: Any, monkeypatch: Any) -> None:
+async def test_happy_path_writes_lines_and_min_confidence(
+    admin_conn: Any, monkeypatch: Any
+) -> None:
     tid, rid, jid = await _seed(admin_conn)
     try:
         assert await _run(admin_conn, monkeypatch, FakeExtractionClient(_INVOICE)) is True
-        job_status = await admin_conn.fetchval("SELECT status FROM receipt_extraction_jobs WHERE id=$1", jid)
+        job_status = await admin_conn.fetchval(
+            "SELECT status FROM receipt_extraction_jobs WHERE id=$1", jid
+        )
         assert job_status == "complete"
         rec = await admin_conn.fetchrow(
             "SELECT extraction_status, extraction_confidence, manual_entry_required, supplier_name "
-            "FROM receipts WHERE id=$1", rid,
+            "FROM receipts WHERE id=$1",
+            rid,
         )
         assert rec["extraction_status"] == "complete"
         assert float(rec["extraction_confidence"]) == pytest.approx(0.6)  # min(0.9, 0.6)
@@ -136,11 +155,14 @@ async def test_happy_path_writes_lines_and_min_confidence(admin_conn: Any, monke
         assert rec["supplier_name"] == "Sysco"
         lines = await admin_conn.fetch(
             "SELECT extracted_name, extracted_unit, received_quantity, unit_cost_cents, match_status, "
-            "extraction_job_id, line_ordinal FROM receipt_lines WHERE receipt_id=$1 ORDER BY line_ordinal", rid,
+            "extraction_job_id, line_ordinal FROM receipt_lines WHERE receipt_id=$1 ORDER BY line_ordinal",
+            rid,
         )
         assert [r["extracted_name"] for r in lines] == ["Flour", "Sugar"]
         assert [r["extracted_unit"] for r in lines] == ["kg", "kg"]
-        assert all(r["match_status"] == "unmatched" and r["extraction_job_id"] == jid for r in lines)
+        assert all(
+            r["match_status"] == "unmatched" and r["extraction_job_id"] == jid for r in lines
+        )
     finally:
         await _cleanup(admin_conn, tid)
 
@@ -148,17 +170,25 @@ async def test_happy_path_writes_lines_and_min_confidence(admin_conn: Any, monke
 async def test_not_invoice_suppresses_receipt(admin_conn: Any, monkeypatch: Any) -> None:
     tid, rid, jid = await _seed(admin_conn)
     try:
-        await _run(admin_conn, monkeypatch, FakeExtractionClient({"document_type": "not_invoice", "lines": []}))
+        await _run(
+            admin_conn,
+            monkeypatch,
+            FakeExtractionClient({"document_type": "not_invoice", "lines": []}),
+        )
         rec = await admin_conn.fetchrow(
             "SELECT review_visibility_status, suppression_reason, manual_entry_required, extraction_status "
-            "FROM receipts WHERE id=$1", rid,
+            "FROM receipts WHERE id=$1",
+            rid,
         )
         assert rec["review_visibility_status"] == "suppressed"
         assert rec["suppression_reason"] == "not_invoice"
         assert rec["manual_entry_required"] is False  # not_invoice is NOT operator work
         n = await admin_conn.fetchval("SELECT count(*) FROM receipt_lines WHERE receipt_id=$1", rid)
         assert n == 0
-        assert await admin_conn.fetchval("SELECT status FROM receipt_extraction_jobs WHERE id=$1", jid) == "complete"
+        assert (
+            await admin_conn.fetchval("SELECT status FROM receipt_extraction_jobs WHERE id=$1", jid)
+            == "complete"
+        )
     finally:
         await _cleanup(admin_conn, tid)
 
@@ -168,8 +198,14 @@ async def test_review_started_supersedes(admin_conn: Any, monkeypatch: Any) -> N
     fake = FakeExtractionClient(_INVOICE)
     try:
         await _run(admin_conn, monkeypatch, fake)
-        assert await admin_conn.fetchval("SELECT status FROM receipt_extraction_jobs WHERE id=$1", jid) == "superseded"
-        assert await admin_conn.fetchval("SELECT extraction_status FROM receipts WHERE id=$1", rid) == "superseded"
+        assert (
+            await admin_conn.fetchval("SELECT status FROM receipt_extraction_jobs WHERE id=$1", jid)
+            == "superseded"
+        )
+        assert (
+            await admin_conn.fetchval("SELECT extraction_status FROM receipts WHERE id=$1", rid)
+            == "superseded"
+        )
         n = await admin_conn.fetchval("SELECT count(*) FROM receipt_lines WHERE receipt_id=$1", rid)
         assert n == 0
         assert fake.calls == 0  # hard-stop is BEFORE the LLM call — no spend
@@ -183,7 +219,10 @@ async def test_validation_failure_is_terminal(admin_conn: Any, monkeypatch: Any)
     try:
         # storage returns a non-image (validation fails on re-read)
         await _run(admin_conn, monkeypatch, fake, raw=b"not-an-image-at-all")
-        assert await admin_conn.fetchval("SELECT status FROM receipt_extraction_jobs WHERE id=$1", jid) == "failed_terminal"
+        assert (
+            await admin_conn.fetchval("SELECT status FROM receipt_extraction_jobs WHERE id=$1", jid)
+            == "failed_terminal"
+        )
         rec = await admin_conn.fetchrow(
             "SELECT extraction_status, manual_entry_required FROM receipts WHERE id=$1", rid
         )
@@ -204,8 +243,13 @@ async def test_quota_cap_blocks(admin_conn: Any, monkeypatch: Any) -> None:
     fake = FakeExtractionClient(_INVOICE)
     try:
         await _run(admin_conn, monkeypatch, fake)
-        assert await admin_conn.fetchval("SELECT status FROM receipt_extraction_jobs WHERE id=$1", jid) == "quota_blocked"
-        rec = await admin_conn.fetchrow("SELECT quota_blocked, quota_blocked_until FROM receipts WHERE id=$1", rid)
+        assert (
+            await admin_conn.fetchval("SELECT status FROM receipt_extraction_jobs WHERE id=$1", jid)
+            == "quota_blocked"
+        )
+        rec = await admin_conn.fetchrow(
+            "SELECT quota_blocked, quota_blocked_until FROM receipts WHERE id=$1", rid
+        )
         assert rec["quota_blocked"] is True
         assert rec["quota_blocked_until"] is not None
         assert fake.calls == 0  # capped before the LLM
@@ -215,8 +259,10 @@ async def test_quota_cap_blocks(admin_conn: Any, monkeypatch: Any) -> None:
 
 async def test_low_confidence_flags_manual(admin_conn: Any, monkeypatch: Any) -> None:
     tid, rid, _jid = await _seed(admin_conn)
-    low = {"document_type": "invoice", "lines": [
-        {"name": "Mystery", "qty": 1, "unit": "kg", "confidence": 0.2}]}
+    low = {
+        "document_type": "invoice",
+        "lines": [{"name": "Mystery", "qty": 1, "unit": "kg", "confidence": 0.2}],
+    }
     try:
         await _run(admin_conn, monkeypatch, FakeExtractionClient(low))
         rec = await admin_conn.fetchrow(
@@ -233,15 +279,20 @@ async def test_checkpoint_reuse_skips_second_llm_call(admin_conn: Any, monkeypat
     (crash-after-LLM-before-lines must not pay twice)."""
     tid, rid, jid = await _seed(admin_conn)
     import json
+
     await admin_conn.execute(
         "UPDATE receipt_extraction_jobs SET raw_extraction = $1::jsonb WHERE id=$2",
-        json.dumps(_INVOICE), jid,
+        json.dumps(_INVOICE),
+        jid,
     )
     fake = FakeExtractionClient(raise_exc=ExtractionUnavailable("should not be called"))
     try:
         await _run(admin_conn, monkeypatch, fake)
         assert fake.calls == 0  # reused the checkpoint
-        assert await admin_conn.fetchval("SELECT status FROM receipt_extraction_jobs WHERE id=$1", jid) == "complete"
+        assert (
+            await admin_conn.fetchval("SELECT status FROM receipt_extraction_jobs WHERE id=$1", jid)
+            == "complete"
+        )
         n = await admin_conn.fetchval("SELECT count(*) FROM receipt_lines WHERE receipt_id=$1", rid)
         assert n == 2
     finally:

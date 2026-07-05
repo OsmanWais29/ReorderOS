@@ -212,8 +212,11 @@ async def commit_receipt_endpoint(
     )
     try:
         result = await commit_receipt(
-            db, tenant_id=tenant_id, receipt_id=receipt_id,
-            confirm=body.confirm, reviewed_affirmation=body.reviewed_affirmation,
+            db,
+            tenant_id=tenant_id,
+            receipt_id=receipt_id,
+            confirm=body.confirm,
+            reviewed_affirmation=body.reviewed_affirmation,
         )
     except ValueError:
         raise HTTPException(status_code=404, detail="Receipt not found") from None

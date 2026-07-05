@@ -32,9 +32,7 @@ class UnitTypeConflict(Exception):
     (which would corrupt every future conversion for the ingredient)."""
 
 
-async def resolve_inventory_item(
-    db: AsyncSession, tenant_id: UUID, name: str, unit: str
-) -> UUID:
+async def resolve_inventory_item(db: AsyncSession, tenant_id: UUID, name: str, unit: str) -> UUID:
     """Step 1 of confirm, per ingredient — resolve-or-create the storage unit and
     dedup-or-create the inventory_item, race-safe via existing unique constraints.
 
@@ -61,14 +59,18 @@ async def resolve_inventory_item(
         {"tid": tenant_id, "name": unit, "ut": dimension},
     )
     uom = (
-        await db.execute(
-            text(
-                "SELECT id, unit_type FROM units_of_measure"
-                " WHERE tenant_id = :tid AND name = :name"
-            ),
-            {"tid": tenant_id, "name": unit},
+        (
+            await db.execute(
+                text(
+                    "SELECT id, unit_type FROM units_of_measure"
+                    " WHERE tenant_id = :tid AND name = :name"
+                ),
+                {"tid": tenant_id, "name": unit},
+            )
         )
-    ).mappings().one()
+        .mappings()
+        .one()
+    )
     if uom["unit_type"] != dimension:
         raise UnitTypeConflict(
             f"unit {unit!r} exists for this tenant with unit_type "

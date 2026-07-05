@@ -82,9 +82,7 @@ def _line_deltas(world: World, order: Order, line: Line) -> dict[str, Decimal] |
             for ing in mod.ingredients:
                 it = world.item(ing.item)
                 storage_qty = _convert(D(ing.qty), ing.unit, it.storage_unit, world)
-                magnitude = (
-                    D(line.qty) * D(slim_qty) * storage_qty / D(mod.yield_quantity)
-                )
+                magnitude = D(line.qty) * D(slim_qty) * storage_qty / D(mod.yield_quantity)
                 signed = -magnitude if it.mode == MODE_A else magnitude
                 out[ing.item] = out.get(ing.item, Decimal("0")) + signed
     except OracleMissingConversion:
@@ -177,9 +175,12 @@ def expected_timeline(
     # Mode B current anchor + signals accumulated since that anchor.
     anchor_b: dict[str, Decimal | None] = {
         it.key: (D(it.opening_count) if it.opening_count is not None else None)
-        for it in world.items if it.mode != MODE_A
+        for it in world.items
+        if it.mode != MODE_A
     }
-    signals_b: dict[str, Decimal] = {it.key: Decimal("0") for it in world.items if it.mode != MODE_A}
+    signals_b: dict[str, Decimal] = {
+        it.key: Decimal("0") for it in world.items if it.mode != MODE_A
+    }
 
     for event in timeline:
         if isinstance(event, Order):

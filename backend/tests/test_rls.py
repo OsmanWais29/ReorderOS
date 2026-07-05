@@ -104,9 +104,7 @@ async def test_menu_items_cross_tenant_isolation(admin_conn: Any, app_conn: Any)
         sees_b = await app_conn.fetch("SELECT id FROM menu_items WHERE id = $1", item_b)
         sees_a = await app_conn.fetch("SELECT id FROM menu_items WHERE id = $1", item_a)
         # A cross-tenant write must affect zero rows.
-        upd = await app_conn.execute(
-            "UPDATE menu_items SET name = 'hacked' WHERE id = $1", item_b
-        )
+        upd = await app_conn.execute("UPDATE menu_items SET name = 'hacked' WHERE id = $1", item_b)
 
     assert len(sees_b) == 0, "FORCE/policy failed: app_user read another tenant's menu_items"
     assert len(sees_a) == 1, "policy over-blocked: app_user cannot see its own menu_items"

@@ -65,13 +65,12 @@ async def create_draft(
     return rid
 
 
-async def get_receipt(
-    db: AsyncSession, tenant_id: UUID, receipt_id: UUID
-) -> dict[str, Any] | None:
+async def get_receipt(db: AsyncSession, tenant_id: UUID, receipt_id: UUID) -> dict[str, Any] | None:
     """Full draft: header + lines. None if not this tenant's (→ 404)."""
     header = (
-        await db.execute(
-            text("""
+        (
+            await db.execute(
+                text("""
                 SELECT id, source, commit_state, extraction_status, supplier_name,
                        total_cents, manual_entry_required, quota_blocked, created_at,
                        photo_object_key, mime_type, invoice_number, invoice_date,
@@ -79,15 +78,19 @@ async def get_receipt(
                   FROM receipts
                  WHERE tenant_id = :tid AND id = :rid
             """),
-            {"tid": tenant_id, "rid": receipt_id},
+                {"tid": tenant_id, "rid": receipt_id},
+            )
         )
-    ).mappings().fetchone()
+        .mappings()
+        .fetchone()
+    )
     if header is None:
         return None
 
     lines = (
-        await db.execute(
-            text("""
+        (
+            await db.execute(
+                text("""
                 SELECT id, extracted_name, inventory_item_id, received_quantity,
                        unit_cost_cents, confidence, manually_corrected, match_status,
                        line_ordinal
@@ -95,9 +98,12 @@ async def get_receipt(
                  WHERE tenant_id = :tid AND receipt_id = :rid
                  ORDER BY line_ordinal NULLS LAST, id
             """),
-            {"tid": tenant_id, "rid": receipt_id},
+                {"tid": tenant_id, "rid": receipt_id},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     result = dict(header)
     result["lines"] = [dict(line) for line in lines]
@@ -115,8 +121,9 @@ async def list_receipts(
     """List receipts, newest first, with optional filters. Suppressed (not-invoice)
     receipts are hidden from the default queue (review_visibility_status='visible')."""
     rows = (
-        await db.execute(
-            text("""
+        (
+            await db.execute(
+                text("""
                 SELECT id, source, commit_state, extraction_status, supplier_name,
                        total_cents, manual_entry_required, quota_blocked, created_at
                   FROM receipts
@@ -127,14 +134,17 @@ async def list_receipts(
                    AND (CAST(:src AS text) IS NULL OR source            = :src)
                  ORDER BY created_at DESC
             """),
-            {
-                "tid": tenant_id,
-                "cs": commit_state,
-                "es": extraction_status,
-                "src": source,
-            },
+                {
+                    "tid": tenant_id,
+                    "cs": commit_state,
+                    "es": extraction_status,
+                    "src": source,
+                },
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     return [dict(r) for r in rows]
 
 

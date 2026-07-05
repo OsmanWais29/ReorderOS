@@ -64,10 +64,14 @@ class FakeLLM:
             raise self._raise
         payload = self._payloads[min(self.calls, len(self._payloads) - 1)]
         self.calls += 1
-        return LLMResult(payload=payload, model_version=self._model, input_tokens=100, output_tokens=50)
+        return LLMResult(
+            payload=payload, model_version=self._model, input_tokens=100, output_tokens=50
+        )
 
 
-def _payload(base_ings: list[dict[str, Any]], modifiers: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def _payload(
+    base_ings: list[dict[str, Any]], modifiers: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
     return {
         "base_recipe": {"ingredients": base_ings},
         "base_confidence": "likely",
@@ -98,9 +102,7 @@ async def conn(app_instance: Any) -> AsyncIterator[AsyncConnection]:
 
 @pytest.fixture
 async def client(app_instance: Any) -> AsyncIterator[AsyncClient]:
-    async with AsyncClient(
-        transport=ASGITransport(app=app_instance), base_url="http://test"
-    ) as c:
+    async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://test") as c:
         yield c
 
 
@@ -139,7 +141,9 @@ async def _seed_tenant_user(conn: AsyncConnection) -> tuple[str, str]:
 async def _menu_item(conn: AsyncConnection, tid: str, name: str = "Latte") -> str:
     mid = (
         await conn.execute(
-            text("INSERT INTO menu_items (tenant_id, name, active) VALUES (:t, :n, true) RETURNING id"),
+            text(
+                "INSERT INTO menu_items (tenant_id, name, active) VALUES (:t, :n, true) RETURNING id"
+            ),
             {"t": tid, "n": name},
         )
     ).scalar_one()
@@ -177,11 +181,21 @@ async def test_suggest_stores_base_and_modifier_appendonly(app_instance, conn, c
     _as(app_instance, tid, uid, "manager")
     _use_llm(
         app_instance,
-        FakeLLM([_payload(
-            _GOOD,
-            [{"modifier_id": modid, "name": "Extra shot", "confidence": "confident",
-              "ingredients": [{"name": "Espresso", "quantity": 7, "unit": "g"}]}],
-        )]),
+        FakeLLM(
+            [
+                _payload(
+                    _GOOD,
+                    [
+                        {
+                            "modifier_id": modid,
+                            "name": "Extra shot",
+                            "confidence": "confident",
+                            "ingredients": [{"name": "Espresso", "quantity": 7, "unit": "g"}],
+                        }
+                    ],
+                )
+            ]
+        ),
     )
 
     resp = await client.post(f"{R}/recipes/{mid}/suggest")
@@ -189,19 +203,30 @@ async def test_suggest_stores_base_and_modifier_appendonly(app_instance, conn, c
     body = resp.json()
     assert body["model_version"] == "claude-sonnet-4-6"
     assert body["base_ingredients"][0] == {
-        "name": "Whole milk", "quantity": 200.0, "unit": "ml", "valid": True, "issue": None
+        "name": "Whole milk",
+        "quantity": 200.0,
+        "unit": "ml",
+        "valid": True,
+        "issue": None,
     }
     assert body["modifiers"][0]["modifier_id"] == modid
 
-    assert await _count(
-        conn, "SELECT count(*) FROM recipe_llm_suggestions WHERE tenant_id=:t AND menu_item_id=:m",
-        {"t": tid, "m": mid},
-    ) == 1
-    assert await _count(
-        conn,
-        "SELECT count(*) FROM modifier_llm_suggestions WHERE tenant_id=:t AND modifier_id=:r",
-        {"t": tid, "r": modid},
-    ) == 1
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM recipe_llm_suggestions WHERE tenant_id=:t AND menu_item_id=:m",
+            {"t": tid, "m": mid},
+        )
+        == 1
+    )
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM modifier_llm_suggestions WHERE tenant_id=:t AND modifier_id=:r",
+            {"t": tid, "r": modid},
+        )
+        == 1
+    )
 
 
 @pytest.mark.integration
@@ -215,7 +240,9 @@ async def test_suggest_does_not_write_drafts_versions(app_instance, conn, client
     assert (await client.post(f"{R}/recipes/{mid}/suggest")).status_code == 200
 
     for table in ("recipe_drafts", "recipe_versions", "recipe_ingredients"):
-        assert await _count(conn, f"SELECT count(*) FROM {table} WHERE tenant_id=:t", {"t": tid}) == 0
+        assert (
+            await _count(conn, f"SELECT count(*) FROM {table} WHERE tenant_id=:t", {"t": tid}) == 0
+        )
 
 
 @pytest.mark.integration
@@ -255,10 +282,14 @@ async def test_suggest_appends_on_rerun(app_instance, conn, client) -> None:
 
     await client.post(f"{R}/recipes/{mid}/suggest")
     await client.post(f"{R}/recipes/{mid}/suggest")
-    assert await _count(
-        conn, "SELECT count(*) FROM recipe_llm_suggestions WHERE tenant_id=:t AND menu_item_id=:m",
-        {"t": tid, "m": mid},
-    ) == 2  # append-only history, not replace
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM recipe_llm_suggestions WHERE tenant_id=:t AND menu_item_id=:m",
+            {"t": tid, "m": mid},
+        )
+        == 2
+    )  # append-only history, not replace
 
 
 # ── validation: invalid kept-and-flagged, repair retry ───────────────────────
@@ -270,8 +301,8 @@ async def test_invalid_unit_kept_flagged_not_dropped(app_instance, conn, client)
     mid = await _menu_item(conn, tid)
     _as(app_instance, tid, uid, "manager")
     bad = [
-        {"name": "Whole milk", "quantity": 200, "unit": "ml"},   # canonical
-        {"name": "Vanilla", "quantity": 1, "unit": "ounces"},     # non-canonical
+        {"name": "Whole milk", "quantity": 200, "unit": "ml"},  # canonical
+        {"name": "Vanilla", "quantity": 1, "unit": "ounces"},  # non-canonical
     ]
     # returns the bad payload on both the first call and the repair retry
     fake = FakeLLM([_payload(bad)])
@@ -321,7 +352,9 @@ async def test_llm_failure_returns_503_and_writes_nothing(app_instance, conn, cl
     assert resp.status_code == 503
     # nothing written anywhere — not even a suggestion row
     for table in ("recipe_llm_suggestions", "recipe_drafts", "recipe_versions"):
-        assert await _count(conn, f"SELECT count(*) FROM {table} WHERE tenant_id=:t", {"t": tid}) == 0
+        assert (
+            await _count(conn, f"SELECT count(*) FROM {table} WHERE tenant_id=:t", {"t": tid}) == 0
+        )
 
 
 @pytest.mark.integration
@@ -380,7 +413,9 @@ async def test_real_client_parses_tool_use_and_usage() -> None:
                 types.SimpleNamespace(
                     type="tool_use",
                     input={
-                        "base_recipe": {"ingredients": [{"name": "Milk", "quantity": 1, "unit": "ml"}]},
+                        "base_recipe": {
+                            "ingredients": [{"name": "Milk", "quantity": 1, "unit": "ml"}]
+                        },
                         "base_confidence": "likely",
                         "modifiers": [],
                     },
@@ -436,9 +471,6 @@ def test_depletion_does_not_import_llm() -> None:
     root = Path(__file__).resolve().parents[1] / "app" / "modules" / "inventory" / "depletion"
     forbidden = ("anthropic", "llm_client", "recipes.suggest", "from app.modules.recipes")
     offenders = [
-        (p.name, token)
-        for p in root.rglob("*.py")
-        for token in forbidden
-        if token in p.read_text()
+        (p.name, token) for p in root.rglob("*.py") for token in forbidden if token in p.read_text()
     ]
     assert not offenders, f"depletion imports LLM/recipes: {offenders}"

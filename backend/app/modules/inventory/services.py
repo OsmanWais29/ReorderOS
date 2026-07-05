@@ -658,8 +658,9 @@ async def commit_receipt(
 
     # ── 2. lock + fetch lines (with unit names + item storage unit for convert) ──
     lines = (
-        await session.execute(
-            text("""
+        (
+            await session.execute(
+                text("""
                 SELECT rl.id, rl.inventory_item_id, rl.received_quantity,
                        rl.purchase_unit_id, rl.unit_cost_cents, rl.idempotency_key,
                        rl.match_status, rl.manually_corrected, rl.extracted_unit,
@@ -671,13 +672,17 @@ async def commit_receipt(
                  WHERE rl.tenant_id = :tid AND rl.receipt_id = :rid
                  FOR UPDATE OF rl
             """),
-            {"tid": tenant_id, "rid": receipt_id},
+                {"tid": tenant_id, "rid": receipt_id},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     # ── 3. integrity floor + human-review gate ───────────────────────────────
     movable = [
-        ln for ln in lines
+        ln
+        for ln in lines
         if ln["match_status"] != "skipped" and ln["inventory_item_id"] is not None
     ]
     if not movable:
@@ -704,15 +709,23 @@ async def commit_receipt(
         to_unit = ln["storage_unit_name"]
         if from_unit and to_unit and from_unit != to_unit:
             storage_qty = await convert(
-                session, received_qty, from_unit, to_unit,
-                inventory_item_id=item_id, tenant_id=tenant_id,
+                session,
+                received_qty,
+                from_unit,
+                to_unit,
+                inventory_item_id=item_id,
+                tenant_id=tenant_id,
             )
         else:
             storage_qty = received_qty  # identity (same unit, or no unit info)
 
         mv_id = await _idempotent_movement_insert(
-            session, tenant_id=tenant_id, inventory_item_id=item_id,
-            delta=storage_qty, line_id=line_id, key=key,
+            session,
+            tenant_id=tenant_id,
+            inventory_item_id=item_id,
+            delta=storage_qty,
+            line_id=line_id,
+            key=key,
         )
 
         if ln["unit_cost_cents"] is not None:
@@ -724,8 +737,11 @@ async def commit_receipt(
                     VALUES (gen_random_uuid(), :tid, :iid, :cost, :puid, :lid)
                 """),
                 {
-                    "tid": tenant_id, "iid": item_id, "cost": ln["unit_cost_cents"],
-                    "puid": ln["purchase_unit_id"], "lid": line_id,
+                    "tid": tenant_id,
+                    "iid": item_id,
+                    "cost": ln["unit_cost_cents"],
+                    "puid": ln["purchase_unit_id"],
+                    "lid": line_id,
                 },
             )
         await session.execute(
@@ -739,8 +755,12 @@ async def commit_receipt(
 
     # ── 5. mark committed (stamps confirmed_at + affirmation for the trigger) ──
     await _mark_receipt_committed(
-        session, tenant_id, receipt_id,
-        confirm=confirm, reviewed_affirmation=reviewed_affirmation, source=source,
+        session,
+        tenant_id,
+        receipt_id,
+        confirm=confirm,
+        reviewed_affirmation=reviewed_affirmation,
+        source=source,
     )
     await session.flush()
     return {

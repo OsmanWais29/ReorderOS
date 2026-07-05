@@ -105,8 +105,14 @@ async def _add_line(
                 RETURNING id
             """),
             {
-                "t": tid, "r": rid, "i": item, "q": Decimal(qty), "pu": purchase_unit_id,
-                "c": unit_cost_cents, "ms": match_status, "mc": manually_corrected,
+                "t": tid,
+                "r": rid,
+                "i": item,
+                "q": Decimal(qty),
+                "pu": purchase_unit_id,
+                "c": unit_cost_cents,
+                "ms": match_status,
+                "mc": manually_corrected,
                 "k": idempotency_key,
             },
         )
@@ -125,22 +131,30 @@ async def test_manual_commit_is_identity_and_stamps_confirmed_at(db: Any) -> Non
     assert result["status"] == "committed"
     assert result["confirmed"] is True
     mv = (
-        await db.execute(
-            text(
-                "SELECT delta, idempotency_key, inventory_item_id FROM inventory_movements "
-                "WHERE tenant_id=:t AND source_id=:l"
-            ),
-            {"t": tid, "l": line_id},
+        (
+            await db.execute(
+                text(
+                    "SELECT delta, idempotency_key, inventory_item_id FROM inventory_movements "
+                    "WHERE tenant_id=:t AND source_id=:l"
+                ),
+                {"t": tid, "l": line_id},
+            )
         )
-    ).mappings().one()
+        .mappings()
+        .one()
+    )
     assert Decimal(str(mv["delta"])) == Decimal("10")  # identity — bit-identical
     assert mv["idempotency_key"] == "rk-1"  # preserved key
     rec = (
-        await db.execute(
-            text("SELECT commit_state, confirmed_at, committed_at FROM receipts WHERE id=:r"),
-            {"r": rid},
+        (
+            await db.execute(
+                text("SELECT commit_state, confirmed_at, committed_at FROM receipts WHERE id=:r"),
+                {"r": rid},
+            )
         )
-    ).mappings().one()
+        .mappings()
+        .one()
+    )
     assert rec["commit_state"] == "committed"
     assert rec["confirmed_at"] is not None  # server-set (D-606-04)
     assert rec["committed_at"] is not None
@@ -152,7 +166,9 @@ async def test_null_key_falls_back_to_receipt_line_key(db: Any) -> None:
     await commit_receipt(db, tenant_id=tid, receipt_id=rid, confirm=True, reviewed_affirmation=True)
     key = (
         await db.execute(
-            text("SELECT idempotency_key FROM inventory_movements WHERE tenant_id=:t AND source_id=:l"),
+            text(
+                "SELECT idempotency_key FROM inventory_movements WHERE tenant_id=:t AND source_id=:l"
+            ),
             {"t": tid, "l": line_id},
         )
     ).scalar_one()
@@ -191,7 +207,9 @@ async def test_all_skipped_nothing_to_commit(db: Any) -> None:
     tid, item, rid = await _seed(db)
     await _add_line(db, tid, rid, item, match_status="skipped")
     with pytest.raises(ReceiptNothingToCommit):
-        await commit_receipt(db, tenant_id=tid, receipt_id=rid, confirm=True, reviewed_affirmation=True)
+        await commit_receipt(
+            db, tenant_id=tid, receipt_id=rid, confirm=True, reviewed_affirmation=True
+        )
 
 
 async def test_skipped_line_writes_no_movement(db: Any) -> None:
@@ -222,8 +240,12 @@ async def test_cost_snapshot_written(db: Any) -> None:
 async def test_idempotent_replay_returns_already_committed(db: Any) -> None:
     tid, item, rid = await _seed(db)
     await _add_line(db, tid, rid, item, idempotency_key="rk-idem")
-    r1 = await commit_receipt(db, tenant_id=tid, receipt_id=rid, confirm=True, reviewed_affirmation=True)
-    r2 = await commit_receipt(db, tenant_id=tid, receipt_id=rid, confirm=True, reviewed_affirmation=True)
+    r1 = await commit_receipt(
+        db, tenant_id=tid, receipt_id=rid, confirm=True, reviewed_affirmation=True
+    )
+    r2 = await commit_receipt(
+        db, tenant_id=tid, receipt_id=rid, confirm=True, reviewed_affirmation=True
+    )
     assert r1["status"] == "committed"
     assert r2["status"] == "already_committed"
     n = (
@@ -239,22 +261,38 @@ async def test_idempotent_replay_returns_already_committed(db: Any) -> None:
 
 async def test_trigger_pos_bypasses_human_guards(admin_conn: Any) -> None:
     tid = uuid.uuid4()
-    await admin_conn.execute("INSERT INTO tenants (id, slug, name) VALUES ($1, $2, 'P')", tid, f"p-{tid.hex[:8]}")
+    await admin_conn.execute(
+        "INSERT INTO tenants (id, slug, name) VALUES ($1, $2, 'P')", tid, f"p-{tid.hex[:8]}"
+    )
     uom = await admin_conn.fetchval(
         "INSERT INTO units_of_measure (tenant_id,name,abbreviation,unit_type) "
-        "VALUES ($1,'g','g','weight') RETURNING id", tid)
+        "VALUES ($1,'g','g','weight') RETURNING id",
+        tid,
+    )
     item = await admin_conn.fetchval(
         "INSERT INTO inventory_items (tenant_id,name,inventory_mode,storage_unit_id,recipe_unit_id) "
-        "VALUES ($1,'Flour','recipe_deducted',$2,$2) RETURNING id", tid, uom)
+        "VALUES ($1,'Flour','recipe_deducted',$2,$2) RETURNING id",
+        tid,
+        uom,
+    )
     rid = await admin_conn.fetchval(
-        "INSERT INTO receipts (tenant_id, commit_state, source) VALUES ($1,'draft','pos') RETURNING id", tid)
+        "INSERT INTO receipts (tenant_id, commit_state, source) VALUES ($1,'draft','pos') RETURNING id",
+        tid,
+    )
     await admin_conn.execute(
         "INSERT INTO receipt_lines (tenant_id,receipt_id,inventory_item_id,received_quantity,match_status) "
-        "VALUES ($1,$2,$3,5,'matched')", tid, rid, item)
+        "VALUES ($1,$2,$3,5,'matched')",
+        tid,
+        rid,
+        item,
+    )
     try:
         # pos commit WITHOUT confirmed_at must succeed (bypass)
         await admin_conn.execute("UPDATE receipts SET commit_state='committed' WHERE id=$1", rid)
-        assert await admin_conn.fetchval("SELECT commit_state FROM receipts WHERE id=$1", rid) == "committed"
+        assert (
+            await admin_conn.fetchval("SELECT commit_state FROM receipts WHERE id=$1", rid)
+            == "committed"
+        )
     finally:
         await admin_conn.execute("DELETE FROM receipt_lines WHERE tenant_id=$1", tid)
         await admin_conn.execute("DELETE FROM receipts WHERE tenant_id=$1", tid)
@@ -267,13 +305,19 @@ async def test_trigger_integrity_floor_rejects_no_line(admin_conn: Any) -> None:
     import asyncpg
 
     tid = uuid.uuid4()
-    await admin_conn.execute("INSERT INTO tenants (id, slug, name) VALUES ($1, $2, 'F')", tid, f"f-{tid.hex[:8]}")
+    await admin_conn.execute(
+        "INSERT INTO tenants (id, slug, name) VALUES ($1, $2, 'F')", tid, f"f-{tid.hex[:8]}"
+    )
     rid = await admin_conn.fetchval(
-        "INSERT INTO receipts (tenant_id, commit_state, source) VALUES ($1,'draft','pos') RETURNING id", tid)
+        "INSERT INTO receipts (tenant_id, commit_state, source) VALUES ($1,'draft','pos') RETURNING id",
+        tid,
+    )
     try:
         # pos receipt with NO inventory line → integrity floor (all sources) rejects
         with pytest.raises(asyncpg.CheckViolationError):
-            await admin_conn.execute("UPDATE receipts SET commit_state='committed' WHERE id=$1", rid)
+            await admin_conn.execute(
+                "UPDATE receipts SET commit_state='committed' WHERE id=$1", rid
+            )
     finally:
         await admin_conn.execute("DELETE FROM receipts WHERE tenant_id=$1", tid)
         await admin_conn.execute("DELETE FROM tenants WHERE id=$1", tid)

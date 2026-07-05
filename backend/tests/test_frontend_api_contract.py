@@ -1,13 +1,13 @@
 """API contract guards (Sprint 5 Phase 16) — institutionalising two lessons as CI.
 
-  ROUTE PARITY — the single-modifier route set must mirror the single-recipe route set
-  verb-for-verb (GET detail, PATCH, confirm, unconfirm, skip). This is the test that would have
-  caught the missing modifier-detail GET at birth (the consumer-less-API gap): a write-only
-  config surface is incomplete by construction.
+ROUTE PARITY — the single-modifier route set must mirror the single-recipe route set
+verb-for-verb (GET detail, PATCH, confirm, unconfirm, skip). This is the test that would have
+caught the missing modifier-detail GET at birth (the consumer-less-API gap): a write-only
+config surface is incomplete by construction.
 
-  CLIENT ↔ SERVER PATH SYNC — every path the TS client (frontend/src/api/recipes.ts) calls must
-  resolve to a real FastAPI route. Catches a client built against a path the server doesn't
-  expose (a 404 in production) — the inverse failure of route parity.
+CLIENT ↔ SERVER PATH SYNC — every path the TS client (frontend/src/api/recipes.ts) calls must
+resolve to a real FastAPI route. Catches a client built against a path the server doesn't
+expose (a 404 in production) — the inverse failure of route parity.
 """
 
 from __future__ import annotations
@@ -40,7 +40,13 @@ def _ops_under(single_resource_re: str) -> set[tuple[str, str]]:
 
 
 # The verb-for-verb core every single configurable resource must expose.
-_CORE = {("GET", ""), ("PATCH", ""), ("POST", "/confirm"), ("POST", "/unconfirm"), ("POST", "/skip")}
+_CORE = {
+    ("GET", ""),
+    ("PATCH", ""),
+    ("POST", "/confirm"),
+    ("POST", "/unconfirm"),
+    ("POST", "/skip"),
+}
 
 
 def test_single_recipe_exposes_the_core_verbs() -> None:

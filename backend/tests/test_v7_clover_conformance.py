@@ -48,8 +48,10 @@ _ps = InboxWorker()._derive_payment_state  # pure; no instance state
         ({"payments": {"elements": [{"result": "SUCCESS"}]}}, "PAID"),
         ({"payments": {"elements": [{"result": "AUTH"}]}}, "PAID"),
         ({"payments": {"elements": [{"result": "REFUNDED"}]}}, "REFUNDED"),
-        ({"payments": {"elements": [{"result": "SUCCESS"}, {"result": "REFUNDED"}]}},
-         "PARTIALLY_REFUNDED"),
+        (
+            {"payments": {"elements": [{"result": "SUCCESS"}, {"result": "REFUNDED"}]}},
+            "PARTIALLY_REFUNDED",
+        ),
         # payType fallback
         ({"payType": "FULL"}, "PAID"),
         # default
@@ -81,14 +83,26 @@ def _latte_world() -> World:
 
 def _order_with_mods(seeded: Seeded, mods: list[dict[str, Any]], created_ms: int) -> dict[str, Any]:
     import uuid
+
     return {
-        "id": f"order_{uuid.uuid4().hex}", "state": "locked", "paymentState": "PAID", "total": 0,
-        "createdTime": created_ms, "clientCreatedTime": created_ms,
-        "lineItems": {"elements": [{
-            "id": f"li_{uuid.uuid4().hex}", "item": {"id": seeded.pos_item_ids["latte"]},
-            "name": "latte", "unitQty": 1.0, "price": 100,
-            "modifications": {"elements": mods},
-        }]},
+        "id": f"order_{uuid.uuid4().hex}",
+        "state": "locked",
+        "paymentState": "PAID",
+        "total": 0,
+        "createdTime": created_ms,
+        "clientCreatedTime": created_ms,
+        "lineItems": {
+            "elements": [
+                {
+                    "id": f"li_{uuid.uuid4().hex}",
+                    "item": {"id": seeded.pos_item_ids["latte"]},
+                    "name": "latte",
+                    "unitQty": 1.0,
+                    "price": 100,
+                    "modifications": {"elements": mods},
+                }
+            ]
+        },
     }
 
 
@@ -101,7 +115,8 @@ async def test_modifier_multiplier_both_representations(committed_session: Async
     seeded_a = await seed_world(s, _latte_world())
     pos_a = seeded_a.pos_modifier_ids["extra"]
     await seed_inbox_payload(
-        s, seeded_a,
+        s,
+        seeded_a,
         _order_with_mods(seeded_a, [{"modifier": {"id": pos_a}, "quantity": 2}], 0),
     )
     await s.commit()
@@ -111,7 +126,8 @@ async def test_modifier_multiplier_both_representations(committed_session: Async
     seeded_b = await seed_world(s, _latte_world())
     pos_b = seeded_b.pos_modifier_ids["extra"]
     await seed_inbox_payload(
-        s, seeded_b,
+        s,
+        seeded_b,
         _order_with_mods(seeded_b, [{"modifier": {"id": pos_b}}, {"modifier": {"id": pos_b}}], 0),
     )
     await s.commit()

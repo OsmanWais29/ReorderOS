@@ -41,7 +41,9 @@ async def db() -> AsyncIterator[Any]:
             await connection.rollback()
 
 
-async def _committed_receipt(db: Any) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
+async def _committed_receipt(
+    db: Any,
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
     """Seed a tenant/item and a COMMITTED manual receipt with one received line."""
     tid = uuid.uuid4()
     uid = uuid.uuid4()
@@ -73,7 +75,9 @@ async def _committed_receipt(db: Any) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, 
     ).scalar_one()
     rid = (
         await db.execute(
-            text("INSERT INTO receipts (tenant_id,commit_state,source) VALUES (:t,'draft','manual') RETURNING id"),
+            text(
+                "INSERT INTO receipts (tenant_id,commit_state,source) VALUES (:t,'draft','manual') RETURNING id"
+            ),
             {"t": tid},
         )
     ).scalar_one()
@@ -110,30 +114,47 @@ async def test_adjustment_writes_linked_compensating_movement(db: Any) -> None:
     assert await _on_hand(db, tid, item) == Decimal("10")  # the receive
 
     result = await create_adjustment(
-        db, tenant_id=tid, receipt_id=rid, adjustment_type="damage",
-        inventory_item_id=item, delta_quantity=Decimal("-3"), delta_unit="g",
-        reason="spillage", receipt_line_id=line_id, delta_cost_cents=90,
+        db,
+        tenant_id=tid,
+        receipt_id=rid,
+        adjustment_type="damage",
+        inventory_item_id=item,
+        delta_quantity=Decimal("-3"),
+        delta_unit="g",
+        reason="spillage",
+        receipt_line_id=line_id,
+        delta_cost_cents=90,
         created_by=uid,
     )
     assert result["movement_type"] == "waste"
 
     adj = (
-        await db.execute(
-            text("SELECT * FROM receipt_adjustments WHERE id=:a"),
-            {"a": result["adjustment_id"]},
+        (
+            await db.execute(
+                text("SELECT * FROM receipt_adjustments WHERE id=:a"),
+                {"a": result["adjustment_id"]},
+            )
         )
-    ).mappings().one()
+        .mappings()
+        .one()
+    )
     assert adj["compensating_movement_id"] == result["compensating_movement_id"]
     assert adj["receipt_line_id"] == line_id
     assert Decimal(str(adj["delta_quantity"])) == Decimal("-3")
 
     mv = (
-        await db.execute(
-            text("SELECT movement_type, delta, source_type, source_id, idempotency_key "
-                 "FROM inventory_movements WHERE id=:m"),
-            {"m": result["compensating_movement_id"]},
+        (
+            await db.execute(
+                text(
+                    "SELECT movement_type, delta, source_type, source_id, idempotency_key "
+                    "FROM inventory_movements WHERE id=:m"
+                ),
+                {"m": result["compensating_movement_id"]},
+            )
         )
-    ).mappings().one()
+        .mappings()
+        .one()
+    )
     assert mv["movement_type"] == "waste"
     assert Decimal(str(mv["delta"])) == Decimal("-3")
     assert mv["source_type"] == "receipt_adjustment"
@@ -146,15 +167,27 @@ async def test_adjustment_writes_linked_compensating_movement(db: Any) -> None:
 
 @pytest.mark.parametrize(
     ("atype", "expected"),
-    [("correction", "adjustment"), ("count_fix", "count_adjust"),
-     ("return", "waste"), ("damage", "waste")],
+    [
+        ("correction", "adjustment"),
+        ("count_fix", "count_adjust"),
+        ("return", "waste"),
+        ("damage", "waste"),
+    ],
 )
 async def test_adjustment_type_maps_movement_type(db: Any, atype: str, expected: str) -> None:
     tid, item, rid, _line, uid = await _committed_receipt(db)
     result = await create_adjustment(
-        db, tenant_id=tid, receipt_id=rid, adjustment_type=atype,
-        inventory_item_id=item, delta_quantity=Decimal("-1"), delta_unit="g",
-        reason=None, receipt_line_id=None, delta_cost_cents=None, created_by=uid,
+        db,
+        tenant_id=tid,
+        receipt_id=rid,
+        adjustment_type=atype,
+        inventory_item_id=item,
+        delta_quantity=Decimal("-1"),
+        delta_unit="g",
+        reason=None,
+        receipt_line_id=None,
+        delta_cost_cents=None,
+        created_by=uid,
     )
     assert result["movement_type"] == expected
 
@@ -168,9 +201,17 @@ async def test_append_only_original_untouched(db: Any) -> None:
         )
     ).scalar_one()
     await create_adjustment(
-        db, tenant_id=tid, receipt_id=rid, adjustment_type="correction",
-        inventory_item_id=item, delta_quantity=Decimal("2"), delta_unit="g",
-        reason="recount", receipt_line_id=line_id, delta_cost_cents=None, created_by=uid,
+        db,
+        tenant_id=tid,
+        receipt_id=rid,
+        adjustment_type="correction",
+        inventory_item_id=item,
+        delta_quantity=Decimal("2"),
+        delta_unit="g",
+        reason="recount",
+        receipt_line_id=line_id,
+        delta_cost_cents=None,
+        created_by=uid,
     )
     after = (
         await db.execute(
@@ -178,7 +219,9 @@ async def test_append_only_original_untouched(db: Any) -> None:
             {"t": tid, "l": line_id},
         )
     ).scalar_one()
-    assert Decimal(str(before)) == Decimal(str(after)) == Decimal("10")  # original receive untouched
+    assert (
+        Decimal(str(before)) == Decimal(str(after)) == Decimal("10")
+    )  # original receive untouched
     # receipt still committed, lines intact
     assert (
         await db.execute(text("SELECT commit_state FROM receipts WHERE id=:r"), {"r": rid})
@@ -194,19 +237,37 @@ async def test_adjust_requires_committed_receipt(db: Any) -> None:
     item = uuid.uuid4()
     rid = (
         await db.execute(
-            text("INSERT INTO receipts (tenant_id,commit_state,source) VALUES (:t,'draft','manual') RETURNING id"),
+            text(
+                "INSERT INTO receipts (tenant_id,commit_state,source) VALUES (:t,'draft','manual') RETURNING id"
+            ),
             {"t": tid},
         )
     ).scalar_one()
     with pytest.raises(ReceiptNotCommitted):
         await create_adjustment(
-            db, tenant_id=tid, receipt_id=rid, adjustment_type="correction",
-            inventory_item_id=item, delta_quantity=Decimal("1"), delta_unit="g",
-            reason=None, receipt_line_id=None, delta_cost_cents=None, created_by=uuid.uuid4(),
+            db,
+            tenant_id=tid,
+            receipt_id=rid,
+            adjustment_type="correction",
+            inventory_item_id=item,
+            delta_quantity=Decimal("1"),
+            delta_unit="g",
+            reason=None,
+            receipt_line_id=None,
+            delta_cost_cents=None,
+            created_by=uuid.uuid4(),
         )
     with pytest.raises(ReceiptNotFound):
         await create_adjustment(
-            db, tenant_id=tid, receipt_id=uuid.uuid4(), adjustment_type="correction",
-            inventory_item_id=item, delta_quantity=Decimal("1"), delta_unit="g",
-            reason=None, receipt_line_id=None, delta_cost_cents=None, created_by=uuid.uuid4(),
+            db,
+            tenant_id=tid,
+            receipt_id=uuid.uuid4(),
+            adjustment_type="correction",
+            inventory_item_id=item,
+            delta_quantity=Decimal("1"),
+            delta_unit="g",
+            reason=None,
+            receipt_line_id=None,
+            delta_cost_cents=None,
+            created_by=uuid.uuid4(),
         )

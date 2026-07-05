@@ -51,9 +51,7 @@ async def conn(app_instance: Any) -> AsyncIterator[AsyncConnection]:
 
 @pytest.fixture
 async def client(app_instance: Any) -> AsyncIterator[AsyncClient]:
-    async with AsyncClient(
-        transport=ASGITransport(app=app_instance), base_url="http://test"
-    ) as c:
+    async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://test") as c:
         yield c
 
 
@@ -137,20 +135,32 @@ async def test_patch_creates_recipe_and_draft_only(app_instance, conn, client) -
     assert body["status"] == "draft"
     assert body["ingredients"][0]["unit"] == "ml"
 
-    assert await _count(
-        conn,
-        "SELECT count(*) FROM recipes WHERE tenant_id=:t AND menu_item_id=:m AND status='draft'",
-        {"t": tid, "m": mid},
-    ) == 1
-    assert await _count(
-        conn,
-        "SELECT count(*) FROM recipe_drafts rd JOIN recipes r ON r.id=rd.recipe_id"
-        " WHERE r.tenant_id=:t AND r.menu_item_id=:m",
-        {"t": tid, "m": mid},
-    ) == 1
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM recipes WHERE tenant_id=:t AND menu_item_id=:m AND status='draft'",
+            {"t": tid, "m": mid},
+        )
+        == 1
+    )
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM recipe_drafts rd JOIN recipes r ON r.id=rd.recipe_id"
+            " WHERE r.tenant_id=:t AND r.menu_item_id=:m",
+            {"t": tid, "m": mid},
+        )
+        == 1
+    )
     # strict boundary: Phase 3 writes nothing to the version tables
-    assert await _count(conn, "SELECT count(*) FROM recipe_versions WHERE tenant_id=:t", {"t": tid}) == 0
-    assert await _count(conn, "SELECT count(*) FROM recipe_ingredients WHERE tenant_id=:t", {"t": tid}) == 0
+    assert (
+        await _count(conn, "SELECT count(*) FROM recipe_versions WHERE tenant_id=:t", {"t": tid})
+        == 0
+    )
+    assert (
+        await _count(conn, "SELECT count(*) FROM recipe_ingredients WHERE tenant_id=:t", {"t": tid})
+        == 0
+    )
 
 
 @pytest.mark.integration
@@ -159,15 +169,24 @@ async def test_patch_twice_updates_single_draft(app_instance, conn, client) -> N
     mid = await _menu_item(conn, tid)
     _as(app_instance, tid, uid, "manager")
 
-    await client.patch(f"{R}/recipes/{mid}", json={"ingredients": [{"name": "Milk", "quantity": 100, "unit": "ml"}]})
-    await client.patch(f"{R}/recipes/{mid}", json={"ingredients": [{"name": "Milk", "quantity": 250, "unit": "ml"}]})
+    await client.patch(
+        f"{R}/recipes/{mid}",
+        json={"ingredients": [{"name": "Milk", "quantity": 100, "unit": "ml"}]},
+    )
+    await client.patch(
+        f"{R}/recipes/{mid}",
+        json={"ingredients": [{"name": "Milk", "quantity": 250, "unit": "ml"}]},
+    )
 
-    assert await _count(
-        conn,
-        "SELECT count(*) FROM recipe_drafts rd JOIN recipes r ON r.id=rd.recipe_id"
-        " WHERE r.tenant_id=:t AND r.menu_item_id=:m",
-        {"t": tid, "m": mid},
-    ) == 1
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM recipe_drafts rd JOIN recipes r ON r.id=rd.recipe_id"
+            " WHERE r.tenant_id=:t AND r.menu_item_id=:m",
+            {"t": tid, "m": mid},
+        )
+        == 1
+    )
     detail = (await client.get(f"{R}/recipes/{mid}")).json()
     assert detail["ingredients"][0]["quantity"] == 250
 
@@ -235,17 +254,24 @@ async def test_skip_preserves_draft_and_patch_reopens(app_instance, conn, client
     mid = await _menu_item(conn, tid)
     _as(app_instance, tid, uid, "manager")
 
-    await client.patch(f"{R}/recipes/{mid}", json={"ingredients": [{"name": "Milk", "quantity": 100, "unit": "ml"}]})
+    await client.patch(
+        f"{R}/recipes/{mid}",
+        json={"ingredients": [{"name": "Milk", "quantity": 100, "unit": "ml"}]},
+    )
     skip = await client.post(f"{R}/recipes/{mid}/skip")
     assert skip.status_code == 200 and skip.json()["status"] == "skipped"
-    assert await _count(
-        conn,
-        "SELECT count(*) FROM recipe_drafts rd JOIN recipes r ON r.id=rd.recipe_id"
-        " WHERE r.tenant_id=:t AND r.menu_item_id=:m",
-        {"t": tid, "m": mid},
-    ) == 1  # draft preserved
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM recipe_drafts rd JOIN recipes r ON r.id=rd.recipe_id"
+            " WHERE r.tenant_id=:t AND r.menu_item_id=:m",
+            {"t": tid, "m": mid},
+        )
+        == 1
+    )  # draft preserved
     reopened = await client.patch(
-        f"{R}/recipes/{mid}", json={"ingredients": [{"name": "Milk", "quantity": 150, "unit": "ml"}]}
+        f"{R}/recipes/{mid}",
+        json={"ingredients": [{"name": "Milk", "quantity": 150, "unit": "ml"}]},
     )
     assert reopened.status_code == 200 and reopened.json()["status"] == "draft"
 
@@ -295,4 +321,6 @@ async def test_cross_tenant_returns_404(app_instance, conn, client) -> None:
     assert (await client.get(f"{R}/recipes/{mid_b}")).status_code == 404
     assert (await client.patch(f"{R}/recipes/{mid_b}", json=_ING)).status_code == 404
     assert (await client.post(f"{R}/recipes/{mid_b}/skip")).status_code == 404
-    assert await _count(conn, "SELECT count(*) FROM recipes WHERE menu_item_id=:m", {"m": mid_b}) == 0
+    assert (
+        await _count(conn, "SELECT count(*) FROM recipes WHERE menu_item_id=:m", {"m": mid_b}) == 0
+    )

@@ -122,7 +122,9 @@ async def _seed_menu_item(
     return str(row["id"])
 
 
-def _make_li_with_item(pos_item_id: str, *, name: str = "Test Item", price: int = 1000, qty: int = 1) -> dict:
+def _make_li_with_item(
+    pos_item_id: str, *, name: str = "Test Item", price: int = 1000, qty: int = 1
+) -> dict:
     return {
         "id": f"li_{uuid.uuid4().hex[:8]}",
         "item": {"id": pos_item_id},
@@ -342,7 +344,9 @@ async def test_e2e_4_recipe_version_frozen(admin_conn):
         uuid.UUID(tid),
         uuid.UUID(inv_id),
     )
-    assert Decimal(str(delta)) == Decimal("-5"), "Historical movement must not be affected by recipe FK change"
+    assert Decimal(str(delta)) == Decimal("-5"), (
+        "Historical movement must not be affected by recipe FK change"
+    )
 
     # And inv_id2 (the new recipe's item) has no movement
     mv2_count = await admin_conn.fetchval(
@@ -407,8 +411,7 @@ async def test_e2e_5_replay_idempotent(admin_conn):
 
     # Exactly one inventory movement
     mv_count = await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM inventory_movements"
-        " WHERE tenant_id = $1 AND inventory_item_id = $2",
+        "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id = $1 AND inventory_item_id = $2",
         uuid.UUID(tid),
         uuid.UUID(inv_id),
     )
@@ -604,22 +607,27 @@ async def _seed_confirmed_modifier(
     mod_id = await conn.fetchval(
         "INSERT INTO modifiers (tenant_id, menu_item_id, pos_modifier_id, name,"
         " modifier_type, status) VALUES ($1,$2,$3,'Extra shot',$4,$5) RETURNING id",
-        tid, uuid.UUID(menu_item_id), pos_mod_id, modifier_type,
+        tid,
+        uuid.UUID(menu_item_id),
+        pos_mod_id,
+        modifier_type,
         "confirmed" if confirmed else "draft",
     )
     if confirmed:
         mv_id = await conn.fetchval(
             "INSERT INTO modifier_versions (tenant_id, modifier_id, version_number,"
             " yield_quantity) VALUES ($1,$2,1,1.0) RETURNING id",
-            tid, mod_id,
+            tid,
+            mod_id,
         )
-        await conn.execute(
-            "UPDATE modifiers SET current_version_id=$1 WHERE id=$2", mv_id, mod_id
-        )
+        await conn.execute("UPDATE modifiers SET current_version_id=$1 WHERE id=$2", mv_id, mod_id)
         await conn.execute(
             "INSERT INTO modifier_ingredients (tenant_id, modifier_version_id,"
             " inventory_item_id, quantity, unit) VALUES ($1,$2,$3,$4,'g')",
-            tid, mv_id, uuid.UUID(inv_item_id), mod_qty,
+            tid,
+            mv_id,
+            uuid.UUID(inv_item_id),
+            mod_qty,
         )
     return pos_mod_id
 
@@ -635,7 +643,9 @@ async def test_e2e_10_confirmed_modifier_depletes(admin_conn):
     rv_id = await _seed_recipe(admin_conn, tid, (base_item, 2.0))
     pos_item_id = f"POS_{uuid.uuid4().hex[:8]}"
     menu_item_id = await _seed_menu_item(admin_conn, tid, pos_item_id, recipe_version_id=rv_id)
-    pos_mod_id = await _seed_confirmed_modifier(admin_conn, tid, menu_item_id, mod_item, mod_qty=5.0)
+    pos_mod_id = await _seed_confirmed_modifier(
+        admin_conn, tid, menu_item_id, mod_item, mod_qty=5.0
+    )
 
     li = _make_li_with_item(pos_item_id, qty=3)
     li["modifications"] = {"elements": [{"modifier": {"id": pos_mod_id}, "quantity": 2}]}
@@ -651,12 +661,14 @@ async def test_e2e_10_confirmed_modifier_depletes(admin_conn):
 
     base_delta = await admin_conn.fetchval(
         "SELECT delta FROM inventory_movements WHERE tenant_id=$1 AND inventory_item_id=$2",
-        uuid.UUID(tid), uuid.UUID(base_item),
+        uuid.UUID(tid),
+        uuid.UUID(base_item),
     )
     assert Decimal(str(base_delta)) == Decimal("-6")  # base: 3*2
     mod_delta = await admin_conn.fetchval(
         "SELECT delta FROM inventory_movements WHERE tenant_id=$1 AND inventory_item_id=$2",
-        uuid.UUID(tid), uuid.UUID(mod_item),
+        uuid.UUID(tid),
+        uuid.UUID(mod_item),
     )
     assert Decimal(str(mod_delta)) == Decimal("-30")  # modifier: 3 * 2(mult) * 5(qty) / 1
 
@@ -690,14 +702,22 @@ async def test_e2e_11_unconfirmed_modifier_no_movement(admin_conn):
     worker = InboxWorker()
     await worker.process_event((await worker.claim_batch(batch_size=1))[0])
 
-    assert await admin_conn.fetchval(  # base still depletes
-        "SELECT delta FROM inventory_movements WHERE tenant_id=$1 AND inventory_item_id=$2",
-        uuid.UUID(tid), uuid.UUID(base_item),
-    ) is not None
-    assert await admin_conn.fetchval(  # modifier item: no movement
-        "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id=$1 AND inventory_item_id=$2",
-        uuid.UUID(tid), uuid.UUID(mod_item),
-    ) == 0
+    assert (
+        await admin_conn.fetchval(  # base still depletes
+            "SELECT delta FROM inventory_movements WHERE tenant_id=$1 AND inventory_item_id=$2",
+            uuid.UUID(tid),
+            uuid.UUID(base_item),
+        )
+        is not None
+    )
+    assert (
+        await admin_conn.fetchval(  # modifier item: no movement
+            "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id=$1 AND inventory_item_id=$2",
+            uuid.UUID(tid),
+            uuid.UUID(mod_item),
+        )
+        == 0
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -726,7 +746,9 @@ async def test_e2e_12_modifier_replay_no_duplicate_slim_or_movement(admin_conn):
     rv_id = await _seed_recipe(admin_conn, tid, (base_item, 2.0))
     pos_item_id = f"POS_{uuid.uuid4().hex[:8]}"
     menu_item_id = await _seed_menu_item(admin_conn, tid, pos_item_id, recipe_version_id=rv_id)
-    pos_mod_id = await _seed_confirmed_modifier(admin_conn, tid, menu_item_id, mod_item, mod_qty=5.0)
+    pos_mod_id = await _seed_confirmed_modifier(
+        admin_conn, tid, menu_item_id, mod_item, mod_qty=5.0
+    )
 
     li = _make_li_with_item(pos_item_id, qty=3)
     li["modifications"] = {"elements": [{"modifier": {"id": pos_mod_id}, "quantity": 2}]}
@@ -753,8 +775,8 @@ async def test_e2e_12_modifier_replay_no_duplicate_slim_or_movement(admin_conn):
     )
     assert slim_count == 1, f"replay must not duplicate the slim row, got {slim_count}"
     mod_mv_count = await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM inventory_movements"
-        " WHERE tenant_id = $1 AND inventory_item_id = $2",
-        uuid.UUID(tid), uuid.UUID(mod_item),
+        "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id = $1 AND inventory_item_id = $2",
+        uuid.UUID(tid),
+        uuid.UUID(mod_item),
     )
     assert mod_mv_count == 1, f"replay must not double-deplete the modifier, got {mod_mv_count}"

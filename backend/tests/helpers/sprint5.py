@@ -229,8 +229,9 @@ async def seed_sale_effect_session(
     """
     tid, sli, iid = _u(tenant_id), _u(sale_line_item_id), _u(inventory_item_id)
     row = (
-        await session.execute(
-            text("""
+        (
+            await session.execute(
+                text("""
                 SELECT s.quantity AS sq, ri.quantity AS rq,
                        ii.storage_to_recipe_factor AS f, ii.inventory_mode AS m
                 FROM sale_line_items s
@@ -240,9 +241,12 @@ async def seed_sale_effect_session(
                 JOIN inventory_items ii ON ii.id = :iid AND ii.tenant_id = :tid
                 WHERE s.id = :sli AND s.tenant_id = :tid
             """),
-            {"tid": tid, "sli": sli, "iid": iid},
+                {"tid": tid, "sli": sli, "iid": iid},
+            )
         )
-    ).mappings().one()
+        .mappings()
+        .one()
+    )
     theoretical = Decimal(str(row["sq"])) * Decimal(str(row["rq"])) / Decimal(str(row["f"]))
     yf = (
         await session.execute(

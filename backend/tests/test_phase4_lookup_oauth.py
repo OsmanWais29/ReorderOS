@@ -450,9 +450,7 @@ async def test_service_worker_inventory_access_rls_isolated(service_conn):
 
     Zero rows (not a permission error) is the correct result here.
     """
-    count = await service_conn.fetchval(
-        "SELECT count(*) FROM inventory_movements"
-    )
+    count = await service_conn.fetchval("SELECT count(*) FROM inventory_movements")
     assert count == 0
 
 

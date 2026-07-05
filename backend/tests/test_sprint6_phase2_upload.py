@@ -165,14 +165,18 @@ async def test_upload_creates_draft_with_clean_bytes(db: Any, monkeypatch: Any) 
 
     # round-trip: a draft exists, source mobile_photo, key persisted
     row = (
-        await db.execute(
-            text(
-                "SELECT source, photo_object_key, mime_type, commit_state "
-                "FROM receipts WHERE id = :id AND tenant_id = :t"
-            ),
-            {"id": result["receipt_id"], "t": tid},
+        (
+            await db.execute(
+                text(
+                    "SELECT source, photo_object_key, mime_type, commit_state "
+                    "FROM receipts WHERE id = :id AND tenant_id = :t"
+                ),
+                {"id": result["receipt_id"], "t": tid},
+            )
         )
-    ).mappings().one()
+        .mappings()
+        .one()
+    )
     assert row["source"] == "mobile_photo"
     assert row["commit_state"] == "draft"
     assert row["photo_object_key"] == captured["key"] == result["photo_object_key"]
@@ -192,9 +196,7 @@ async def test_upload_validation_failure_writes_nothing(db: Any, monkeypatch: An
         )
     assert calls == []  # validation precedes any storage write
     n = (
-        await db.execute(
-            text("SELECT count(*) FROM receipts WHERE tenant_id = :t"), {"t": tid}
-        )
+        await db.execute(text("SELECT count(*) FROM receipts WHERE tenant_id = :t"), {"t": tid})
     ).scalar_one()
     assert n == 0
 
@@ -222,9 +224,7 @@ async def conn(app_instance: Any) -> AsyncIterator[AsyncConnection]:
 
 @pytest.fixture
 async def client(app_instance: Any) -> AsyncIterator[AsyncClient]:
-    async with AsyncClient(
-        transport=ASGITransport(app=app_instance), base_url="http://test"
-    ) as c:
+    async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://test") as c:
         yield c
 
 
@@ -296,7 +296,9 @@ async def test_http_rejects_heic_with_422(
     assert r.json()["detail"]["code"] == "RECEIPT_HEIC_UNSUPPORTED"
 
 
-async def _seed_receipt_via_conn(conn: AsyncConnection, tid: str, *, review_started: bool = False) -> str:
+async def _seed_receipt_via_conn(
+    conn: AsyncConnection, tid: str, *, review_started: bool = False
+) -> str:
     rid = str(uuid7())
     await conn.execute(
         text(
@@ -330,7 +332,9 @@ async def test_extract_enqueues_job(
         text("SELECT status FROM receipt_extraction_jobs WHERE receipt_id = :r"), {"r": rid}
     )
     assert job.scalar_one() == "pending"
-    es = await conn.execute(text("SELECT extraction_status FROM receipts WHERE id = :r"), {"r": rid})
+    es = await conn.execute(
+        text("SELECT extraction_status FROM receipts WHERE id = :r"), {"r": rid}
+    )
     assert es.scalar_one() == "pending"
 
 

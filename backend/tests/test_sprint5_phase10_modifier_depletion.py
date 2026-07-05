@@ -75,7 +75,9 @@ async def _item(db: AsyncSession, tid: str, uom_id: str) -> str:
     )
 
 
-async def _seed_base(db: AsyncSession, *, recipe_qty: float = 2, line_qty: float = 3) -> dict[str, Any]:
+async def _seed_base(
+    db: AsyncSession, *, recipe_qty: float = 2, line_qty: float = 3
+) -> dict[str, Any]:
     tid = str(uuid7())
     await db.execute(
         text("INSERT INTO tenants (id, name, slug) VALUES (:t,'T',:s)"),
@@ -113,17 +115,36 @@ async def _seed_base(db: AsyncSession, *, recipe_qty: float = 2, line_qty: float
              quantity, price_cents_at_sale, net_revenue_cents, recipe_version_id, depletion_status)
             VALUES (:id,:t,:o,:cli,:mid,'Item',:q,0,0,:rv,'pending')
         """),
-        {"id": sli_id, "t": tid, "o": order_id, "cli": f"cli_{uuid.uuid4().hex[:8]}",
-         "mid": seeded.menu_item_id, "q": line_qty, "rv": seeded.recipe_version_id},
+        {
+            "id": sli_id,
+            "t": tid,
+            "o": order_id,
+            "cli": f"cli_{uuid.uuid4().hex[:8]}",
+            "mid": seeded.menu_item_id,
+            "q": line_qty,
+            "rv": seeded.recipe_version_id,
+        },
     )
     await db.flush()
-    return {"tid": tid, "sli_id": sli_id, "base_item": base_item, "uom": uom,
-            "menu_item_id": seeded.menu_item_id}
+    return {
+        "tid": tid,
+        "sli_id": sli_id,
+        "base_item": base_item,
+        "uom": uom,
+        "menu_item_id": seeded.menu_item_id,
+    }
 
 
 async def _add_confirmed_modifier(
-    db: AsyncSession, tid: str, menu_item_id: str, sli_id: str,
-    *, item_id: str, mod_qty: float, multiplier: float, unit: str = "g",
+    db: AsyncSession,
+    tid: str,
+    menu_item_id: str,
+    sli_id: str,
+    *,
+    item_id: str,
+    mod_qty: float,
+    multiplier: float,
+    unit: str = "g",
 ) -> str:
     """Confirmed additive modifier + version + ingredient + a frozen slim row. Returns the
     modifier's inventory item id. Mirrors what the worker's _snapshot_modifiers produces."""
@@ -166,8 +187,14 @@ async def _add_confirmed_modifier(
                 (id, tenant_id, sale_line_item_id, modifier_id, modifier_version_id, quantity, pos_modifier_id)
             VALUES (gen_random_uuid(), :t, :sli, :mod, :mv, :mult, :pid)
         """),
-        {"t": tid, "sli": sli_id, "mod": mod_id, "mv": mv_id, "mult": multiplier,
-         "pid": f"pos_{uuid.uuid4().hex[:6]}"},
+        {
+            "t": tid,
+            "sli": sli_id,
+            "mod": mod_id,
+            "mv": mv_id,
+            "mult": multiplier,
+            "pid": f"pos_{uuid.uuid4().hex[:6]}",
+        },
     )
     await db.flush()
     return item_id
@@ -175,14 +202,18 @@ async def _add_confirmed_modifier(
 
 async def _mv(db: AsyncSession, tid: str, item_id: str) -> list[Any]:
     return (
-        await db.execute(
-            text(
-                "SELECT delta, idempotency_key, source_type FROM inventory_movements"
-                " WHERE tenant_id=:t AND inventory_item_id=:i ORDER BY idempotency_key"
-            ),
-            {"t": tid, "i": item_id},
+        (
+            await db.execute(
+                text(
+                    "SELECT delta, idempotency_key, source_type FROM inventory_movements"
+                    " WHERE tenant_id=:t AND inventory_item_id=:i ORDER BY idempotency_key"
+                ),
+                {"t": tid, "i": item_id},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
 
 # ── multiplier ≠ 1 ───────────────────────────────────────────────────────────
@@ -194,7 +225,13 @@ async def test_modifier_multiplier_applied(db) -> None:
     s = await _seed_base(db, recipe_qty=2, line_qty=3)
     mod_item = await _item(db, s["tid"], s["uom"])  # separate item from base
     await _add_confirmed_modifier(
-        db, s["tid"], s["menu_item_id"], s["sli_id"], item_id=mod_item, mod_qty=5, multiplier=2,
+        db,
+        s["tid"],
+        s["menu_item_id"],
+        s["sli_id"],
+        item_id=mod_item,
+        mod_qty=5,
+        multiplier=2,
     )
     status, _ = await handler.process_line(db, UUID(s["tid"]), UUID(s["sli_id"]))
     assert status == "depleted"
@@ -214,8 +251,13 @@ async def test_shared_item_base_and_modifier_distinct_rows_both_apply(db) -> Non
     no collision, both applied (a different-item test couldn't detect a key collision)."""
     s = await _seed_base(db, recipe_qty=2, line_qty=3)  # base delta = -(3*2/1) = -6
     await _add_confirmed_modifier(
-        db, s["tid"], s["menu_item_id"], s["sli_id"],
-        item_id=s["base_item"], mod_qty=1, multiplier=1,  # modifier delta = -(3*1*1/1) = -3
+        db,
+        s["tid"],
+        s["menu_item_id"],
+        s["sli_id"],
+        item_id=s["base_item"],
+        mod_qty=1,
+        multiplier=1,  # modifier delta = -(3*1*1/1) = -3
     )
     status, _ = await handler.process_line(db, UUID(s["tid"]), UUID(s["sli_id"]))
     assert status == "depleted"
@@ -238,8 +280,14 @@ async def test_modifier_conversion_failure_fails_whole_line(db) -> None:
     s = await _seed_base(db, recipe_qty=2, line_qty=3)
     mod_item = await _item(db, s["tid"], s["uom"])  # storage 'g'
     await _add_confirmed_modifier(
-        db, s["tid"], s["menu_item_id"], s["sli_id"],
-        item_id=mod_item, mod_qty=1, multiplier=1, unit="ml",  # ml→g cross-dimension, no density
+        db,
+        s["tid"],
+        s["menu_item_id"],
+        s["sli_id"],
+        item_id=mod_item,
+        mod_qty=1,
+        multiplier=1,
+        unit="ml",  # ml→g cross-dimension, no density
     )
     status, reason = await handler.process_line(db, UUID(s["tid"]), UUID(s["sli_id"]))
     assert (status, reason) == ("failed", "missing_conversion")
@@ -255,20 +303,30 @@ async def test_modifier_movement_fires_late_signal(db) -> None:
     s = await _seed_base(db, recipe_qty=2, line_qty=3)
     mod_item = await _item(db, s["tid"], s["uom"])
     await _add_confirmed_modifier(
-        db, s["tid"], s["menu_item_id"], s["sli_id"], item_id=mod_item, mod_qty=1, multiplier=1,
+        db,
+        s["tid"],
+        s["menu_item_id"],
+        s["sli_id"],
+        item_id=mod_item,
+        mod_qty=1,
+        multiplier=1,
     )
     # count boundary at ≈ now on the modifier's item
     await db.execute(
-        text("INSERT INTO inventory_count_events (tenant_id, inventory_item_id, counted_quantity)"
-             " VALUES (:t,:i,1)"),
+        text(
+            "INSERT INTO inventory_count_events (tenant_id, inventory_item_id, counted_quantity)"
+            " VALUES (:t,:i,1)"
+        ),
         {"t": s["tid"], "i": mod_item},
     )
     late = datetime.now(UTC) - timedelta(hours=2)
     await handler.process_line(db, UUID(s["tid"]), UUID(s["sli_id"]), recorded_at=late)
     alert = (
         await db.execute(
-            text("SELECT severity FROM monitoring_alerts WHERE tenant_id=:t"
-                 " AND monitor_name='late_signal_reconciliation' AND resolved_at IS NULL"),
+            text(
+                "SELECT severity FROM monitoring_alerts WHERE tenant_id=:t"
+                " AND monitor_name='late_signal_reconciliation' AND resolved_at IS NULL"
+            ),
             {"t": s["tid"]},
         )
     ).scalar()
@@ -280,7 +338,13 @@ async def test_modifier_replay_no_duplicate(db) -> None:
     s = await _seed_base(db, recipe_qty=2, line_qty=3)
     mod_item = await _item(db, s["tid"], s["uom"])
     await _add_confirmed_modifier(
-        db, s["tid"], s["menu_item_id"], s["sli_id"], item_id=mod_item, mod_qty=1, multiplier=2,
+        db,
+        s["tid"],
+        s["menu_item_id"],
+        s["sli_id"],
+        item_id=mod_item,
+        mod_qty=1,
+        multiplier=2,
     )
     await handler.process_line(db, UUID(s["tid"]), UUID(s["sli_id"]))
     await handler.process_line(db, UUID(s["tid"]), UUID(s["sli_id"]))  # replay

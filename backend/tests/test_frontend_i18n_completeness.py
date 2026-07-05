@@ -27,14 +27,16 @@ _STRINGS_TS = _FE / "src" / "i18n" / "strings.ts"
 # SHRINK-ONLY: remove a path here when its file is migrated into strings.ts; never add to it
 # (a new file with bare literals is a bug to fix, not an exclusion to grow). Tracked as
 # DEBT-i18n-legacy (Bill 96), scheduled before the first French-speaking pilot.
-_LEGACY_EXCLUDED: frozenset[str] = frozenset({
-    "app/(app)/home.tsx",
-    "app/(app)/more.tsx",
-    "app/onboarding/connecting.tsx",
-    "app/onboarding/found-summary.tsx",
-    "app/onboarding/sign-in.tsx",
-    "app/onboarding/welcome.tsx",
-})
+_LEGACY_EXCLUDED: frozenset[str] = frozenset(
+    {
+        "app/(app)/home.tsx",
+        "app/(app)/more.tsx",
+        "app/onboarding/connecting.tsx",
+        "app/onboarding/found-summary.tsx",
+        "app/onboarding/sign-in.tsx",
+        "app/onboarding/welcome.tsx",
+    }
+)
 
 _PROP_RE = re.compile(
     r"(?:placeholder|accessibilityLabel)\s*=\s*[\"']([^\"']*[A-Za-z]{2,}[^\"']*)[\"']"

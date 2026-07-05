@@ -132,8 +132,12 @@ async def test_reverse_line_reverses_legacy_key_movement(db) -> None:
             VALUES (gen_random_uuid(), :t, :iid, 'sale_depletion', -6,
                     'sale_line_item', :sli, :key)
         """),
-        {"t": s["tid"], "iid": s["item_id"], "sli": s["sli_id"],
-         "key": f"sale_line:{s['sli_id']}:{s['item_id']}"},
+        {
+            "t": s["tid"],
+            "iid": s["item_id"],
+            "sli": s["sli_id"],
+            "key": f"sale_line:{s['sli_id']}:{s['item_id']}",
+        },
     )
     assert await handler.reverse_line(db, UUID(s["tid"]), UUID(s["sli_id"])) == 1
     mvs = await _movements(db, s["tid"], s["item_id"])
@@ -235,12 +239,15 @@ async def test_e2e_refund_after_depletion_reverses_real_role(admin_conn):
     fwd = await admin_conn.fetchval(
         "SELECT delta FROM inventory_movements"
         " WHERE tenant_id=$1 AND inventory_item_id=$2 AND movement_type='sale_depletion'",
-        uuid.UUID(tid), uuid.UUID(inv_id),
+        uuid.UUID(tid),
+        uuid.UUID(inv_id),
     )
     assert Decimal(str(fwd)) == Decimal("-6")
 
     refund_order = make_clover_order(
-        order_id=seed["vendor_event_id"], state="locked", payment_state="REFUNDED",
+        order_id=seed["vendor_event_id"],
+        state="locked",
+        payment_state="REFUNDED",
         line_items=[{**li, "refunded": True}],
     )
     await _process_followup(admin_conn, seed, refund_order)
@@ -248,16 +255,26 @@ async def test_e2e_refund_after_depletion_reverses_real_role(admin_conn):
     rev = await admin_conn.fetchval(
         "SELECT delta FROM inventory_movements"
         " WHERE tenant_id=$1 AND inventory_item_id=$2 AND movement_type='sale_depletion_reversal'",
-        uuid.UUID(tid), uuid.UUID(inv_id),
+        uuid.UUID(tid),
+        uuid.UUID(inv_id),
     )
     assert Decimal(str(rev)) == Decimal("6")
-    assert Decimal(str(await admin_conn.fetchval(
-        "SELECT COALESCE(SUM(delta),0) FROM inventory_movements"
-        " WHERE tenant_id=$1 AND inventory_item_id=$2", uuid.UUID(tid), uuid.UUID(inv_id),
-    ))) == Decimal("0")
-    assert await admin_conn.fetchval(
-        "SELECT is_refunded FROM sale_line_items WHERE tenant_id=$1", uuid.UUID(tid)
-    ) is True
+    assert Decimal(
+        str(
+            await admin_conn.fetchval(
+                "SELECT COALESCE(SUM(delta),0) FROM inventory_movements"
+                " WHERE tenant_id=$1 AND inventory_item_id=$2",
+                uuid.UUID(tid),
+                uuid.UUID(inv_id),
+            )
+        )
+    ) == Decimal("0")
+    assert (
+        await admin_conn.fetchval(
+            "SELECT is_refunded FROM sale_line_items WHERE tenant_id=$1", uuid.UUID(tid)
+        )
+        is True
+    )
 
 
 @pytest.mark.asyncio
@@ -272,7 +289,9 @@ async def test_e2e_refund_after_depletion_reverses_modifier_too(admin_conn):
     rv_id = await _seed_recipe(admin_conn, tid, (base_item, 2.0))
     pos_item_id = f"POS_{uuid.uuid4().hex[:8]}"
     menu_item_id = await _seed_menu_item(admin_conn, tid, pos_item_id, recipe_version_id=rv_id)
-    pos_mod_id = await _seed_confirmed_modifier(admin_conn, tid, menu_item_id, mod_item, mod_qty=5.0)
+    pos_mod_id = await _seed_confirmed_modifier(
+        admin_conn, tid, menu_item_id, mod_item, mod_qty=5.0
+    )
 
     li = _make_li_with_item(pos_item_id, qty=3)
     li["modifications"] = {"elements": [{"modifier": {"id": pos_mod_id}, "quantity": 2}]}
@@ -285,21 +304,36 @@ async def test_e2e_refund_after_depletion_reverses_modifier_too(admin_conn):
     worker = InboxWorker()
     await worker.process_event((await worker.claim_batch(batch_size=1))[0])
 
-    await _process_followup(admin_conn, seed, make_clover_order(
-        order_id=seed["vendor_event_id"], state="locked", payment_state="REFUNDED",
-        line_items=[{**li, "refunded": True}],
-    ))
+    await _process_followup(
+        admin_conn,
+        seed,
+        make_clover_order(
+            order_id=seed["vendor_event_id"],
+            state="locked",
+            payment_state="REFUNDED",
+            line_items=[{**li, "refunded": True}],
+        ),
+    )
 
     for item in (base_item, mod_item):
-        assert Decimal(str(await admin_conn.fetchval(
-            "SELECT COALESCE(SUM(delta),0) FROM inventory_movements"
-            " WHERE tenant_id=$1 AND inventory_item_id=$2", uuid.UUID(tid), uuid.UUID(item),
-        ))) == Decimal("0"), f"item {item} should net to zero"
-    assert await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id=$1"
-        " AND movement_type IN ('sale_depletion_reversal','sale_signal_reversal')",
-        uuid.UUID(tid),
-    ) == 2
+        assert Decimal(
+            str(
+                await admin_conn.fetchval(
+                    "SELECT COALESCE(SUM(delta),0) FROM inventory_movements"
+                    " WHERE tenant_id=$1 AND inventory_item_id=$2",
+                    uuid.UUID(tid),
+                    uuid.UUID(item),
+                )
+            )
+        ) == Decimal("0"), f"item {item} should net to zero"
+    assert (
+        await admin_conn.fetchval(
+            "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id=$1"
+            " AND movement_type IN ('sale_depletion_reversal','sale_signal_reversal')",
+            uuid.UUID(tid),
+        )
+        == 2
+    )
 
 
 @pytest.mark.asyncio
@@ -317,8 +351,10 @@ async def test_e2e_refund_before_depletion_fails_line_refunded(admin_conn):
 
     li = {**_make_li_with_item(pos_item_id, qty=3), "refunded": True}
     order = make_clover_order(
-        order_id=seed["vendor_event_id"], state="locked",
-        payment_state="PARTIALLY_REFUNDED", line_items=[li],
+        order_id=seed["vendor_event_id"],
+        state="locked",
+        payment_state="PARTIALLY_REFUNDED",
+        line_items=[li],
     )
     respx.get(url__regex=f".*/orders/{seed['vendor_event_id']}.*").mock(
         return_value=httpx.Response(200, json=order)
@@ -328,14 +364,19 @@ async def test_e2e_refund_before_depletion_fails_line_refunded(admin_conn):
 
     row = await admin_conn.fetchrow(
         "SELECT depletion_status, depletion_reason, is_refunded FROM sale_line_items"
-        " WHERE tenant_id=$1", uuid.UUID(tid),
+        " WHERE tenant_id=$1",
+        uuid.UUID(tid),
     )
     assert (row["depletion_status"], row["depletion_reason"]) == ("failed", "line_refunded")
     assert row["is_refunded"] is True
-    assert await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id=$1 AND inventory_item_id=$2",
-        uuid.UUID(tid), uuid.UUID(inv_id),
-    ) == 0
+    assert (
+        await admin_conn.fetchval(
+            "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id=$1 AND inventory_item_id=$2",
+            uuid.UUID(tid),
+            uuid.UUID(inv_id),
+        )
+        == 0
+    )
 
 
 @pytest.mark.asyncio
@@ -358,8 +399,10 @@ async def test_e2e_partially_refunded_mixed_lines(admin_conn):
     li_keep = _make_li_with_item(pos_keep, qty=1)
     li_refund = {**_make_li_with_item(pos_refund, qty=1), "refunded": True}
     order = make_clover_order(
-        order_id=seed["vendor_event_id"], state="locked",
-        payment_state="PARTIALLY_REFUNDED", line_items=[li_keep, li_refund],
+        order_id=seed["vendor_event_id"],
+        state="locked",
+        payment_state="PARTIALLY_REFUNDED",
+        line_items=[li_keep, li_refund],
     )
     respx.get(url__regex=f".*/orders/{seed['vendor_event_id']}.*").mock(
         return_value=httpx.Response(200, json=order)
@@ -367,24 +410,41 @@ async def test_e2e_partially_refunded_mixed_lines(admin_conn):
     worker = InboxWorker()
     await worker.process_event((await worker.claim_batch(batch_size=1))[0])
 
-    assert Decimal(str(await admin_conn.fetchval(
-        "SELECT delta FROM inventory_movements WHERE tenant_id=$1 AND inventory_item_id=$2",
-        uuid.UUID(tid), uuid.UUID(item_keep),
-    ))) == Decimal("-2")
-    assert await admin_conn.fetchval(
-        "SELECT depletion_status FROM sale_line_items"
-        " WHERE tenant_id=$1 AND clover_line_item_id=$2", uuid.UUID(tid), li_keep["id"],
-    ) == "depleted"
-    assert await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id=$1 AND inventory_item_id=$2",
-        uuid.UUID(tid), uuid.UUID(item_refund),
-    ) == 0
+    assert Decimal(
+        str(
+            await admin_conn.fetchval(
+                "SELECT delta FROM inventory_movements WHERE tenant_id=$1 AND inventory_item_id=$2",
+                uuid.UUID(tid),
+                uuid.UUID(item_keep),
+            )
+        )
+    ) == Decimal("-2")
+    assert (
+        await admin_conn.fetchval(
+            "SELECT depletion_status FROM sale_line_items"
+            " WHERE tenant_id=$1 AND clover_line_item_id=$2",
+            uuid.UUID(tid),
+            li_keep["id"],
+        )
+        == "depleted"
+    )
+    assert (
+        await admin_conn.fetchval(
+            "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id=$1 AND inventory_item_id=$2",
+            uuid.UUID(tid),
+            uuid.UUID(item_refund),
+        )
+        == 0
+    )
     refund_row = await admin_conn.fetchrow(
         "SELECT depletion_status, depletion_reason FROM sale_line_items"
-        " WHERE tenant_id=$1 AND clover_line_item_id=$2", uuid.UUID(tid), li_refund["id"],
+        " WHERE tenant_id=$1 AND clover_line_item_id=$2",
+        uuid.UUID(tid),
+        li_refund["id"],
     )
     assert (refund_row["depletion_status"], refund_row["depletion_reason"]) == (
-        "failed", "line_refunded",
+        "failed",
+        "line_refunded",
     )
 
 
@@ -395,23 +455,38 @@ async def test_e2e_replayed_refund_event_writes_one_reversal(admin_conn):
     retry) produces exactly ONE reversal, not two; is_refunded stays true; no double anything."""
     seed, tid, inv_id, li = await _seed_base_sale(admin_conn)
     refund_order = make_clover_order(
-        order_id=seed["vendor_event_id"], state="locked", payment_state="REFUNDED",
+        order_id=seed["vendor_event_id"],
+        state="locked",
+        payment_state="REFUNDED",
         line_items=[{**li, "refunded": True}],
     )
     await _process_followup(admin_conn, seed, refund_order)
     await _process_followup(admin_conn, seed, refund_order)  # retried webhook
 
-    assert await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id=$1"
-        " AND movement_type='sale_depletion_reversal'", uuid.UUID(tid),
-    ) == 1
-    assert Decimal(str(await admin_conn.fetchval(
-        "SELECT COALESCE(SUM(delta),0) FROM inventory_movements"
-        " WHERE tenant_id=$1 AND inventory_item_id=$2", uuid.UUID(tid), uuid.UUID(inv_id),
-    ))) == Decimal("0")
-    assert await admin_conn.fetchval(
-        "SELECT is_refunded FROM sale_line_items WHERE tenant_id=$1", uuid.UUID(tid)
-    ) is True
+    assert (
+        await admin_conn.fetchval(
+            "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id=$1"
+            " AND movement_type='sale_depletion_reversal'",
+            uuid.UUID(tid),
+        )
+        == 1
+    )
+    assert Decimal(
+        str(
+            await admin_conn.fetchval(
+                "SELECT COALESCE(SUM(delta),0) FROM inventory_movements"
+                " WHERE tenant_id=$1 AND inventory_item_id=$2",
+                uuid.UUID(tid),
+                uuid.UUID(inv_id),
+            )
+        )
+    ) == Decimal("0")
+    assert (
+        await admin_conn.fetchval(
+            "SELECT is_refunded FROM sale_line_items WHERE tenant_id=$1", uuid.UUID(tid)
+        )
+        is True
+    )
 
 
 @pytest.mark.asyncio
@@ -421,26 +496,38 @@ async def test_e2e_reversal_is_additive_forward_rows_untouched(admin_conn):
     row; it never mutates the forward movement. Forward row byte-identical after; reversal row
     references it (source_id) with the negated delta."""
     seed, tid, _inv_id, li = await _seed_base_sale(admin_conn)
-    forward_before = dict(await admin_conn.fetchrow(
-        "SELECT id, delta, movement_type, idempotency_key, yield_factor_applied, recorded_at"
-        " FROM inventory_movements WHERE tenant_id=$1 AND movement_type='sale_depletion'",
-        uuid.UUID(tid),
-    ))
+    forward_before = dict(
+        await admin_conn.fetchrow(
+            "SELECT id, delta, movement_type, idempotency_key, yield_factor_applied, recorded_at"
+            " FROM inventory_movements WHERE tenant_id=$1 AND movement_type='sale_depletion'",
+            uuid.UUID(tid),
+        )
+    )
 
-    await _process_followup(admin_conn, seed, make_clover_order(
-        order_id=seed["vendor_event_id"], state="locked", payment_state="REFUNDED",
-        line_items=[{**li, "refunded": True}],
-    ))
+    await _process_followup(
+        admin_conn,
+        seed,
+        make_clover_order(
+            order_id=seed["vendor_event_id"],
+            state="locked",
+            payment_state="REFUNDED",
+            line_items=[{**li, "refunded": True}],
+        ),
+    )
 
-    forward_after = dict(await admin_conn.fetchrow(
-        "SELECT id, delta, movement_type, idempotency_key, yield_factor_applied, recorded_at"
-        " FROM inventory_movements WHERE tenant_id=$1 AND id=$2",
-        uuid.UUID(tid), forward_before["id"],
-    ))
+    forward_after = dict(
+        await admin_conn.fetchrow(
+            "SELECT id, delta, movement_type, idempotency_key, yield_factor_applied, recorded_at"
+            " FROM inventory_movements WHERE tenant_id=$1 AND id=$2",
+            uuid.UUID(tid),
+            forward_before["id"],
+        )
+    )
     assert forward_after == forward_before, "reversal must not mutate the forward movement"
     rev = await admin_conn.fetchrow(
         "SELECT delta, source_type, source_id, yield_factor_applied FROM inventory_movements"
-        " WHERE tenant_id=$1 AND movement_type='sale_depletion_reversal'", uuid.UUID(tid),
+        " WHERE tenant_id=$1 AND movement_type='sale_depletion_reversal'",
+        uuid.UUID(tid),
     )
     assert Decimal(str(rev["delta"])) == -Decimal(str(forward_before["delta"]))
     assert rev["source_type"] == "reversal"
@@ -459,21 +546,34 @@ async def test_e2e_late_void_after_depletion_does_not_reverse(admin_conn):
     seed, tid, _inv_id, li = await _seed_base_sale(admin_conn)
     # a later VOID event: line exchanged=true (voided), NOT refunded
     void_order = make_clover_order(
-        order_id=seed["vendor_event_id"], state="locked", payment_state="PAID",
+        order_id=seed["vendor_event_id"],
+        state="locked",
+        payment_state="PAID",
         line_items=[{**li, "exchanged": True}],
     )
     await _process_followup(admin_conn, seed, void_order)
 
     # no reversal written; forward movement untouched; status still depleted
-    assert await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id=$1"
-        " AND movement_type IN ('sale_depletion_reversal','sale_signal_reversal')",
-        uuid.UUID(tid),
-    ) == 0
-    assert Decimal(str(await admin_conn.fetchval(
-        "SELECT delta FROM inventory_movements"
-        " WHERE tenant_id=$1 AND movement_type='sale_depletion'", uuid.UUID(tid),
-    ))) == Decimal("-6")
-    assert await admin_conn.fetchval(
-        "SELECT depletion_status FROM sale_line_items WHERE tenant_id=$1", uuid.UUID(tid)
-    ) == "depleted"
+    assert (
+        await admin_conn.fetchval(
+            "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id=$1"
+            " AND movement_type IN ('sale_depletion_reversal','sale_signal_reversal')",
+            uuid.UUID(tid),
+        )
+        == 0
+    )
+    assert Decimal(
+        str(
+            await admin_conn.fetchval(
+                "SELECT delta FROM inventory_movements"
+                " WHERE tenant_id=$1 AND movement_type='sale_depletion'",
+                uuid.UUID(tid),
+            )
+        )
+    ) == Decimal("-6")
+    assert (
+        await admin_conn.fetchval(
+            "SELECT depletion_status FROM sale_line_items WHERE tenant_id=$1", uuid.UUID(tid)
+        )
+        == "depleted"
+    )

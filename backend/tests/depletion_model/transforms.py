@@ -35,8 +35,7 @@ def scale_qty(orders: list[Order], k: int) -> list[Order]:
     """Multiply every line's qty by integer k (modifiers' slim multipliers unchanged — the
     line-qty factor already scales their magnitude). Tests homogeneity (δ scales by k)."""
     return [
-        _copy_order(o, [_copy_line(line, qty=D(line.qty) * k) for line in o.lines])
-        for o in orders
+        _copy_order(o, [_copy_line(line, qty=D(line.qty) * k) for line in o.lines]) for o in orders
     ]
 
 

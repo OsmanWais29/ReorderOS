@@ -108,14 +108,15 @@ async def enqueue_extraction(
     set) are cleared so a re-run doesn't accumulate duplicates; operator-added lines
     (extraction_job_id NULL) are preserved."""
     row = (
-        await db.execute(
-            text(
-                "SELECT review_started_at FROM receipts "
-                "WHERE id = :rid AND tenant_id = :tid"
-            ),
-            {"rid": receipt_id, "tid": tenant_id},
+        (
+            await db.execute(
+                text("SELECT review_started_at FROM receipts WHERE id = :rid AND tenant_id = :tid"),
+                {"rid": receipt_id, "tid": tenant_id},
+            )
         )
-    ).mappings().fetchone()
+        .mappings()
+        .fetchone()
+    )
     if row is None:
         raise ReceiptNotFound
     if row["review_started_at"] is not None:

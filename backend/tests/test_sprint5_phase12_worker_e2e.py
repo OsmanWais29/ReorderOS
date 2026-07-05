@@ -84,7 +84,9 @@ async def test_line_failure_isolation_graceful(admin_conn):
 
     li_good, li_bad = _make_li_with_item(pos_good, qty=1), _make_li_with_item(pos_bad, qty=1)
     order = make_clover_order(
-        order_id=seed["vendor_event_id"], state="locked", payment_state="PAID",
+        order_id=seed["vendor_event_id"],
+        state="locked",
+        payment_state="PAID",
         line_items=[li_good, li_bad],
     )
     respx.get(url__regex=f".*/orders/{seed['vendor_event_id']}.*").mock(
@@ -93,13 +95,20 @@ async def test_line_failure_isolation_graceful(admin_conn):
     worker = InboxWorker()
     await worker.process_event((await worker.claim_batch(batch_size=1))[0])
 
-    assert await admin_conn.fetchval(
-        "SELECT depletion_status FROM sale_line_items"
-        " WHERE tenant_id=$1 AND clover_line_item_id=$2", uuid.UUID(tid), li_good["id"],
-    ) == "depleted"
+    assert (
+        await admin_conn.fetchval(
+            "SELECT depletion_status FROM sale_line_items"
+            " WHERE tenant_id=$1 AND clover_line_item_id=$2",
+            uuid.UUID(tid),
+            li_good["id"],
+        )
+        == "depleted"
+    )
     bad = await admin_conn.fetchrow(
         "SELECT depletion_status, depletion_reason FROM sale_line_items"
-        " WHERE tenant_id=$1 AND clover_line_item_id=$2", uuid.UUID(tid), li_bad["id"],
+        " WHERE tenant_id=$1 AND clover_line_item_id=$2",
+        uuid.UUID(tid),
+        li_bad["id"],
     )
     assert (bad["depletion_status"], bad["depletion_reason"]) == ("failed", "missing_conversion")
     # N1: a graceful (data) failure does NOT fail the event — remediation is operator action
@@ -125,7 +134,9 @@ async def test_crash_mid_line_survives_and_recovers(admin_conn):
     await _seed_menu_item(admin_conn, tid, pos_b, recipe_version_id=rv_b)
 
     order = make_clover_order(
-        order_id=seed["vendor_event_id"], state="locked", payment_state="PAID",
+        order_id=seed["vendor_event_id"],
+        state="locked",
+        payment_state="PAID",
         line_items=[_make_li_with_item(pos_a, qty=1), _make_li_with_item(pos_b, qty=1)],
     )
     respx.get(url__regex=f".*/orders/{seed['vendor_event_id']}.*").mock(
@@ -171,14 +182,20 @@ async def test_crash_mid_line_survives_and_recovers(admin_conn):
     worker2 = InboxWorker()
     await worker2.process_event((await worker2.claim_batch(batch_size=1))[0])
 
-    assert await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM sale_line_items WHERE tenant_id=$1 AND depletion_status='depleted'",
-        uuid.UUID(tid),
-    ) == 2
+    assert (
+        await admin_conn.fetchval(
+            "SELECT COUNT(*) FROM sale_line_items WHERE tenant_id=$1 AND depletion_status='depleted'",
+            uuid.UUID(tid),
+        )
+        == 2
+    )
     # idempotency: exactly one movement per item, no duplicate from the crashed partial attempt
-    assert await admin_conn.fetchval(
-        "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id=$1", uuid.UUID(tid)
-    ) == 2
+    assert (
+        await admin_conn.fetchval(
+            "SELECT COUNT(*) FROM inventory_movements WHERE tenant_id=$1", uuid.UUID(tid)
+        )
+        == 2
+    )
     assert await _event_state(admin_conn, ev["inbox_id"]) == "processed"
 
 
@@ -196,23 +213,32 @@ async def _seed_confirmed_recipe_on_pos_item(
     t = uuid.UUID(tid)
     mi_id = await admin_conn.fetchval(
         "INSERT INTO menu_items (tenant_id, pos_item_id, name) VALUES ($1,$2,$3) RETURNING id",
-        t, pos_item_id, f"menu-{uuid.uuid4().hex[:6]}",
+        t,
+        pos_item_id,
+        f"menu-{uuid.uuid4().hex[:6]}",
     )
     recipe_id = await admin_conn.fetchval(
         "INSERT INTO recipes (tenant_id, menu_item_id, status) VALUES ($1,$2,'confirmed')"
-        " RETURNING id", t, mi_id,
+        " RETURNING id",
+        t,
+        mi_id,
     )
     rv_id = await admin_conn.fetchval(
         "INSERT INTO recipe_versions (tenant_id, recipe_id, version_number, yield_quantity, name)"
-        " VALUES ($1,$2,1,1.0,$3) RETURNING id", t, recipe_id, f"rv-{uuid.uuid4().hex[:6]}",
+        " VALUES ($1,$2,1,1.0,$3) RETURNING id",
+        t,
+        recipe_id,
+        f"rv-{uuid.uuid4().hex[:6]}",
     )
     await admin_conn.execute(
         "INSERT INTO recipe_ingredients (tenant_id, recipe_version_id, inventory_item_id,"
-        " quantity, unit) VALUES ($1,$2,$3,$4,'g')", t, rv_id, uuid.UUID(inv_id), qty,
+        " quantity, unit) VALUES ($1,$2,$3,$4,'g')",
+        t,
+        rv_id,
+        uuid.UUID(inv_id),
+        qty,
     )
-    await admin_conn.execute(
-        "UPDATE menu_items SET recipe_version_id=$1 WHERE id=$2", rv_id, mi_id
-    )
+    await admin_conn.execute("UPDATE menu_items SET recipe_version_id=$1 WHERE id=$2", rv_id, mi_id)
     return mi_id, rv_id
 
 
@@ -226,10 +252,14 @@ async def test_unconfirm_preserves_historical_ledger(admin_conn):
     uom_g = await _seed_uom(admin_conn, tid, name="g")
     inv_id = await _seed_inventory_item(admin_conn, tid, uom_g, mode="recipe_deducted")
     pos_item_id = f"POS_{uuid.uuid4().hex[:8]}"
-    mi_id, rv_id = await _seed_confirmed_recipe_on_pos_item(admin_conn, tid, pos_item_id, inv_id, 2.0)
+    mi_id, rv_id = await _seed_confirmed_recipe_on_pos_item(
+        admin_conn, tid, pos_item_id, inv_id, 2.0
+    )
 
     order = make_clover_order(
-        order_id=seed["vendor_event_id"], state="locked", payment_state="PAID",
+        order_id=seed["vendor_event_id"],
+        state="locked",
+        payment_state="PAID",
         line_items=[_make_li_with_item(pos_item_id, qty=3)],
     )
     respx.get(url__regex=f".*/orders/{seed['vendor_event_id']}.*").mock(
@@ -243,7 +273,9 @@ async def test_unconfirm_preserves_historical_ledger(admin_conn):
     # to the disconnected-helper trap, this fails LOUDLY instead of the test passing emptily.
     mv = await admin_conn.fetchrow(
         "SELECT delta, idempotency_key FROM inventory_movements"
-        " WHERE tenant_id=$1 AND inventory_item_id=$2", uuid.UUID(tid), uuid.UUID(inv_id),
+        " WHERE tenant_id=$1 AND inventory_item_id=$2",
+        uuid.UUID(tid),
+        uuid.UUID(inv_id),
     )
     assert mv is not None, "precondition: the sale must have depleted (chain wired)"
     assert str(rv_id) in mv["idempotency_key"], "precondition: depleted against v1"
@@ -253,18 +285,29 @@ async def test_unconfirm_preserves_historical_ledger(admin_conn):
     sli_rv_before = await admin_conn.fetchval(
         "SELECT recipe_version_id FROM sale_line_items WHERE tenant_id=$1", uuid.UUID(tid)
     )
-    rv_before = dict(await admin_conn.fetchrow(
-        "SELECT id, recipe_id, version_number, yield_quantity, name FROM recipe_versions"
-        " WHERE id=$1", rv_id,
-    ))
-    ri_before = [dict(r) for r in await admin_conn.fetch(
-        "SELECT inventory_item_id, quantity, unit FROM recipe_ingredients"
-        " WHERE recipe_version_id=$1 ORDER BY inventory_item_id", rv_id,
-    )]
-    mv_before = [dict(r) for r in await admin_conn.fetch(
-        "SELECT id, delta, idempotency_key FROM inventory_movements"
-        " WHERE tenant_id=$1 ORDER BY idempotency_key", uuid.UUID(tid),
-    )]
+    rv_before = dict(
+        await admin_conn.fetchrow(
+            "SELECT id, recipe_id, version_number, yield_quantity, name FROM recipe_versions"
+            " WHERE id=$1",
+            rv_id,
+        )
+    )
+    ri_before = [
+        dict(r)
+        for r in await admin_conn.fetch(
+            "SELECT inventory_item_id, quantity, unit FROM recipe_ingredients"
+            " WHERE recipe_version_id=$1 ORDER BY inventory_item_id",
+            rv_id,
+        )
+    ]
+    mv_before = [
+        dict(r)
+        for r in await admin_conn.fetch(
+            "SELECT id, delta, idempotency_key FROM inventory_movements"
+            " WHERE tenant_id=$1 ORDER BY idempotency_key",
+            uuid.UUID(tid),
+        )
+    ]
 
     # ── run the REAL un-confirm (Manager+ operator path) on a committed session ─────────
     async with engine.connect() as conn:
@@ -275,33 +318,55 @@ async def test_unconfirm_preserves_historical_ledger(admin_conn):
         await trans.commit()
 
     # pointer cleared + recipe re-opened + draft correctly parented at v1
-    assert await admin_conn.fetchval(
-        "SELECT recipe_version_id FROM menu_items WHERE id=$1", mi_id
-    ) is None
-    assert await admin_conn.fetchval(
-        "SELECT status FROM recipes WHERE menu_item_id=$1", mi_id
-    ) == "draft"
-    assert await admin_conn.fetchval(
-        "SELECT parent_recipe_version_id FROM recipe_drafts WHERE tenant_id=$1", uuid.UUID(tid)
-    ) == rv_id, "un-confirm must produce a draft parented at v1, not just clear the pointer"
+    assert (
+        await admin_conn.fetchval("SELECT recipe_version_id FROM menu_items WHERE id=$1", mi_id)
+        is None
+    )
+    assert (
+        await admin_conn.fetchval("SELECT status FROM recipes WHERE menu_item_id=$1", mi_id)
+        == "draft"
+    )
+    assert (
+        await admin_conn.fetchval(
+            "SELECT parent_recipe_version_id FROM recipe_drafts WHERE tenant_id=$1", uuid.UUID(tid)
+        )
+        == rv_id
+    ), "un-confirm must produce a draft parented at v1, not just clear the pointer"
 
     # the processed sale is UNTOUCHED — frozen pointer, byte-identical version, same ledger
     assert sli_rv_before == rv_id
-    assert await admin_conn.fetchval(
-        "SELECT recipe_version_id FROM sale_line_items WHERE tenant_id=$1", uuid.UUID(tid)
-    ) == rv_id
-    assert dict(await admin_conn.fetchrow(
-        "SELECT id, recipe_id, version_number, yield_quantity, name FROM recipe_versions"
-        " WHERE id=$1", rv_id,
-    )) == rv_before, "un-confirm must not mutate recipe_versions (fail-gate 7)"
-    assert [dict(r) for r in await admin_conn.fetch(
-        "SELECT inventory_item_id, quantity, unit FROM recipe_ingredients"
-        " WHERE recipe_version_id=$1 ORDER BY inventory_item_id", rv_id,
-    )] == ri_before
-    assert [dict(r) for r in await admin_conn.fetch(
-        "SELECT id, delta, idempotency_key FROM inventory_movements"
-        " WHERE tenant_id=$1 ORDER BY idempotency_key", uuid.UUID(tid),
-    )] == mv_before, "ledger rows must be unchanged (gate 25, fail-gate 3)"
+    assert (
+        await admin_conn.fetchval(
+            "SELECT recipe_version_id FROM sale_line_items WHERE tenant_id=$1", uuid.UUID(tid)
+        )
+        == rv_id
+    )
+    assert (
+        dict(
+            await admin_conn.fetchrow(
+                "SELECT id, recipe_id, version_number, yield_quantity, name FROM recipe_versions"
+                " WHERE id=$1",
+                rv_id,
+            )
+        )
+        == rv_before
+    ), "un-confirm must not mutate recipe_versions (fail-gate 7)"
+    assert [
+        dict(r)
+        for r in await admin_conn.fetch(
+            "SELECT inventory_item_id, quantity, unit FROM recipe_ingredients"
+            " WHERE recipe_version_id=$1 ORDER BY inventory_item_id",
+            rv_id,
+        )
+    ] == ri_before
+    assert [
+        dict(r)
+        for r in await admin_conn.fetch(
+            "SELECT id, delta, idempotency_key FROM inventory_movements"
+            " WHERE tenant_id=$1 ORDER BY idempotency_key",
+            uuid.UUID(tid),
+        )
+    ] == mv_before, "ledger rows must be unchanged (gate 25, fail-gate 3)"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -324,7 +389,9 @@ async def test_stuck_pending_lines_queryable(admin_conn):
             "INSERT INTO orders (id, tenant_id, pos_event_inbox_id, clover_order_id,"
             " total_amount_cents, state, payment_state, processed_at)"
             " VALUES (gen_random_uuid(),$1,$2,$3,0,'locked','PAID',now()) RETURNING id",
-            uuid.UUID(tid), uuid.UUID(seed["inbox_id"]), f"ord_{uuid.uuid4().hex[:8]}",
+            uuid.UUID(tid),
+            uuid.UUID(seed["inbox_id"]),
+            f"ord_{uuid.uuid4().hex[:8]}",
         )
         await admin_conn.execute(
             "INSERT INTO sale_line_items (id, tenant_id, order_id, clover_line_item_id,"
@@ -332,12 +399,18 @@ async def test_stuck_pending_lines_queryable(admin_conn):
             " recipe_version_id, depletion_status, created_at)"
             " VALUES (gen_random_uuid(),$1,$2,$3,$4,'Item',1,0,0,$5,$6,"
             " now() - make_interval(mins => $7))",
-            uuid.UUID(tid), oid, cli, uuid.UUID(mi_id), uuid.UUID(rv_id), status, age_min,
+            uuid.UUID(tid),
+            oid,
+            cli,
+            uuid.UUID(mi_id),
+            uuid.UUID(rv_id),
+            status,
+            age_min,
         )
 
     await _line(10, "pending", f"cli_p_{uuid.uuid4().hex[:6]}")  # old + pending → stuck
-    await _line(10, None, f"cli_n_{uuid.uuid4().hex[:6]}")       # old + NULL → also stuck (N4)
-    await _line(0, "pending", f"cli_f_{uuid.uuid4().hex[:6]}")   # fresh pending → not stuck
+    await _line(10, None, f"cli_n_{uuid.uuid4().hex[:6]}")  # old + NULL → also stuck (N4)
+    await _line(0, "pending", f"cli_f_{uuid.uuid4().hex[:6]}")  # fresh pending → not stuck
     await _line(10, "depleted", f"cli_d_{uuid.uuid4().hex[:6]}")  # old but terminal → not stuck
 
     async with engine.connect() as conn:

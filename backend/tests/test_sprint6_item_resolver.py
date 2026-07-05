@@ -74,9 +74,7 @@ async def test_resolve_preserves_display_case(db: Any) -> None:
     tid = await _seed_tenant(db)
     item_id = await resolve_inventory_item(db, tid, "  Olive Oil ", "ml")
     name = (
-        await db.execute(
-            text("SELECT name FROM inventory_items WHERE id = :i"), {"i": item_id}
-        )
+        await db.execute(text("SELECT name FROM inventory_items WHERE id = :i"), {"i": item_id})
     ).scalar_one()
     # btrim, not lower — trimmed but case-preserved.
     assert name == "Olive Oil"
@@ -116,9 +114,7 @@ async def test_suggest_excludes_inactive(db: Any) -> None:
     tid = await _seed_tenant(db)
     keep = await resolve_inventory_item(db, tid, "Active Tomato", "g")
     drop = await resolve_inventory_item(db, tid, "Dead Tomato", "g")
-    await db.execute(
-        text("UPDATE inventory_items SET active = false WHERE id = :i"), {"i": drop}
-    )
+    await db.execute(text("UPDATE inventory_items SET active = false WHERE id = :i"), {"i": drop})
     ids = {r["id"] for r in await suggest_inventory_items(db, tid, "tomato")}
     assert keep in ids
     assert drop not in ids

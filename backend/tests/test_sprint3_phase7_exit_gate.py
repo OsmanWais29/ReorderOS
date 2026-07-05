@@ -44,8 +44,7 @@ from sqlalchemy import text
 from app.core.database import engine, get_db_session, make_bound_session
 from app.core.security import Principal, get_principal
 from app.main import create_app
-from tests.helpers.sprint5 import seed_sale_effect_session
-from tests.helpers.sprint5 import seed_recipe_version_session
+from tests.helpers.sprint5 import seed_recipe_version_session, seed_sale_effect_session
 
 pytestmark = pytest.mark.integration
 
@@ -125,7 +124,7 @@ async def session(app_instance):
             "pos_event_inbox",
         ):
             await conn.execute(
-                text(f"DELETE FROM {tbl} WHERE tenant_id = :tid"),  # noqa: S608
+                text(f"DELETE FROM {tbl} WHERE tenant_id = :tid"),
                 {"tid": TENANT_ID},
             )
 

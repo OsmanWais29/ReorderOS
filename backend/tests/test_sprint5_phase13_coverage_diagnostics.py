@@ -42,9 +42,7 @@ async def db() -> AsyncIterator[AsyncSession]:
             await trans.rollback()
 
 
-async def _seed_lines(
-    db: AsyncSession, lines: list[tuple[str, str | None, int, int]]
-) -> str:
+async def _seed_lines(db: AsyncSession, lines: list[tuple[str, str | None, int, int]]) -> str:
     """Seed a tenant + inbox + order and one sale_line_item per
     (status, reason, revenue_cents, age_days). status↔reason must satisfy the 0016 CHECK.
     Returns the tenant id."""
@@ -83,9 +81,16 @@ async def _seed_lines(
                 VALUES (:id,:t,:oid,:cli,'Item',1,0,:rev,:st,:rsn,
                         now() - make_interval(days => :age))
             """),
-            {"id": str(uuid.uuid4()), "t": tid, "oid": order_id,
-             "cli": f"cli_{uuid.uuid4().hex[:8]}", "rev": revenue,
-             "st": status, "rsn": reason, "age": age_days},
+            {
+                "id": str(uuid.uuid4()),
+                "t": tid,
+                "oid": order_id,
+                "cli": f"cli_{uuid.uuid4().hex[:8]}",
+                "rev": revenue,
+                "st": status,
+                "rsn": reason,
+                "age": age_days,
+            },
         )
     await db.flush()
     return tid
@@ -93,15 +98,19 @@ async def _seed_lines(
 
 async def _coverage(db: AsyncSession, tid: str):
     return (
-        await db.execute(
-            text("""
+        (
+            await db.execute(
+                text("""
                 SELECT depleted_count, total_count, depleted_count_pct,
                        depleted_revenue_cents, total_revenue_cents, depleted_revenue_pct
                 FROM vw_depletion_coverage WHERE tenant_id = :t
             """),
-            {"t": tid},
+                {"t": tid},
+            )
         )
-    ).mappings().fetchone()
+        .mappings()
+        .fetchone()
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -113,10 +122,13 @@ async def _coverage(db: AsyncSession, tid: str):
 async def test_coverage_zero_depleted_nonzero_total_reads_zero_not_null(db) -> None:
     """State 1 (alert-correctness): revenue present, ZERO depleted → 0.00, NOT NULL, so the
     `pct < threshold` collapse alert evaluates instead of going UNKNOWN."""
-    tid = await _seed_lines(db, [
-        ("failed", "sale_ineligible", 500, 0),
-        ("unmapped", "no_recipe", 700, 0),
-    ])
+    tid = await _seed_lines(
+        db,
+        [
+            ("failed", "sale_ineligible", 500, 0),
+            ("unmapped", "no_recipe", 700, 0),
+        ],
+    )
     row = await _coverage(db, tid)
     assert row["depleted_count"] == 0
     assert Decimal(str(row["depleted_count_pct"])) == Decimal("0.00")
@@ -129,15 +141,18 @@ async def test_coverage_zero_depleted_nonzero_total_reads_zero_not_null(db) -> N
 async def test_coverage_count_pct_differs_from_revenue_pct(db) -> None:
     """State 2 (independent columns / factor≠1 at the view layer): weighted so count share
     (50%) ≠ revenue share (40%) — a test that conflated the columns would fail."""
-    tid = await _seed_lines(db, [
-        ("depleted", None, 100, 0),
-        ("depleted", None, 300, 0),
-        ("failed", "sale_ineligible", 200, 0),
-        ("failed", "line_refunded", 400, 0),
-    ])
+    tid = await _seed_lines(
+        db,
+        [
+            ("depleted", None, 100, 0),
+            ("depleted", None, 300, 0),
+            ("failed", "sale_ineligible", 200, 0),
+            ("failed", "line_refunded", 400, 0),
+        ],
+    )
     row = await _coverage(db, tid)
     assert row["depleted_count"] == 2 and row["total_count"] == 4
-    assert Decimal(str(row["depleted_count_pct"])) == Decimal("50.00")   # 2/4
+    assert Decimal(str(row["depleted_count_pct"])) == Decimal("50.00")  # 2/4
     assert row["depleted_revenue_cents"] == 400 and row["total_revenue_cents"] == 1000
     assert Decimal(str(row["depleted_revenue_pct"])) == Decimal("40.00")  # 400/1000
     assert row["depleted_count_pct"] != row["depleted_revenue_pct"]
@@ -147,10 +162,13 @@ async def test_coverage_count_pct_differs_from_revenue_pct(db) -> None:
 async def test_coverage_zero_total_revenue_is_null(db) -> None:
     """State 3 (honest no-denominator): all revenue 0 → total_revenue 0 → revenue_pct NULL,
     NOT a fake 0.00 or a divide-by-zero. Guards against an over-COALESCE on the denominator."""
-    tid = await _seed_lines(db, [
-        ("depleted", None, 0, 0),
-        ("failed", "sale_ineligible", 0, 0),
-    ])
+    tid = await _seed_lines(
+        db,
+        [
+            ("depleted", None, 0, 0),
+            ("failed", "sale_ineligible", 0, 0),
+        ],
+    )
     row = await _coverage(db, tid)
     assert row["total_revenue_cents"] == 0
     assert row["depleted_revenue_pct"] is None, "no-denominator → NULL is the honest answer"
@@ -173,12 +191,8 @@ async def test_coverage_view_rls_scopes_to_tenant(db) -> None:
 
     # become app_user, scoped to tenant A (both transaction-local; rolled back by the fixture)
     await db.execute(text("SET LOCAL ROLE app_user"))
-    await db.execute(
-        text("SELECT set_config('app.tenant_id', :t, true)"), {"t": tid_a}
-    )
-    rows = (
-        await db.execute(text("SELECT tenant_id FROM vw_depletion_coverage"))
-    ).mappings().all()
+    await db.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": tid_a})
+    rows = (await db.execute(text("SELECT tenant_id FROM vw_depletion_coverage"))).mappings().all()
 
     seen = {str(r["tenant_id"]) for r in rows}
     assert seen == {tid_a}, f"app_user scoped to A must see only A, saw {seen}"
@@ -194,13 +208,16 @@ async def test_coverage_view_rls_scopes_to_tenant(db) -> None:
 async def test_failed_reason_breakdown_groups_and_windows(db) -> None:
     """Groups failed lines by reason within window_days; lines outside the window are excluded
     (op-concern 6 is a spike/rate signal, not an all-time count)."""
-    tid = await _seed_lines(db, [
-        ("failed", "line_refunded", 0, 0),
-        ("failed", "line_refunded", 0, 0),
-        ("failed", "sale_ineligible", 0, 0),
-        ("failed", "missing_conversion", 0, 40),  # 40 days old → outside a 30-day window
-        ("depleted", None, 0, 0),                 # not failed → excluded
-    ])
+    tid = await _seed_lines(
+        db,
+        [
+            ("failed", "line_refunded", 0, 0),
+            ("failed", "line_refunded", 0, 0),
+            ("failed", "sale_ineligible", 0, 0),
+            ("failed", "missing_conversion", 0, 40),  # 40 days old → outside a 30-day window
+            ("depleted", None, 0, 0),  # not failed → excluded
+        ],
+    )
     breakdown = await diagnostics.failed_reason_breakdown(
         db, tenant_id=uuid.UUID(tid), window_days=30
     )
@@ -217,9 +234,7 @@ async def test_failed_reason_breakdown_null_reason_surfaces_as_unknown(db) -> No
         text("ALTER TABLE sale_line_items DROP CONSTRAINT depletion_status_reason_consistency")
     )
     order_id = (
-        await db.execute(
-            text("SELECT id FROM orders WHERE tenant_id = :t LIMIT 1"), {"t": tid}
-        )
+        await db.execute(text("SELECT id FROM orders WHERE tenant_id = :t LIMIT 1"), {"t": tid})
     ).scalar()
     await db.execute(
         text("""

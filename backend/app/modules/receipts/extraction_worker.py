@@ -100,14 +100,18 @@ class ExtractionWorker:
                 {"tid": str(tenant_id)},
             )
             receipt = (
-                await s.execute(
-                    text(
-                        "SELECT photo_object_key, mime_type, review_started_at "
-                        "FROM receipts WHERE id = :rid AND tenant_id = :tid"
-                    ),
-                    {"rid": receipt_id, "tid": tenant_id},
+                (
+                    await s.execute(
+                        text(
+                            "SELECT photo_object_key, mime_type, review_started_at "
+                            "FROM receipts WHERE id = :rid AND tenant_id = :tid"
+                        ),
+                        {"rid": receipt_id, "tid": tenant_id},
+                    )
                 )
-            ).mappings().fetchone()
+                .mappings()
+                .fetchone()
+            )
             if receipt is None:
                 await self._terminal(s, jid, token, "failed_terminal", "receipt missing")
                 await s.commit()
@@ -132,8 +136,9 @@ class ExtractionWorker:
                     await s.commit()
                     return
                 except storage.SpacesNotConfigured:
-                    await self._transient_fail(s, jid, token, job, receipt_id, tenant_id,
-                                               "storage unavailable")
+                    await self._transient_fail(
+                        s, jid, token, job, receipt_id, tenant_id, "storage unavailable"
+                    )
                     await s.commit()
                     return
 
@@ -151,8 +156,7 @@ class ExtractionWorker:
                         file_bytes=raw, mime_type=receipt["mime_type"]
                     )
                 except ExtractionUnavailable as exc:
-                    await self._transient_fail(s, jid, token, job, receipt_id, tenant_id,
-                                               str(exc))
+                    await self._transient_fail(s, jid, token, job, receipt_id, tenant_id, str(exc))
                     await s.commit()
                     return
 

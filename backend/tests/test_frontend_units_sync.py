@@ -17,9 +17,7 @@ from pathlib import Path
 
 from app.modules.inventory.depletion.units import CANONICAL_UNITS, DIMENSION_OF
 
-_UNITS_TS = (
-    Path(__file__).resolve().parents[2] / "frontend" / "src" / "api" / "units.ts"
-)
+_UNITS_TS = Path(__file__).resolve().parents[2] / "frontend" / "src" / "api" / "units.ts"
 
 
 def _by_dimension_body() -> str:

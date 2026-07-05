@@ -53,9 +53,7 @@ async def conn(app_instance: Any) -> AsyncIterator[AsyncConnection]:
 
 @pytest.fixture
 async def client(app_instance: Any) -> AsyncIterator[AsyncClient]:
-    async with AsyncClient(
-        transport=ASGITransport(app=app_instance), base_url="http://test"
-    ) as c:
+    async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://test") as c:
         yield c
 
 
@@ -90,7 +88,9 @@ async def _seed_tenant_user(conn: AsyncConnection) -> tuple[str, str]:
 async def _menu_item(conn: AsyncConnection, tid: str, name: str = "Latte") -> str:
     mid = (
         await conn.execute(
-            text("INSERT INTO menu_items (tenant_id, name, active) VALUES (:t, :n, true) RETURNING id"),
+            text(
+                "INSERT INTO menu_items (tenant_id, name, active) VALUES (:t, :n, true) RETURNING id"
+            ),
             {"t": tid, "n": name},
         )
     ).scalar_one()
@@ -157,9 +157,12 @@ async def test_patch_creates_draft_first_edit(app_instance, conn, client) -> Non
     resp = await _patch(client, mid, modid, _ING)
     assert resp.status_code == 200
     assert resp.json()["status"] == "draft"
-    assert await _count(
-        conn, "SELECT count(*) FROM modifier_drafts WHERE modifier_id=:m", {"m": modid}
-    ) == 1
+    assert (
+        await _count(
+            conn, "SELECT count(*) FROM modifier_drafts WHERE modifier_id=:m", {"m": modid}
+        )
+        == 1
+    )
 
 
 @pytest.mark.integration
@@ -168,11 +171,18 @@ async def test_patch_twice_single_draft(app_instance, conn, client) -> None:
     mid = await _menu_item(conn, tid)
     modid = await _modifier(conn, tid, mid)
     _as(app_instance, tid, uid, "manager")
-    await _patch(client, mid, modid, {"ingredients": [{"name": "Espresso", "quantity": 7, "unit": "g"}]})
-    await _patch(client, mid, modid, {"ingredients": [{"name": "Espresso", "quantity": 14, "unit": "g"}]})
-    assert await _count(
-        conn, "SELECT count(*) FROM modifier_drafts WHERE modifier_id=:m", {"m": modid}
-    ) == 1
+    await _patch(
+        client, mid, modid, {"ingredients": [{"name": "Espresso", "quantity": 7, "unit": "g"}]}
+    )
+    await _patch(
+        client, mid, modid, {"ingredients": [{"name": "Espresso", "quantity": 14, "unit": "g"}]}
+    )
+    assert (
+        await _count(
+            conn, "SELECT count(*) FROM modifier_drafts WHERE modifier_id=:m", {"m": modid}
+        )
+        == 1
+    )
 
 
 @pytest.mark.integration
@@ -184,12 +194,17 @@ async def test_patch_on_skipped_reopens_to_draft(app_instance, conn, client) -> 
     _as(app_instance, tid, uid, "manager")
     await _patch(client, mid, modid, _ING)
     assert (await client.post(_u(mid, modid, "/skip"))).status_code == 200
-    reopened = await _patch(client, mid, modid, {"ingredients": [{"name": "Espresso", "quantity": 9, "unit": "g"}]})
+    reopened = await _patch(
+        client, mid, modid, {"ingredients": [{"name": "Espresso", "quantity": 9, "unit": "g"}]}
+    )
     assert reopened.status_code == 200
     assert reopened.json()["status"] == "draft"
-    assert await _count(
-        conn, "SELECT count(*) FROM modifiers WHERE id=:m AND status='draft'", {"m": modid}
-    ) == 1
+    assert (
+        await _count(
+            conn, "SELECT count(*) FROM modifiers WHERE id=:m AND status='draft'", {"m": modid}
+        )
+        == 1
+    )
 
 
 @pytest.mark.integration
@@ -220,24 +235,41 @@ async def test_confirm_happy_links_via_composite_fk(app_instance, conn, client) 
     assert resp.json()["status"] == "confirmed"
 
     mv = (
-        await conn.execute(
-            text("SELECT id, version_number FROM modifier_versions WHERE tenant_id=:t AND modifier_id=:m"),
-            {"t": tid, "m": modid},
+        (
+            await conn.execute(
+                text(
+                    "SELECT id, version_number FROM modifier_versions WHERE tenant_id=:t AND modifier_id=:m"
+                ),
+                {"t": tid, "m": modid},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     assert len(mv) == 1 and mv[0]["version_number"] == 1
     # linked through the composite FK; status confirmed; draft gone
-    assert await _count(
-        conn, "SELECT count(*) FROM modifiers WHERE id=:m AND current_version_id=:v AND status='confirmed'",
-        {"m": modid, "v": mv[0]["id"]},
-    ) == 1
-    assert await _count(
-        conn, "SELECT count(*) FROM modifier_ingredients WHERE modifier_version_id=:v AND tenant_id=:t",
-        {"v": mv[0]["id"], "t": tid},
-    ) == 1
-    assert await _count(
-        conn, "SELECT count(*) FROM modifier_drafts WHERE modifier_id=:m", {"m": modid}
-    ) == 0
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM modifiers WHERE id=:m AND current_version_id=:v AND status='confirmed'",
+            {"m": modid, "v": mv[0]["id"]},
+        )
+        == 1
+    )
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM modifier_ingredients WHERE modifier_version_id=:v AND tenant_id=:t",
+            {"v": mv[0]["id"], "t": tid},
+        )
+        == 1
+    )
+    assert (
+        await _count(
+            conn, "SELECT count(*) FROM modifier_drafts WHERE modifier_id=:m", {"m": modid}
+        )
+        == 0
+    )
 
 
 @pytest.mark.integration
@@ -249,10 +281,14 @@ async def test_double_click_confirm_one_version_then_409(app_instance, conn, cli
     await _patch(client, mid, modid, _ING)
     assert (await client.post(_u(mid, modid, "/confirm"))).status_code == 200
     assert (await client.post(_u(mid, modid, "/confirm"))).status_code == 409
-    assert await _count(
-        conn, "SELECT count(*) FROM modifier_versions WHERE tenant_id=:t AND modifier_id=:m",
-        {"t": tid, "m": modid},
-    ) == 1
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM modifier_versions WHERE tenant_id=:t AND modifier_id=:m",
+            {"t": tid, "m": modid},
+        )
+        == 1
+    )
 
 
 @pytest.mark.integration
@@ -270,17 +306,23 @@ async def test_reconfirm_allocates_version_two(app_instance, conn, client) -> No
         )
     ).scalar_one()
     assert (await client.post(_u(mid, modid, "/unconfirm"))).status_code == 200
-    await _patch(client, mid, modid, {"ingredients": [{"name": "Espresso", "quantity": 21, "unit": "g"}]})
+    await _patch(
+        client, mid, modid, {"ingredients": [{"name": "Espresso", "quantity": 21, "unit": "g"}]}
+    )
     assert (await client.post(_u(mid, modid, "/confirm"))).status_code == 200
 
     versions = [
         r["version_number"]
         for r in (
             await conn.execute(
-                text("SELECT version_number FROM modifier_versions WHERE tenant_id=:t ORDER BY version_number"),
+                text(
+                    "SELECT version_number FROM modifier_versions WHERE tenant_id=:t ORDER BY version_number"
+                ),
                 {"t": tid},
             )
-        ).mappings().all()
+        )
+        .mappings()
+        .all()
     ]
     assert versions == [1, 2]
     assert await _count(conn, "SELECT count(*) FROM modifier_versions WHERE id=:v", {"v": v1}) == 1
@@ -296,9 +338,10 @@ async def test_non_additive_cannot_confirm(app_instance, conn, client) -> None:
     await _patch(client, mid, modid, _ING)  # PATCH is type-agnostic; confirm is the gate
     resp = await client.post(_u(mid, modid, "/confirm"))
     assert resp.status_code == 409
-    assert await _count(
-        conn, "SELECT count(*) FROM modifier_versions WHERE tenant_id=:t", {"t": tid}
-    ) == 0
+    assert (
+        await _count(conn, "SELECT count(*) FROM modifier_versions WHERE tenant_id=:t", {"t": tid})
+        == 0
+    )
 
 
 @pytest.mark.integration
@@ -317,11 +360,15 @@ async def test_confirm_duplicate_ingredient_400(app_instance, conn, client) -> N
     modid = await _modifier(conn, tid, mid)
     _as(app_instance, tid, uid, "manager")
     await _patch(
-        client, mid, modid,
-        {"ingredients": [
-            {"name": "Espresso", "quantity": 7, "unit": "g"},
-            {"name": " espresso ", "quantity": 3, "unit": "g"},
-        ]},
+        client,
+        mid,
+        modid,
+        {
+            "ingredients": [
+                {"name": "Espresso", "quantity": 7, "unit": "g"},
+                {"name": " espresso ", "quantity": 3, "unit": "g"},
+            ]
+        },
     )
     assert (await client.post(_u(mid, modid, "/confirm"))).status_code == 400
 
@@ -347,10 +394,14 @@ async def test_unconfirm_copies_draft_version_immutable(app_instance, conn, clie
         (str(r["inventory_item_id"]), float(r["quantity"]), r["unit"])
         for r in (
             await conn.execute(
-                text("SELECT inventory_item_id, quantity, unit FROM modifier_ingredients WHERE modifier_version_id=:v"),
+                text(
+                    "SELECT inventory_item_id, quantity, unit FROM modifier_ingredients WHERE modifier_version_id=:v"
+                ),
                 {"v": mv},
             )
-        ).mappings().all()
+        )
+        .mappings()
+        .all()
     ]
 
     assert (await client.post(_u(mid, modid, "/unconfirm"))).status_code == 200
@@ -360,20 +411,32 @@ async def test_unconfirm_copies_draft_version_immutable(app_instance, conn, clie
         (str(r["inventory_item_id"]), float(r["quantity"]), r["unit"])
         for r in (
             await conn.execute(
-                text("SELECT inventory_item_id, quantity, unit FROM modifier_ingredients WHERE modifier_version_id=:v"),
+                text(
+                    "SELECT inventory_item_id, quantity, unit FROM modifier_ingredients WHERE modifier_version_id=:v"
+                ),
                 {"v": mv},
             )
-        ).mappings().all()
+        )
+        .mappings()
+        .all()
     ]
     assert ing_after == ing_before
-    assert await _count(
-        conn, "SELECT count(*) FROM modifiers WHERE id=:m AND status='draft' AND current_version_id IS NULL",
-        {"m": modid},
-    ) == 1
-    assert await _count(
-        conn, "SELECT count(*) FROM modifier_drafts WHERE modifier_id=:m AND parent_modifier_version_id=:v",
-        {"m": modid, "v": mv},
-    ) == 1
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM modifiers WHERE id=:m AND status='draft' AND current_version_id IS NULL",
+            {"m": modid},
+        )
+        == 1
+    )
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM modifier_drafts WHERE modifier_id=:m AND parent_modifier_version_id=:v",
+            {"m": modid, "v": mv},
+        )
+        == 1
+    )
 
 
 @pytest.mark.integration
@@ -400,11 +463,15 @@ async def test_skip_on_confirmed_409(app_instance, conn, client) -> None:
     assert (await client.post(_u(mid, modid, "/confirm"))).status_code == 200
     assert (await client.post(_u(mid, modid, "/skip"))).status_code == 409
     # the version link is intact (skip was rejected, not half-applied)
-    assert await _count(
-        conn, "SELECT count(*) FROM modifiers WHERE id=:m AND status='confirmed'"
-        " AND current_version_id IS NOT NULL",
-        {"m": modid},
-    ) == 1
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM modifiers WHERE id=:m AND status='confirmed'"
+            " AND current_version_id IS NOT NULL",
+            {"m": modid},
+        )
+        == 1
+    )
 
 
 @pytest.mark.integration
@@ -416,9 +483,12 @@ async def test_skip_preserves_draft_on_subtractive(app_instance, conn, client) -
     await _patch(client, mid, modid, _ING)
     skip = await client.post(_u(mid, modid, "/skip"))
     assert skip.status_code == 200 and skip.json()["status"] == "skipped"
-    assert await _count(
-        conn, "SELECT count(*) FROM modifier_drafts WHERE modifier_id=:m", {"m": modid}
-    ) == 1
+    assert (
+        await _count(
+            conn, "SELECT count(*) FROM modifier_drafts WHERE modifier_id=:m", {"m": modid}
+        )
+        == 1
+    )
 
 
 # ── RBAC + cross-scope ───────────────────────────────────────────────────────
@@ -463,30 +533,47 @@ async def _seed_mod_for_confirm(
 ) -> tuple[str, str, str, str]:
     tid = str(uuid7())
     await admin_conn.execute(
-        "INSERT INTO tenants (id, name, slug) VALUES ($1, 'T', $2)", tid, f"t-{uuid.uuid4().hex[:8]}"
+        "INSERT INTO tenants (id, name, slug) VALUES ($1, 'T', $2)",
+        tid,
+        f"t-{uuid.uuid4().hex[:8]}",
     )
-    uid = str(await admin_conn.fetchval(
-        "INSERT INTO users (workos_id, email, email_verified) VALUES ($1, $2, true) RETURNING id",
-        f"u-{uuid.uuid4().hex[:8]}", f"{uuid.uuid4().hex[:8]}@t.com",
-    ))
-    mid = str(await admin_conn.fetchval(
-        "INSERT INTO menu_items (tenant_id, name, active) VALUES ($1, 'Latte', true) RETURNING id", tid
-    ))
-    modid = str(await admin_conn.fetchval(
-        "INSERT INTO modifiers (tenant_id, menu_item_id, name, modifier_type, status)"
-        " VALUES ($1, $2, 'Extra shot', $3, 'draft') RETURNING id",
-        tid, mid, mtype,
-    ))
+    uid = str(
+        await admin_conn.fetchval(
+            "INSERT INTO users (workos_id, email, email_verified) VALUES ($1, $2, true) RETURNING id",
+            f"u-{uuid.uuid4().hex[:8]}",
+            f"{uuid.uuid4().hex[:8]}@t.com",
+        )
+    )
+    mid = str(
+        await admin_conn.fetchval(
+            "INSERT INTO menu_items (tenant_id, name, active) VALUES ($1, 'Latte', true) RETURNING id",
+            tid,
+        )
+    )
+    modid = str(
+        await admin_conn.fetchval(
+            "INSERT INTO modifiers (tenant_id, menu_item_id, name, modifier_type, status)"
+            " VALUES ($1, $2, 'Extra shot', $3, 'draft') RETURNING id",
+            tid,
+            mid,
+            mtype,
+        )
+    )
     await admin_conn.execute(
         "INSERT INTO modifier_drafts (tenant_id, modifier_id, draft_ingredients, created_by)"
         " VALUES ($1, $2, $3::jsonb, $4)",
-        tid, modid, json.dumps(ingredients), uid,
+        tid,
+        modid,
+        json.dumps(ingredients),
+        uid,
     )
     for u in extra_units:
         await admin_conn.execute(
             "INSERT INTO units_of_measure (tenant_id, name, abbreviation, unit_type)"
             " VALUES ($1, $2, $2, $3)",
-            tid, u["name"], u["unit_type"],
+            tid,
+            u["name"],
+            u["unit_type"],
         )
     return tid, uid, mid, modid
 
@@ -531,18 +618,42 @@ async def _run_confirm_in_own_txn(
 async def test_no_partial_confirm_unit_type_conflict(admin_conn) -> None:
     tid, uid, mid, modid = await _seed_mod_for_confirm(
         admin_conn,
-        [{"name": "Espresso", "quantity": 7, "unit": "g"},
-         {"name": "Syrup", "quantity": 10, "unit": "ml"}],
+        [
+            {"name": "Espresso", "quantity": 7, "unit": "g"},
+            {"name": "Syrup", "quantity": 10, "unit": "ml"},
+        ],
         extra_units=({"name": "ml", "unit_type": "weight"},),  # wrong type → abort in step 1
     )
     try:
         exc = await _run_confirm_in_own_txn(tid, mid, modid, uid)
         assert isinstance(exc, UnitTypeConflict)
-        assert await admin_conn.fetchval("SELECT count(*) FROM modifier_versions WHERE tenant_id=$1", tid) == 0
-        assert await admin_conn.fetchval("SELECT count(*) FROM inventory_items WHERE tenant_id=$1", tid) == 0
-        assert await admin_conn.fetchval("SELECT count(*) FROM units_of_measure WHERE tenant_id=$1 AND name='g'", tid) == 0
-        assert await admin_conn.fetchval("SELECT count(*) FROM modifier_drafts WHERE modifier_id=$1", modid) == 1
-        assert await admin_conn.fetchval("SELECT status FROM modifiers WHERE id=$1", modid) == "draft"
+        assert (
+            await admin_conn.fetchval(
+                "SELECT count(*) FROM modifier_versions WHERE tenant_id=$1", tid
+            )
+            == 0
+        )
+        assert (
+            await admin_conn.fetchval(
+                "SELECT count(*) FROM inventory_items WHERE tenant_id=$1", tid
+            )
+            == 0
+        )
+        assert (
+            await admin_conn.fetchval(
+                "SELECT count(*) FROM units_of_measure WHERE tenant_id=$1 AND name='g'", tid
+            )
+            == 0
+        )
+        assert (
+            await admin_conn.fetchval(
+                "SELECT count(*) FROM modifier_drafts WHERE modifier_id=$1", modid
+            )
+            == 1
+        )
+        assert (
+            await admin_conn.fetchval("SELECT status FROM modifiers WHERE id=$1", modid) == "draft"
+        )
     finally:
         await _cleanup(admin_conn, tid, uid)
 
@@ -555,11 +666,36 @@ async def test_no_partial_confirm_injected_late_failure(admin_conn) -> None:
     try:
         exc = await _run_confirm_in_own_txn(tid, mid, modid, uid, inject_late=True)
         assert isinstance(exc, RuntimeError)
-        assert await admin_conn.fetchval("SELECT count(*) FROM modifier_versions WHERE tenant_id=$1", tid) == 0
-        assert await admin_conn.fetchval("SELECT count(*) FROM modifier_ingredients WHERE tenant_id=$1", tid) == 0
-        assert await admin_conn.fetchval("SELECT count(*) FROM inventory_items WHERE tenant_id=$1", tid) == 0
-        assert await admin_conn.fetchval("SELECT count(*) FROM modifier_drafts WHERE modifier_id=$1", modid) == 1
-        assert await admin_conn.fetchval("SELECT status FROM modifiers WHERE id=$1", modid) == "draft"
-        assert await admin_conn.fetchval("SELECT current_version_id FROM modifiers WHERE id=$1", modid) is None
+        assert (
+            await admin_conn.fetchval(
+                "SELECT count(*) FROM modifier_versions WHERE tenant_id=$1", tid
+            )
+            == 0
+        )
+        assert (
+            await admin_conn.fetchval(
+                "SELECT count(*) FROM modifier_ingredients WHERE tenant_id=$1", tid
+            )
+            == 0
+        )
+        assert (
+            await admin_conn.fetchval(
+                "SELECT count(*) FROM inventory_items WHERE tenant_id=$1", tid
+            )
+            == 0
+        )
+        assert (
+            await admin_conn.fetchval(
+                "SELECT count(*) FROM modifier_drafts WHERE modifier_id=$1", modid
+            )
+            == 1
+        )
+        assert (
+            await admin_conn.fetchval("SELECT status FROM modifiers WHERE id=$1", modid) == "draft"
+        )
+        assert (
+            await admin_conn.fetchval("SELECT current_version_id FROM modifiers WHERE id=$1", modid)
+            is None
+        )
     finally:
         await _cleanup(admin_conn, tid, uid)

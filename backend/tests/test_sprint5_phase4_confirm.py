@@ -60,9 +60,7 @@ async def conn(app_instance: Any) -> AsyncIterator[AsyncConnection]:
 
 @pytest.fixture
 async def client(app_instance: Any) -> AsyncIterator[AsyncClient]:
-    async with AsyncClient(
-        transport=ASGITransport(app=app_instance), base_url="http://test"
-    ) as c:
+    async with AsyncClient(transport=ASGITransport(app=app_instance), base_url="http://test") as c:
         yield c
 
 
@@ -143,47 +141,70 @@ async def test_confirm_happy_creates_version_and_links(app_instance, conn, clien
 
     # one version, number 1, tenant-scoped
     rv = (
-        await conn.execute(
-            text(
-                "SELECT id, version_number, tenant_id, name FROM recipe_versions"
-                " WHERE tenant_id = :t"
-            ),
-            {"t": tid},
+        (
+            await conn.execute(
+                text(
+                    "SELECT id, version_number, tenant_id, name FROM recipe_versions"
+                    " WHERE tenant_id = :t"
+                ),
+                {"t": tid},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     assert len(rv) == 1
     assert rv[0]["version_number"] == 1
     assert str(rv[0]["tenant_id"]) == tid
     rv_id = rv[0]["id"]
 
     # ingredients carry the right tenant_id; menu item linked; status confirmed; draft gone
-    assert await _count(
-        conn,
-        "SELECT count(*) FROM recipe_ingredients WHERE recipe_version_id=:r AND tenant_id=:t",
-        {"r": rv_id, "t": tid},
-    ) == 2
-    assert await _count(
-        conn, "SELECT count(*) FROM menu_items WHERE id=:m AND recipe_version_id=:r",
-        {"m": mid, "r": rv_id},
-    ) == 1
-    assert await _count(
-        conn, "SELECT count(*) FROM recipes WHERE menu_item_id=:m AND status='confirmed'",
-        {"m": mid},
-    ) == 1
-    assert await _count(
-        conn,
-        "SELECT count(*) FROM recipe_drafts rd JOIN recipes r ON r.id=rd.recipe_id"
-        " WHERE r.menu_item_id=:m",
-        {"m": mid},
-    ) == 0
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM recipe_ingredients WHERE recipe_version_id=:r AND tenant_id=:t",
+            {"r": rv_id, "t": tid},
+        )
+        == 2
+    )
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM menu_items WHERE id=:m AND recipe_version_id=:r",
+            {"m": mid, "r": rv_id},
+        )
+        == 1
+    )
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM recipes WHERE menu_item_id=:m AND status='confirmed'",
+            {"m": mid},
+        )
+        == 1
+    )
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM recipe_drafts rd JOIN recipes r ON r.id=rd.recipe_id"
+            " WHERE r.menu_item_id=:m",
+            {"m": mid},
+        )
+        == 0
+    )
     # inventory items + units auto-created (deduped) for both ingredients
-    assert await _count(
-        conn, "SELECT count(*) FROM inventory_items WHERE tenant_id=:t", {"t": tid}
-    ) == 2
-    assert await _count(
-        conn, "SELECT count(*) FROM units_of_measure WHERE tenant_id=:t AND name IN ('g','ml')",
-        {"t": tid},
-    ) == 2
+    assert (
+        await _count(conn, "SELECT count(*) FROM inventory_items WHERE tenant_id=:t", {"t": tid})
+        == 2
+    )
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM units_of_measure WHERE tenant_id=:t AND name IN ('g','ml')",
+            {"t": tid},
+        )
+        == 2
+    )
 
 
 # ── confirm: corrected double-click semantics (one version, then 409) ────────
@@ -201,9 +222,10 @@ async def test_double_click_confirm_one_version_then_409(app_instance, conn, cli
     second = await client.post(f"{R}/recipes/{mid}/confirm")
     assert second.status_code == 409  # not a spurious version 2
 
-    assert await _count(
-        conn, "SELECT count(*) FROM recipe_versions WHERE tenant_id=:t", {"t": tid}
-    ) == 1
+    assert (
+        await _count(conn, "SELECT count(*) FROM recipe_versions WHERE tenant_id=:t", {"t": tid})
+        == 1
+    )
 
 
 # ── confirm: legitimate version 2 (un-confirm → edit → re-confirm) ───────────
@@ -227,7 +249,8 @@ async def test_reconfirm_allocates_version_two(app_instance, conn, client) -> No
         )
     ).scalar_one()
     v1_ings = await _count(
-        conn, "SELECT count(*) FROM recipe_ingredients WHERE recipe_version_id=:r",
+        conn,
+        "SELECT count(*) FROM recipe_ingredients WHERE recipe_version_id=:r",
         {"r": v1_id},
     )
 
@@ -255,18 +278,28 @@ async def test_reconfirm_allocates_version_two(app_instance, conn, client) -> No
                 ),
                 {"t": tid},
             )
-        ).mappings().all()
+        )
+        .mappings()
+        .all()
     ]
     assert versions == [1, 2]  # MAX+1 incremented, not collided
     # v1 survived byte-identical
-    assert await _count(
-        conn, "SELECT count(*) FROM recipe_versions WHERE id=:r AND version_number=1",
-        {"r": v1_id},
-    ) == 1
-    assert await _count(
-        conn, "SELECT count(*) FROM recipe_ingredients WHERE recipe_version_id=:r",
-        {"r": v1_id},
-    ) == v1_ings
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM recipe_versions WHERE id=:r AND version_number=1",
+            {"r": v1_id},
+        )
+        == 1
+    )
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM recipe_ingredients WHERE recipe_version_id=:r",
+            {"r": v1_id},
+        )
+        == v1_ings
+    )
     # menu item now points at v2; draft consumed
     v2_id = (
         await conn.execute(
@@ -274,25 +307,30 @@ async def test_reconfirm_allocates_version_two(app_instance, conn, client) -> No
             {"t": tid},
         )
     ).scalar_one()
-    assert await _count(
-        conn, "SELECT count(*) FROM menu_items WHERE id=:m AND recipe_version_id=:r",
-        {"m": mid, "r": v2_id},
-    ) == 1
-    assert await _count(
-        conn,
-        "SELECT count(*) FROM recipe_drafts rd JOIN recipes r ON r.id=rd.recipe_id"
-        " WHERE r.menu_item_id=:m",
-        {"m": mid},
-    ) == 0
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM menu_items WHERE id=:m AND recipe_version_id=:r",
+            {"m": mid, "r": v2_id},
+        )
+        == 1
+    )
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM recipe_drafts rd JOIN recipes r ON r.id=rd.recipe_id"
+            " WHERE r.menu_item_id=:m",
+            {"m": mid},
+        )
+        == 0
+    )
 
 
 # ── confirm: case-insensitive dedup LINK (what 0019 exists for) ──────────────
 
 
 @pytest.mark.integration
-async def test_confirm_dedups_inventory_item_case_insensitively(
-    app_instance, conn, client
-) -> None:
+async def test_confirm_dedups_inventory_item_case_insensitively(app_instance, conn, client) -> None:
     """Two recipes whose ingredient names differ only in case/space link to ONE
     inventory_item via the 0019 unique index — the dedup-link the constraint exists
     for (distinct from the within-draft duplicate rejection)."""
@@ -300,34 +338,43 @@ async def test_confirm_dedups_inventory_item_case_insensitively(
     mid1 = await _menu_item(conn, tid, "Bruschetta")
     mid2 = await _menu_item(conn, tid, "Marinara")
     _as(app_instance, tid, uid, "manager")
-    await _patch_draft(client, mid1, {"ingredients": [{"name": "Tomato", "quantity": 50, "unit": "g"}]})
-    await _patch_draft(client, mid2, {"ingredients": [{"name": " tomato ", "quantity": 30, "unit": "g"}]})
+    await _patch_draft(
+        client, mid1, {"ingredients": [{"name": "Tomato", "quantity": 50, "unit": "g"}]}
+    )
+    await _patch_draft(
+        client, mid2, {"ingredients": [{"name": " tomato ", "quantity": 30, "unit": "g"}]}
+    )
 
     assert (await client.post(f"{R}/recipes/{mid1}/confirm")).status_code == 200
     assert (await client.post(f"{R}/recipes/{mid2}/confirm")).status_code == 200
 
     # exactly one inventory_item for the normalized name
-    assert await _count(
-        conn,
-        "SELECT count(*) FROM inventory_items"
-        " WHERE tenant_id=:t AND lower(btrim(name))='tomato'",
-        {"t": tid},
-    ) == 1
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM inventory_items"
+            " WHERE tenant_id=:t AND lower(btrim(name))='tomato'",
+            {"t": tid},
+        )
+        == 1
+    )
     item_id = (
         await conn.execute(
             text(
-                "SELECT id FROM inventory_items"
-                " WHERE tenant_id=:t AND lower(btrim(name))='tomato'"
+                "SELECT id FROM inventory_items WHERE tenant_id=:t AND lower(btrim(name))='tomato'"
             ),
             {"t": tid},
         )
     ).scalar_one()
     # both versions' ingredients point at that one item
-    assert await _count(
-        conn,
-        "SELECT count(*) FROM recipe_ingredients WHERE tenant_id=:t AND inventory_item_id=:i",
-        {"t": tid, "i": item_id},
-    ) == 2
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM recipe_ingredients WHERE tenant_id=:t AND inventory_item_id=:i",
+            {"t": tid, "i": item_id},
+        )
+        == 2
+    )
 
 
 # ── confirm: rejections ──────────────────────────────────────────────────────
@@ -360,9 +407,10 @@ async def test_confirm_duplicate_ingredient_400(app_instance, conn, client) -> N
     )
     resp = await client.post(f"{R}/recipes/{mid}/confirm")
     assert resp.status_code == 400
-    assert await _count(
-        conn, "SELECT count(*) FROM recipe_versions WHERE tenant_id=:t", {"t": tid}
-    ) == 0
+    assert (
+        await _count(conn, "SELECT count(*) FROM recipe_versions WHERE tenant_id=:t", {"t": tid})
+        == 0
+    )
 
 
 @pytest.mark.integration
@@ -403,11 +451,15 @@ async def test_unconfirm_copies_draft_and_keeps_version_immutable(
     assert (await client.post(f"{R}/recipes/{mid}/confirm")).status_code == 200
 
     rv = (
-        await conn.execute(
-            text("SELECT id, version_number, name FROM recipe_versions WHERE tenant_id=:t"),
-            {"t": tid},
+        (
+            await conn.execute(
+                text("SELECT id, version_number, name FROM recipe_versions WHERE tenant_id=:t"),
+                {"t": tid},
+            )
         )
-    ).mappings().one()
+        .mappings()
+        .one()
+    )
     rv_id = rv["id"]
     ri_before = [
         (str(r["inventory_item_id"]), float(r["quantity"]), r["unit"])
@@ -419,7 +471,9 @@ async def test_unconfirm_copies_draft_and_keeps_version_immutable(
                 ),
                 {"r": rv_id},
             )
-        ).mappings().all()
+        )
+        .mappings()
+        .all()
     ]
 
     unc = await client.post(f"{R}/recipes/{mid}/unconfirm")
@@ -428,11 +482,15 @@ async def test_unconfirm_copies_draft_and_keeps_version_immutable(
 
     # the version + its ingredients are byte-identical (never mutated)
     rv_after = (
-        await conn.execute(
-            text("SELECT id, version_number, name FROM recipe_versions WHERE tenant_id=:t"),
-            {"t": tid},
+        (
+            await conn.execute(
+                text("SELECT id, version_number, name FROM recipe_versions WHERE tenant_id=:t"),
+                {"t": tid},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     assert len(rv_after) == 1
     assert rv_after[0]["id"] == rv_id
     assert rv_after[0]["version_number"] == rv["version_number"]
@@ -447,30 +505,43 @@ async def test_unconfirm_copies_draft_and_keeps_version_immutable(
                 ),
                 {"r": rv_id},
             )
-        ).mappings().all()
+        )
+        .mappings()
+        .all()
     ]
     assert ri_after == ri_before
 
     # recipe re-opened: status draft, menu link cleared, draft copy points at the version
-    assert await _count(
-        conn, "SELECT count(*) FROM recipes WHERE menu_item_id=:m AND status='draft'",
-        {"m": mid},
-    ) == 1
-    assert await _count(
-        conn,
-        "SELECT count(*) FROM menu_items WHERE id=:m AND recipe_version_id IS NULL",
-        {"m": mid},
-    ) == 1
-    draft = (
-        await conn.execute(
-            text(
-                "SELECT rd.parent_recipe_version_id AS pv, rd.draft_ingredients AS di"
-                " FROM recipe_drafts rd JOIN recipes r ON r.id=rd.recipe_id"
-                " WHERE r.menu_item_id=:m"
-            ),
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM recipes WHERE menu_item_id=:m AND status='draft'",
             {"m": mid},
         )
-    ).mappings().one()
+        == 1
+    )
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM menu_items WHERE id=:m AND recipe_version_id IS NULL",
+            {"m": mid},
+        )
+        == 1
+    )
+    draft = (
+        (
+            await conn.execute(
+                text(
+                    "SELECT rd.parent_recipe_version_id AS pv, rd.draft_ingredients AS di"
+                    " FROM recipe_drafts rd JOIN recipes r ON r.id=rd.recipe_id"
+                    " WHERE r.menu_item_id=:m"
+                ),
+                {"m": mid},
+            )
+        )
+        .mappings()
+        .one()
+    )
     assert draft["pv"] == rv_id
     names = {i["name"] for i in repo._as_list(draft["di"])}
     assert names == {"Flour", "Milk"}
@@ -502,12 +573,15 @@ async def test_skip_on_confirmed_409(app_instance, conn, client) -> None:
     assert (await client.post(f"{R}/recipes/{mid}/confirm")).status_code == 200
     assert (await client.post(f"{R}/recipes/{mid}/skip")).status_code == 409
     # link intact, still confirmed (skip rejected, not half-applied)
-    assert await _count(
-        conn,
-        "SELECT count(*) FROM recipes r JOIN menu_items mi ON mi.id=r.menu_item_id"
-        " WHERE r.menu_item_id=:m AND r.status='confirmed' AND mi.recipe_version_id IS NOT NULL",
-        {"m": mid},
-    ) == 1
+    assert (
+        await _count(
+            conn,
+            "SELECT count(*) FROM recipes r JOIN menu_items mi ON mi.id=r.menu_item_id"
+            " WHERE r.menu_item_id=:m AND r.status='confirmed' AND mi.recipe_version_id IS NOT NULL",
+            {"m": mid},
+        )
+        == 1
+    )
 
 
 @pytest.mark.integration
@@ -540,13 +614,15 @@ async def _seed_for_confirm(
     tid = str(uuid7())
     await admin_conn.execute(
         "INSERT INTO tenants (id, name, slug) VALUES ($1, 'T', $2)",
-        tid, f"t-{uuid.uuid4().hex[:8]}",
+        tid,
+        f"t-{uuid.uuid4().hex[:8]}",
     )
     uid = str(
         await admin_conn.fetchval(
             "INSERT INTO users (workos_id, email, email_verified)"
             " VALUES ($1, $2, true) RETURNING id",
-            f"u-{uuid.uuid4().hex[:8]}", f"{uuid.uuid4().hex[:8]}@t.com",
+            f"u-{uuid.uuid4().hex[:8]}",
+            f"{uuid.uuid4().hex[:8]}@t.com",
         )
     )
     mid = str(
@@ -560,19 +636,25 @@ async def _seed_for_confirm(
         await admin_conn.fetchval(
             "INSERT INTO recipes (tenant_id, menu_item_id, status)"
             " VALUES ($1, $2, 'draft') RETURNING id",
-            tid, mid,
+            tid,
+            mid,
         )
     )
     await admin_conn.execute(
         "INSERT INTO recipe_drafts (tenant_id, recipe_id, draft_ingredients, created_by)"
         " VALUES ($1, $2, $3::jsonb, $4)",
-        tid, rid, json.dumps(ingredients), uid,
+        tid,
+        rid,
+        json.dumps(ingredients),
+        uid,
     )
     for u in extra_units:
         await admin_conn.execute(
             "INSERT INTO units_of_measure (tenant_id, name, abbreviation, unit_type)"
             " VALUES ($1, $2, $2, $3)",
-            tid, u["name"], u["unit_type"],
+            tid,
+            u["name"],
+            u["unit_type"],
         )
     return tid, uid, mid, rid
 
@@ -580,9 +662,7 @@ async def _seed_for_confirm(
 async def _cleanup(admin_conn: Any, tid: str, uid: str) -> None:
     for tbl in ("recipe_ingredients", "recipe_versions", "recipe_drafts"):
         await admin_conn.execute(f"DELETE FROM {tbl} WHERE tenant_id=$1", tid)
-    await admin_conn.execute(
-        "UPDATE menu_items SET recipe_version_id=NULL WHERE tenant_id=$1", tid
-    )
+    await admin_conn.execute("UPDATE menu_items SET recipe_version_id=NULL WHERE tenant_id=$1", tid)
     for tbl in ("recipes", "inventory_items", "units_of_measure", "menu_items"):
         await admin_conn.execute(f"DELETE FROM {tbl} WHERE tenant_id=$1", tid)
     await admin_conn.execute("DELETE FROM users WHERE id=$1", uid)
@@ -626,8 +706,8 @@ async def test_no_partial_confirm_unit_type_conflict(admin_conn) -> None:
     tid, uid, mid, rid = await _seed_for_confirm(
         admin_conn,
         [
-            {"name": "Flour", "quantity": 100, "unit": "g"},   # clean → creates 'g' + Flour
-            {"name": "Milk", "quantity": 200, "unit": "ml"},   # 'ml' pre-exists as weight
+            {"name": "Flour", "quantity": 100, "unit": "g"},  # clean → creates 'g' + Flour
+            {"name": "Milk", "quantity": 200, "unit": "ml"},  # 'ml' pre-exists as weight
         ],
         extra_units=({"name": "ml", "unit_type": "weight"},),  # wrong: ml is volume
     )
@@ -636,25 +716,36 @@ async def test_no_partial_confirm_unit_type_conflict(admin_conn) -> None:
         assert isinstance(exc, repo.UnitTypeConflict)
 
         # nothing from the confirm persisted — including step-1 side effects
-        assert await admin_conn.fetchval(
-            "SELECT count(*) FROM recipe_versions WHERE tenant_id=$1", tid
-        ) == 0
-        assert await admin_conn.fetchval(
-            "SELECT count(*) FROM recipe_ingredients WHERE tenant_id=$1", tid
-        ) == 0
-        assert await admin_conn.fetchval(
-            "SELECT count(*) FROM inventory_items WHERE tenant_id=$1", tid
-        ) == 0  # Flour's auto-created item rolled back — no orphan
-        assert await admin_conn.fetchval(
-            "SELECT count(*) FROM units_of_measure WHERE tenant_id=$1 AND name='g'", tid
-        ) == 0  # Flour's auto-created unit rolled back too
+        assert (
+            await admin_conn.fetchval(
+                "SELECT count(*) FROM recipe_versions WHERE tenant_id=$1", tid
+            )
+            == 0
+        )
+        assert (
+            await admin_conn.fetchval(
+                "SELECT count(*) FROM recipe_ingredients WHERE tenant_id=$1", tid
+            )
+            == 0
+        )
+        assert (
+            await admin_conn.fetchval(
+                "SELECT count(*) FROM inventory_items WHERE tenant_id=$1", tid
+            )
+            == 0
+        )  # Flour's auto-created item rolled back — no orphan
+        assert (
+            await admin_conn.fetchval(
+                "SELECT count(*) FROM units_of_measure WHERE tenant_id=$1 AND name='g'", tid
+            )
+            == 0
+        )  # Flour's auto-created unit rolled back too
         # the draft is intact and the recipe is still a draft
-        assert await admin_conn.fetchval(
-            "SELECT count(*) FROM recipe_drafts WHERE recipe_id=$1", rid
-        ) == 1
-        assert await admin_conn.fetchval(
-            "SELECT status FROM recipes WHERE id=$1", rid
-        ) == "draft"
+        assert (
+            await admin_conn.fetchval("SELECT count(*) FROM recipe_drafts WHERE recipe_id=$1", rid)
+            == 1
+        )
+        assert await admin_conn.fetchval("SELECT status FROM recipes WHERE id=$1", rid) == "draft"
     finally:
         await _cleanup(admin_conn, tid, uid)
 
@@ -671,23 +762,32 @@ async def test_no_partial_confirm_injected_late_failure(admin_conn) -> None:
         exc = await _run_confirm_in_own_txn(tid, mid, inject_step4=True)
         assert isinstance(exc, RuntimeError)
 
-        assert await admin_conn.fetchval(
-            "SELECT count(*) FROM recipe_versions WHERE tenant_id=$1", tid
-        ) == 0  # the version created in step 2 rolled back
-        assert await admin_conn.fetchval(
-            "SELECT count(*) FROM recipe_ingredients WHERE tenant_id=$1", tid
-        ) == 0
-        assert await admin_conn.fetchval(
-            "SELECT count(*) FROM inventory_items WHERE tenant_id=$1", tid
-        ) == 0
-        assert await admin_conn.fetchval(
-            "SELECT count(*) FROM recipe_drafts WHERE recipe_id=$1", rid
-        ) == 1
-        assert await admin_conn.fetchval(
-            "SELECT status FROM recipes WHERE id=$1", rid
-        ) == "draft"
-        assert await admin_conn.fetchval(
-            "SELECT recipe_version_id FROM menu_items WHERE id=$1", mid
-        ) is None
+        assert (
+            await admin_conn.fetchval(
+                "SELECT count(*) FROM recipe_versions WHERE tenant_id=$1", tid
+            )
+            == 0
+        )  # the version created in step 2 rolled back
+        assert (
+            await admin_conn.fetchval(
+                "SELECT count(*) FROM recipe_ingredients WHERE tenant_id=$1", tid
+            )
+            == 0
+        )
+        assert (
+            await admin_conn.fetchval(
+                "SELECT count(*) FROM inventory_items WHERE tenant_id=$1", tid
+            )
+            == 0
+        )
+        assert (
+            await admin_conn.fetchval("SELECT count(*) FROM recipe_drafts WHERE recipe_id=$1", rid)
+            == 1
+        )
+        assert await admin_conn.fetchval("SELECT status FROM recipes WHERE id=$1", rid) == "draft"
+        assert (
+            await admin_conn.fetchval("SELECT recipe_version_id FROM menu_items WHERE id=$1", mid)
+            is None
+        )
     finally:
         await _cleanup(admin_conn, tid, uid)

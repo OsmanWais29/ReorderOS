@@ -124,10 +124,20 @@ async def test_receipts_new_columns_and_types(admin_conn: Any) -> None:
     # source is NOT NULL after 0024.
     assert cols["source"][1] == "NO", "receipts.source must be NOT NULL after 0024"
     for c in (
-        "photo_object_key", "invoice_number", "subtotal_cents", "extraction_status",
-        "extraction_confidence", "review_visibility_status", "suppression_reason",
-        "quota_blocked", "confirmed_at", "reviewed_affirmation", "review_started_at",
-        "manual_entry_required", "inbound_email_id", "filter_flags",
+        "photo_object_key",
+        "invoice_number",
+        "subtotal_cents",
+        "extraction_status",
+        "extraction_confidence",
+        "review_visibility_status",
+        "suppression_reason",
+        "quota_blocked",
+        "confirmed_at",
+        "reviewed_affirmation",
+        "review_started_at",
+        "manual_entry_required",
+        "inbound_email_id",
+        "filter_flags",
     ):
         assert c in cols, f"receipts missing column {c}"
 
@@ -141,8 +151,15 @@ async def test_receipt_lines_item_nullable_and_new_columns(admin_conn: Any) -> N
         )
     }
     assert cols["inventory_item_id"] == "YES", "inventory_item_id must be nullable after 0024"
-    for c in ("extracted_name", "confidence", "manually_corrected", "match_status",
-              "extraction_job_id", "job_attempt", "line_ordinal"):
+    for c in (
+        "extracted_name",
+        "confidence",
+        "manually_corrected",
+        "match_status",
+        "extraction_job_id",
+        "job_attempt",
+        "line_ordinal",
+    ):
         assert c in cols, f"receipt_lines missing column {c}"
 
 
@@ -173,7 +190,8 @@ async def test_app_user_sees_only_own_tenant_rows(admin_conn: Any, app_conn: Any
     await admin_conn.execute(
         "INSERT INTO tenant_invoice_senders (tenant_id, match_type, match_value) "
         "VALUES ($1, 'domain', 'a.example.com'), ($2, 'domain', 'b.example.com')",
-        tenant_a["id"], tenant_b["id"],
+        tenant_a["id"],
+        tenant_b["id"],
     )
     try:
         async with app_conn.transaction():
@@ -186,7 +204,8 @@ async def test_app_user_sees_only_own_tenant_rows(admin_conn: Any, app_conn: Any
     finally:
         await admin_conn.execute(
             "DELETE FROM tenant_invoice_senders WHERE tenant_id IN ($1, $2)",
-            tenant_a["id"], tenant_b["id"],
+            tenant_a["id"],
+            tenant_b["id"],
         )
         await admin_conn.execute(
             "DELETE FROM tenants WHERE id IN ($1, $2)", tenant_a["id"], tenant_b["id"]
@@ -201,7 +220,8 @@ async def test_service_worker_sees_across_tenants(admin_conn: Any, service_conn:
     await admin_conn.execute(
         "INSERT INTO tenant_invoice_senders (tenant_id, match_type, match_value) "
         "VALUES ($1, 'domain', 'a.example.com'), ($2, 'domain', 'b.example.com')",
-        tenant_a["id"], tenant_b["id"],
+        tenant_a["id"],
+        tenant_b["id"],
     )
     try:
         rows = await service_conn.fetch(
@@ -213,7 +233,8 @@ async def test_service_worker_sees_across_tenants(admin_conn: Any, service_conn:
     finally:
         await admin_conn.execute(
             "DELETE FROM tenant_invoice_senders WHERE tenant_id IN ($1, $2)",
-            tenant_a["id"], tenant_b["id"],
+            tenant_a["id"],
+            tenant_b["id"],
         )
         await admin_conn.execute(
             "DELETE FROM tenants WHERE id IN ($1, $2)", tenant_a["id"], tenant_b["id"]
@@ -228,14 +249,16 @@ async def test_active_email_channel_unique_rejects_second(admin_conn: Any) -> No
     await admin_conn.execute(
         "INSERT INTO tenant_active_email_channel (tenant_id, channel_type, channel_ref) "
         "VALUES ($1, 'gmail', $2)",
-        tenant["id"], uuid.uuid4(),
+        tenant["id"],
+        uuid.uuid4(),
     )
     try:
         with pytest.raises(asyncpg.UniqueViolationError):
             await admin_conn.execute(
                 "INSERT INTO tenant_active_email_channel (tenant_id, channel_type, channel_ref) "
                 "VALUES ($1, 'postmark', $2)",
-                tenant["id"], uuid.uuid4(),
+                tenant["id"],
+                uuid.uuid4(),
             )
     finally:
         await admin_conn.execute(

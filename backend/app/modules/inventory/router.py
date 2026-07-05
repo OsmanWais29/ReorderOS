@@ -244,8 +244,11 @@ async def commit_receipt_endpoint(
     # the lines, so it passes confirm + affirmation to satisfy the one commit gate.
     try:
         result = await commit_receipt(
-            db, tenant_id=tenant_id, receipt_id=receipt_id,
-            confirm=True, reviewed_affirmation=True,
+            db,
+            tenant_id=tenant_id,
+            receipt_id=receipt_id,
+            confirm=True,
+            reviewed_affirmation=True,
         )
     except ReceiptNothingToCommit:
         raise HTTPException(

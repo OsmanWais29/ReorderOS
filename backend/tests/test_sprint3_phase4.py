@@ -556,11 +556,23 @@ async def test_4_10_receipt_commit_idempotency(
     )
     await db_session.commit()
 
-    await commit_receipt(db_session, tenant_id=uuid.UUID(tid), receipt_id=rid, confirm=True, reviewed_affirmation=True)
+    await commit_receipt(
+        db_session,
+        tenant_id=uuid.UUID(tid),
+        receipt_id=rid,
+        confirm=True,
+        reviewed_affirmation=True,
+    )
     await db_session.commit()
 
     # second commit
-    result2 = await commit_receipt(db_session, tenant_id=uuid.UUID(tid), receipt_id=rid, confirm=True, reviewed_affirmation=True)
+    result2 = await commit_receipt(
+        db_session,
+        tenant_id=uuid.UUID(tid),
+        receipt_id=rid,
+        confirm=True,
+        reviewed_affirmation=True,
+    )
     await db_session.commit()
 
     assert result2["status"] == "already_committed"
@@ -618,7 +630,9 @@ async def test_receipt_commit_atomic_injected_rollback(admin_conn):
         pytest.raises(RuntimeError),
     ):
         async with sm() as session:
-            await svc.commit_receipt(session, tenant_id=tid, receipt_id=rid, confirm=True, reviewed_affirmation=True)
+            await svc.commit_receipt(
+                session, tenant_id=tid, receipt_id=rid, confirm=True, reviewed_affirmation=True
+            )
             await session.commit()
     m.assert_called()  # the seam fired → movements were written before it
 

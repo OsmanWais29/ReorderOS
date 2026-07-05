@@ -29,13 +29,13 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.inventory.item_resolver import resolve_inventory_item
 from app.modules.recipes.repo import (
     DuplicateIngredient,
     EmptyDraft,
     NoDraft,
     _as_list,
     _norm,
-    _resolve_inventory_item,
 )
 
 
@@ -273,7 +273,7 @@ async def confirm_modifier(
     # step 1 — resolve units + inventory items (shared helper; side effects roll back)
     lines: list[tuple[UUID, float, str]] = []
     for ing in ingredients:
-        item_id = await _resolve_inventory_item(db, tenant_id, str(ing["name"]), str(ing["unit"]))
+        item_id = await resolve_inventory_item(db, tenant_id, str(ing["name"]), str(ing["unit"]))
         lines.append((item_id, float(ing["quantity"]), str(ing["unit"])))
 
     # step 2 — version_number = MAX+1 under the lock; immutable modifier_version

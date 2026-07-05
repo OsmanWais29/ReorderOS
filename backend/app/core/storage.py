@@ -83,6 +83,47 @@ def presigned_put_url(
     return url
 
 
+def put_bytes(key: str, data: bytes, *, content_type: str) -> None:
+    """Upload already-validated, EXIF-stripped bytes to Spaces (API-mediated path,
+    D-606-14). The server — not the client — writes the object, which is what makes
+    the magic-byte + EXIF-strip guarantees real (a presigned client PUT would never
+    pass through the server). Private ACL; the object is read back only via a signed
+    GET URL."""
+    s = get_settings()
+    if not s.spaces_bucket:
+        raise SpacesNotConfigured("DO_SPACES_BUCKET is not set")
+    client = get_spaces_client()
+    client.put_object(
+        Bucket=s.spaces_bucket,
+        Key=key,
+        Body=data,
+        ContentType=content_type,
+        ACL="private",
+    )
+
+
+def get_bytes(key: str) -> bytes:
+    """Download an object's bytes (the extraction worker re-reads the stored receipt
+    to re-validate magic bytes and feed the LLM)."""
+    s = get_settings()
+    if not s.spaces_bucket:
+        raise SpacesNotConfigured("DO_SPACES_BUCKET is not set")
+    client = get_spaces_client()
+    resp = client.get_object(Bucket=s.spaces_bucket, Key=key)
+    body: bytes = resp["Body"].read()
+    return body
+
+
+def delete_object(key: str) -> None:
+    """Delete a Spaces object — used to clean up an orphaned upload when the draft
+    INSERT fails after the PUT (orphan-safe upload, D-606-14 #5)."""
+    s = get_settings()
+    if not s.spaces_bucket:
+        raise SpacesNotConfigured("DO_SPACES_BUCKET is not set")
+    client = get_spaces_client()
+    client.delete_object(Bucket=s.spaces_bucket, Key=key)
+
+
 def presigned_get_url(key: str, *, expires_in: timedelta = timedelta(minutes=15)) -> str:
     """Pre-signed GET URL for retrieving a receipt photo."""
     s = get_settings()

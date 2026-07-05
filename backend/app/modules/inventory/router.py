@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +29,8 @@ from app.modules.inventory.schemas import (
     ReceiptLineCreate,
 )
 from app.modules.inventory.services import (
+    ReceiptNothingToCommit,
+    ReceiptReviewRequired,
     add_receipt_line,
     commit_receipt,
     create_receipt,
@@ -237,7 +239,26 @@ async def commit_receipt_endpoint(
     principal: Principal = Depends(get_principal),
 ) -> JSONResponse:
     tenant_id = UUID(principal.tenant_id)
-    result = await commit_receipt(db, tenant_id=tenant_id, receipt_id=receipt_id)
+    # Deprecated Sprint-3 manual shim (D-606-10). 'manual' is a gated intake source
+    # now: this endpoint is an authenticated manager+ action where the operator types
+    # the lines, so it passes confirm + affirmation to satisfy the one commit gate.
+    try:
+        result = await commit_receipt(
+            db,
+            tenant_id=tenant_id,
+            receipt_id=receipt_id,
+            confirm=True,
+            reviewed_affirmation=True,
+        )
+    except ReceiptNothingToCommit:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "RECEIPT_NOTHING_TO_COMMIT", "message": "Nothing to receive."},
+        ) from None
+    except ReceiptReviewRequired as exc:
+        raise HTTPException(
+            status_code=422, detail={"code": "RECEIPT_REVIEW_REQUIRED", "message": str(exc)}
+        ) from None
     await db.commit()
     return JSONResponse(
         {

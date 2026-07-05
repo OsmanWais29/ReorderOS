@@ -9,6 +9,8 @@ fails after the PUT, the just-written object is deleted.
 from __future__ import annotations
 
 import contextlib
+import json
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
@@ -17,7 +19,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import storage
+from app.modules.inventory.item_resolver import resolve_inventory_item
 from app.modules.receipts import repo
+from app.modules.receipts.schemas import LineCreate, LineUpdate, NoteCreate
 from app.modules.receipts.validation import extension_for, validate_and_clean
 
 
@@ -33,6 +37,24 @@ class ReviewInProgress(Exception):
 
 class ReceiptNotCommitted(Exception):
     """A post-commit adjustment was attempted on a non-committed receipt (→ 409)."""
+
+
+class ReceiptImmutable(Exception):
+    """A review mutation was attempted on a receipt that is no longer editable
+    (committed/dismissed/cancelled → 409)."""
+
+
+class LineNotFound(Exception):
+    """No line with that id on this receipt for this tenant (→ 404)."""
+
+
+class UnknownInventoryItem(Exception):
+    """inventory_item_id does not resolve to an active item for this tenant (→ 422)."""
+
+
+class ResetNeedsConfirm(Exception):
+    """reset-extraction called without discard_edits=true — destructive action
+    requires the explicit flag (→ 409 RECEIPT_RESET_NEEDS_CONFIRM)."""
 
 
 # adjustment_type → the compensating movement_type (inventory_accounting_semantics §5:
@@ -160,6 +182,319 @@ async def enqueue_extraction(
         {"rid": receipt_id, "tid": tenant_id},
     )
     return {"job_id": job_id, "status": "pending"}
+
+
+# commit_states in which a receipt's lines are still editable.
+_EDITABLE_STATES = ("draft", "pending_review")
+
+
+async def _lock_editable_receipt(db: AsyncSession, tenant_id: UUID, receipt_id: UUID) -> None:
+    """FOR UPDATE the receipt and assert it is still review-editable. Serializes
+    concurrent line mutations against each other AND against commit (which also
+    takes FOR UPDATE), so the D-606-22/25 freshness rules see a stable state."""
+    state = (
+        await db.execute(
+            text(
+                "SELECT commit_state FROM receipts WHERE tenant_id = :tid AND id = :rid FOR UPDATE"
+            ),
+            {"tid": tenant_id, "rid": receipt_id},
+        )
+    ).scalar()
+    if state is None:
+        raise ReceiptNotFound
+    if state not in _EDITABLE_STATES:
+        raise ReceiptImmutable
+
+
+async def _touch_review(db: AsyncSession, tenant_id: UUID, receipt_id: UUID) -> None:
+    """The D-606-25 side-effect of EVERY line mutation: review_started_at is set on
+    the first active edit (never on open/poll — the worker's hard-stop keys on it),
+    and reviewed_affirmation is cleared so the D-606-22 guard must be re-satisfied
+    against the post-edit line set."""
+    await db.execute(
+        text("""
+            UPDATE receipts
+               SET review_started_at = COALESCE(review_started_at, now()),
+                   reviewed_affirmation = false,
+                   updated_at = now()
+             WHERE tenant_id = :tid AND id = :rid
+        """),
+        {"tid": tenant_id, "rid": receipt_id},
+    )
+
+
+async def _assert_active_item(db: AsyncSession, tenant_id: UUID, item_id: UUID) -> None:
+    found = (
+        await db.execute(
+            text(
+                "SELECT 1 FROM inventory_items "
+                "WHERE tenant_id = :tid AND id = :iid AND active = true"
+            ),
+            {"tid": tenant_id, "iid": item_id},
+        )
+    ).scalar()
+    if found is None:
+        raise UnknownInventoryItem
+
+
+async def update_line(
+    db: AsyncSession,
+    *,
+    tenant_id: UUID,
+    receipt_id: UUID,
+    line_id: UUID,
+    patch: LineUpdate,
+) -> dict[str, Any]:
+    """Edit one line per the D-606-25/26 lifecycle (schema-validated combinations):
+
+    - link existing item  → match_status='matched',  manually_corrected=true
+    - create-and-link     → match_status='created',  manually_corrected=true
+      (shared resolver — same race-safe path recipe confirm uses; UnitTypeConflict
+      propagates to a 409)
+    - clear item (null)   → match_status='unmatched', manually_corrected=false
+    - qty/unit/price/name → manually_corrected=true
+    - skipped=true        → match_status='skipped' (item/corrected untouched);
+      skipped=false       → 'matched' if an item is set else 'unmatched'
+    Every variant runs _touch_review (D-606-25). Returns the updated line row."""
+    await _lock_editable_receipt(db, tenant_id, receipt_id)
+
+    line = (
+        (
+            await db.execute(
+                text("""
+                    SELECT id, inventory_item_id, match_status
+                      FROM receipt_lines
+                     WHERE tenant_id = :tid AND receipt_id = :rid AND id = :lid
+                     FOR UPDATE
+                """),
+                {"tid": tenant_id, "rid": receipt_id, "lid": line_id},
+            )
+        )
+        .mappings()
+        .fetchone()
+    )
+    if line is None:
+        raise LineNotFound
+
+    sets: list[str] = []
+    params: dict[str, Any] = {"tid": tenant_id, "rid": receipt_id, "lid": line_id}
+    fields = patch.model_fields_set
+
+    if "skipped" in fields:
+        if patch.skipped:
+            sets.append("match_status = 'skipped'")
+        else:
+            restored = "matched" if line["inventory_item_id"] is not None else "unmatched"
+            sets.append("match_status = :ms")
+            params["ms"] = restored
+    elif "inventory_item_id" in fields:
+        if patch.inventory_item_id is None:
+            # D-606-26: revert to machine state — never a matched row with NULL item.
+            sets.append("inventory_item_id = NULL")
+            sets.append("match_status = 'unmatched'")
+            sets.append("manually_corrected = false")
+        else:
+            await _assert_active_item(db, tenant_id, patch.inventory_item_id)
+            sets.append("inventory_item_id = :iid")
+            sets.append("match_status = 'matched'")
+            sets.append("manually_corrected = true")
+            params["iid"] = patch.inventory_item_id
+    elif patch.new_item_name is not None:
+        assert patch.new_item_unit is not None  # schema-enforced
+        item_id = await resolve_inventory_item(
+            db, tenant_id, patch.new_item_name, patch.new_item_unit
+        )
+        sets.append("inventory_item_id = :iid")
+        sets.append("match_status = 'created'")
+        sets.append("manually_corrected = true")
+        params["iid"] = item_id
+
+    field_edits = fields & {
+        "received_quantity",
+        "extracted_unit",
+        "unit_cost_cents",
+        "extracted_name",
+    }
+    for col in field_edits:
+        sets.append(f"{col} = :{col}")
+        params[col] = getattr(patch, col)
+    if field_edits:
+        sets.append("manually_corrected = true")
+
+    await db.execute(
+        text(f"""
+            UPDATE receipt_lines SET {", ".join(sets)}
+             WHERE tenant_id = :tid AND receipt_id = :rid AND id = :lid
+        """),  # noqa: S608 — `sets` is built ONLY from hardcoded column literals above
+        params,
+    )
+    await _touch_review(db, tenant_id, receipt_id)
+
+    updated = (
+        (
+            await db.execute(
+                text("""
+                    SELECT id, extracted_name, inventory_item_id, received_quantity,
+                           extracted_unit, unit_cost_cents, confidence,
+                           manually_corrected, match_status, line_ordinal
+                      FROM receipt_lines
+                     WHERE tenant_id = :tid AND receipt_id = :rid AND id = :lid
+                """),
+                {"tid": tenant_id, "rid": receipt_id, "lid": line_id},
+            )
+        )
+        .mappings()
+        .one()
+    )
+    return dict(updated)
+
+
+async def add_line(
+    db: AsyncSession,
+    *,
+    tenant_id: UUID,
+    receipt_id: UUID,
+    body: LineCreate,
+) -> dict[str, Any]:
+    """Append an operator line (extraction_job_id NULL — never collides with the
+    machine lines' job-keyed unique index). Ordinal continues after the existing
+    lines so display order is stable. D-606-26: 'matched' + manually_corrected only
+    when an item is linked at creation; otherwise 'unmatched' until a later PUT."""
+    await _lock_editable_receipt(db, tenant_id, receipt_id)
+
+    if body.inventory_item_id is not None:
+        await _assert_active_item(db, tenant_id, body.inventory_item_id)
+
+    next_ordinal = (
+        await db.execute(
+            text(
+                "SELECT COALESCE(MAX(line_ordinal), -1) + 1 FROM receipt_lines "
+                "WHERE tenant_id = :tid AND receipt_id = :rid"
+            ),
+            {"tid": tenant_id, "rid": receipt_id},
+        )
+    ).scalar_one()
+
+    line_id = uuid4()
+    await db.execute(
+        text("""
+            INSERT INTO receipt_lines
+                (id, tenant_id, receipt_id, inventory_item_id, extracted_name,
+                 received_quantity, extracted_unit, unit_cost_cents,
+                 match_status, manually_corrected, line_ordinal)
+            VALUES
+                (:id, :tid, :rid, :iid, :name,
+                 :qty, :unit, :cost,
+                 :ms, :mc, :ord)
+        """),
+        {
+            "id": line_id,
+            "tid": tenant_id,
+            "rid": receipt_id,
+            "iid": body.inventory_item_id,
+            "name": body.extracted_name,
+            "qty": body.received_quantity,
+            "unit": body.extracted_unit,
+            "cost": body.unit_cost_cents,
+            "ms": "matched" if body.inventory_item_id is not None else "unmatched",
+            "mc": body.inventory_item_id is not None,
+            "ord": next_ordinal,
+        },
+    )
+    await _touch_review(db, tenant_id, receipt_id)
+
+    return {
+        "id": line_id,
+        "extracted_name": body.extracted_name,
+        "inventory_item_id": body.inventory_item_id,
+        "received_quantity": float(body.received_quantity),
+        "extracted_unit": body.extracted_unit,
+        "unit_cost_cents": body.unit_cost_cents,
+        "confidence": None,
+        "manually_corrected": body.inventory_item_id is not None,
+        "match_status": "matched" if body.inventory_item_id is not None else "unmatched",
+        "line_ordinal": next_ordinal,
+    }
+
+
+async def reset_extraction(
+    db: AsyncSession,
+    *,
+    tenant_id: UUID,
+    receipt_id: UUID,
+    discard_edits: bool,
+) -> dict[str, Any]:
+    """Destructive start-over (spec §5, v6.6): requires discard_edits=true. Deletes
+    ALL lines (machine + operator), clears review_started_at / reviewed_affirmation /
+    quota_blocked(+until), supersedes any still-queued jobs (a stale pending job must
+    not resurrect the pre-reset state), then re-enqueues. Notes are PRESERVED (audit).
+    """
+    if not discard_edits:
+        raise ResetNeedsConfirm
+    await _lock_editable_receipt(db, tenant_id, receipt_id)
+
+    await db.execute(
+        text("DELETE FROM receipt_lines WHERE tenant_id = :tid AND receipt_id = :rid"),
+        {"tid": tenant_id, "rid": receipt_id},
+    )
+    await db.execute(
+        text("""
+            UPDATE receipts
+               SET review_started_at = NULL,
+                   reviewed_affirmation = false,
+                   quota_blocked = false,
+                   quota_blocked_until = NULL,
+                   updated_at = now()
+             WHERE tenant_id = :tid AND id = :rid
+        """),
+        {"tid": tenant_id, "rid": receipt_id},
+    )
+    await db.execute(
+        text("""
+            UPDATE receipt_extraction_jobs
+               SET status = 'superseded'
+             WHERE tenant_id = :tid AND receipt_id = :rid
+               AND status IN ('pending', 'quota_blocked')
+        """),
+        {"tid": tenant_id, "rid": receipt_id},
+    )
+    # review_started_at is now NULL, so the normal enqueue path applies (it also
+    # sets extraction_status='pending' and clears quota_blocked).
+    return await enqueue_extraction(db, tenant_id=tenant_id, receipt_id=receipt_id)
+
+
+async def append_note(
+    db: AsyncSession,
+    *,
+    tenant_id: UUID,
+    receipt_id: UUID,
+    body: NoteCreate,
+    user_id: UUID,
+) -> dict[str, Any]:
+    """Append to the notes_log JSONB audit trail. Allowed in ANY commit_state —
+    notes on a committed receipt (e.g. recording why an adjustment was made) are
+    legitimate audit entries, and reset-extraction deliberately preserves them."""
+    note = {
+        "id": str(uuid4()),
+        "user_id": str(user_id),
+        "text": body.text,
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    updated = (
+        await db.execute(
+            text("""
+                UPDATE receipts
+                   SET notes_log = notes_log || CAST(:note AS jsonb),
+                       updated_at = now()
+                 WHERE tenant_id = :tid AND id = :rid
+                 RETURNING id
+            """),
+            {"tid": tenant_id, "rid": receipt_id, "note": json.dumps(note)},
+        )
+    ).scalar()
+    if updated is None:
+        raise ReceiptNotFound
+    return note
 
 
 async def create_adjustment(

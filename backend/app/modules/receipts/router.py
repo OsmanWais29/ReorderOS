@@ -20,6 +20,7 @@ from app.core import storage
 from app.core.deps import get_rls_session
 from app.core.security import Principal, require_role
 from app.modules.inventory.depletion.conversions import ConversionError
+from app.modules.inventory.item_resolver import UnitTypeConflict
 from app.modules.inventory.services import (
     ReceiptNothingToCommit,
     ReceiptReviewRequired,
@@ -30,9 +31,15 @@ from app.modules.receipts.schemas import (
     AdjustRequest,
     CommitRequest,
     DismissRequest,
+    LineCreate,
+    LineUpdate,
+    NoteCreate,
+    NoteOut,
     ReceiptCreate,
     ReceiptDetail,
+    ReceiptLineOut,
     ReceiptListItem,
+    ResetExtractionRequest,
     UploadResponse,
 )
 from app.modules.receipts.validation import ReceiptValidationError
@@ -145,6 +152,127 @@ async def get_receipt(
         else None
     )
     return receipt
+
+
+@router.put("/{receipt_id}/lines/{line_id}", response_model=ReceiptLineOut)
+async def update_receipt_line(
+    receipt_id: UUID,
+    line_id: UUID,
+    body: LineUpdate,
+    db: AsyncSession = Depends(get_rls_session),
+    principal: Principal = require_role("staff"),
+) -> dict[str, Any]:
+    """Review-edit one line (D-606-25/26): link/create/clear the item, fix
+    qty/unit/price/name, or skip/unskip. Every variant sets review_started_at (first
+    active edit) and clears reviewed_affirmation."""
+    try:
+        result = await services.update_line(
+            db,
+            tenant_id=UUID(principal.tenant_id),
+            receipt_id=receipt_id,
+            line_id=line_id,
+            patch=body,
+        )
+    except services.ReceiptNotFound:
+        raise HTTPException(status_code=404, detail="Receipt not found") from None
+    except services.LineNotFound:
+        raise HTTPException(status_code=404, detail="Line not found") from None
+    except services.ReceiptImmutable:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "RECEIPT_NOT_EDITABLE", "message": "Receipt is no longer editable."},
+        ) from None
+    except services.UnknownInventoryItem:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "RECEIPT_UNKNOWN_ITEM", "message": "No such active inventory item."},
+        ) from None
+    except UnitTypeConflict as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": "UNIT_TYPE_CONFLICT", "message": str(exc)}
+        ) from None
+    return result
+
+
+@router.post("/{receipt_id}/lines", response_model=ReceiptLineOut, status_code=201)
+async def add_receipt_line(
+    receipt_id: UUID,
+    body: LineCreate,
+    db: AsyncSession = Depends(get_rls_session),
+    principal: Principal = require_role("staff"),
+) -> dict[str, Any]:
+    """Add an operator line. Sets review_started_at / clears reviewed_affirmation
+    (D-606-25) like any other line mutation."""
+    try:
+        result = await services.add_line(
+            db, tenant_id=UUID(principal.tenant_id), receipt_id=receipt_id, body=body
+        )
+    except services.ReceiptNotFound:
+        raise HTTPException(status_code=404, detail="Receipt not found") from None
+    except services.ReceiptImmutable:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "RECEIPT_NOT_EDITABLE", "message": "Receipt is no longer editable."},
+        ) from None
+    except services.UnknownInventoryItem:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "RECEIPT_UNKNOWN_ITEM", "message": "No such active inventory item."},
+        ) from None
+    return result
+
+
+@router.post("/{receipt_id}/reset-extraction", status_code=202)
+async def reset_receipt_extraction(
+    receipt_id: UUID,
+    body: ResetExtractionRequest,
+    db: AsyncSession = Depends(get_rls_session),
+    principal: Principal = require_role("staff"),
+) -> dict[str, Any]:
+    """Destructive start-over-from-the-machine: requires {discard_edits: true} or
+    409s — operator work is never discarded implicitly. Notes are preserved."""
+    try:
+        return await services.reset_extraction(
+            db,
+            tenant_id=UUID(principal.tenant_id),
+            receipt_id=receipt_id,
+            discard_edits=body.discard_edits,
+        )
+    except services.ResetNeedsConfirm:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "RECEIPT_RESET_NEEDS_CONFIRM",
+                "message": "Resetting discards all lines and edits; pass discard_edits=true.",
+            },
+        ) from None
+    except services.ReceiptNotFound:
+        raise HTTPException(status_code=404, detail="Receipt not found") from None
+    except services.ReceiptImmutable:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "RECEIPT_NOT_EDITABLE", "message": "Receipt is no longer editable."},
+        ) from None
+
+
+@router.post("/{receipt_id}/notes", response_model=NoteOut, status_code=201)
+async def add_receipt_note(
+    receipt_id: UUID,
+    body: NoteCreate,
+    db: AsyncSession = Depends(get_rls_session),
+    principal: Principal = require_role("staff"),
+) -> dict[str, Any]:
+    """Append to the notes_log audit trail (any commit_state)."""
+    try:
+        return await services.append_note(
+            db,
+            tenant_id=UUID(principal.tenant_id),
+            receipt_id=receipt_id,
+            body=body,
+            user_id=UUID(principal.user_id),
+        )
+    except services.ReceiptNotFound:
+        raise HTTPException(status_code=404, detail="Receipt not found") from None
 
 
 @router.delete("/{receipt_id}", status_code=204)

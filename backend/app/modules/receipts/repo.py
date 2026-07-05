@@ -16,6 +16,8 @@ from uuid import UUID, uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.inventory.item_resolver import suggest_inventory_items
+
 # commit_states a draft can still be dismissed/cancelled/deleted from.
 _MUTABLE_STATES = ("draft", "pending_review")
 
@@ -66,7 +68,9 @@ async def create_draft(
 
 
 async def get_receipt(db: AsyncSession, tenant_id: UUID, receipt_id: UUID) -> dict[str, Any] | None:
-    """Full draft: header + lines. None if not this tenant's (→ 404)."""
+    """Full draft for the review screen (spec §5): header + lines + per-line match
+    suggestions (unmatched lines only — a suggestion, never an auto-match, D-606-26).
+    None if not this tenant's (→ 404)."""
     header = (
         (
             await db.execute(
@@ -74,7 +78,9 @@ async def get_receipt(db: AsyncSession, tenant_id: UUID, receipt_id: UUID) -> di
                 SELECT id, source, commit_state, extraction_status, supplier_name,
                        total_cents, manual_entry_required, quota_blocked, created_at,
                        photo_object_key, mime_type, invoice_number, invoice_date,
-                       extraction_confidence, review_visibility_status
+                       subtotal_cents, tax_cents, extraction_confidence,
+                       review_visibility_status, sender_email, filter_flags,
+                       reviewed_affirmation, review_started_at, notes_log
                   FROM receipts
                  WHERE tenant_id = :tid AND id = :rid
             """),
@@ -92,8 +98,8 @@ async def get_receipt(db: AsyncSession, tenant_id: UUID, receipt_id: UUID) -> di
             await db.execute(
                 text("""
                 SELECT id, extracted_name, inventory_item_id, received_quantity,
-                       unit_cost_cents, confidence, manually_corrected, match_status,
-                       line_ordinal
+                       extracted_unit, unit_cost_cents, confidence, manually_corrected,
+                       match_status, line_ordinal
                   FROM receipt_lines
                  WHERE tenant_id = :tid AND receipt_id = :rid
                  ORDER BY line_ordinal NULLS LAST, id
@@ -106,7 +112,15 @@ async def get_receipt(db: AsyncSession, tenant_id: UUID, receipt_id: UUID) -> di
     )
 
     result = dict(header)
-    result["lines"] = [dict(line) for line in lines]
+    result["lines"] = []
+    for line in lines:
+        row = dict(line)
+        row["suggestions"] = (
+            await suggest_inventory_items(db, tenant_id, row["extracted_name"], limit=3)
+            if row["match_status"] == "unmatched" and row["extracted_name"]
+            else []
+        )
+        result["lines"].append(row)
     return result
 
 

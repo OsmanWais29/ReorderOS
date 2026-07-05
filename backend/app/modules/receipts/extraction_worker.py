@@ -131,8 +131,8 @@ class ExtractionWorker:
                     raw = storage.get_bytes(receipt["photo_object_key"])
                     _mime, _clean = validate_and_clean(raw, filename=None)
                 except ReceiptValidationError as exc:
-                    await self._terminal(s, jid, token, "failed_terminal", exc.code)
-                    await self._mark_receipt_failed(s, receipt_id, tenant_id)
+                    if await self._terminal(s, jid, token, "failed_terminal", exc.code):
+                        await self._mark_receipt_failed(s, receipt_id, tenant_id)
                     await s.commit()
                     return
                 except storage.SpacesNotConfigured:
@@ -187,8 +187,19 @@ class ExtractionWorker:
                 await s.commit()
                 return
 
-            await self._apply(s, jid, token, job, receipt_id, tenant_id, payload)
-            await s.commit()
+            if await self._apply(s, jid, token, job, receipt_id, tenant_id, payload):
+                await s.commit()
+            else:
+                # Fence miss on the terminal write: the job was reclaimed or reset
+                # mid-flight. The lines + receipt-header writes above it share this
+                # transaction — roll back so this stale worker applies NOTHING.
+                await s.rollback()
+                log.info(
+                    "receipt.extraction.lease_lost",
+                    tenant_id=str(tenant_id),
+                    receipt_id=str(receipt_id),
+                    job_id=str(jid),
+                )
 
     # ── stages ────────────────────────────────────────────────────────────────
 
@@ -201,7 +212,11 @@ class ExtractionWorker:
         receipt_id: UUID,
         tenant_id: UUID,
         payload: dict[str, Any],
-    ) -> None:
+    ) -> bool:
+        """Apply the extraction result. Returns the FENCE result: False means the
+        lease was lost mid-flight and the caller must roll back the transaction
+        (the receipt/line writes here are deliberately unfenced — the single fenced
+        terminal write at the end arbitrates for all of them atomically)."""
         if str(payload.get("document_type")) == "not_invoice":
             await s.execute(
                 text(
@@ -211,8 +226,7 @@ class ExtractionWorker:
                 ),
                 {"rid": receipt_id, "tid": tenant_id},
             )
-            await self._terminal(s, jid, token, "complete", None)
-            return
+            return await self._terminal(s, jid, token, "complete", None)
 
         raw_lines = payload.get("lines")
         lines = raw_lines if isinstance(raw_lines, list) else []
@@ -282,7 +296,7 @@ class ExtractionWorker:
                 "tid": tenant_id,
             },
         )
-        await self._terminal(s, jid, token, "complete", None)
+        return await self._terminal(s, jid, token, "complete", None)
 
     async def _charge_quota(self, s: AsyncSession, tenant_id: UUID) -> int | None:
         """Atomic UTC daily-cap upsert (D-606-23). Returns jobs_today, or None if the
@@ -313,16 +327,20 @@ class ExtractionWorker:
     async def _quota_block(
         self, s: AsyncSession, jid: UUID, token: UUID, receipt_id: UUID, tenant_id: UUID
     ) -> None:
-        await s.execute(
-            text("""
+        fenced = (
+            await s.execute(
+                text("""
                 UPDATE receipt_extraction_jobs
                    SET status='quota_blocked',
                        quota_blocked_until = ((now() AT TIME ZONE 'utc')::date + 1)::timestamp
                                              AT TIME ZONE 'utc'
-                 WHERE id=:jid AND lease_token=:tok
+                 WHERE id=:jid AND lease_token=:tok RETURNING id
             """),
-            {"jid": jid, "tok": token},
-        )
+                {"jid": jid, "tok": token},
+            )
+        ).fetchone()
+        if fenced is None:
+            return  # lease lost — do not project quota state onto the receipt
         await s.execute(
             text(
                 "UPDATE receipts SET quota_blocked=true, "
@@ -346,8 +364,8 @@ class ExtractionWorker:
         """Retriable failure: bump attempts; after MAX_ATTEMPTS it becomes terminal."""
         new_attempts = job["attempts"] + 1
         if new_attempts >= MAX_ATTEMPTS:
-            await self._terminal(s, jid, token, "failed_terminal", error, attempts=new_attempts)
-            await self._mark_receipt_failed(s, receipt_id, tenant_id)
+            if await self._terminal(s, jid, token, "failed_terminal", error, attempts=new_attempts):
+                await self._mark_receipt_failed(s, receipt_id, tenant_id)
         else:
             await s.execute(
                 text(
@@ -360,14 +378,16 @@ class ExtractionWorker:
     async def _supersede(
         self, s: AsyncSession, jid: UUID, token: UUID, receipt_id: UUID, tenant_id: UUID
     ) -> None:
-        await self._terminal(s, jid, token, "superseded", None)
-        await s.execute(
-            text(
-                "UPDATE receipts SET extraction_status='superseded', quota_blocked=false, "
-                "updated_at=now() WHERE id=:rid AND tenant_id=:tid"
-            ),
-            {"rid": receipt_id, "tid": tenant_id},
-        )
+        # Receipt projection only when the fence held — a reset receipt is already
+        # 'pending' for its NEW job; a stale worker must not stomp that.
+        if await self._terminal(s, jid, token, "superseded", None):
+            await s.execute(
+                text(
+                    "UPDATE receipts SET extraction_status='superseded', quota_blocked=false, "
+                    "updated_at=now() WHERE id=:rid AND tenant_id=:tid"
+                ),
+                {"rid": receipt_id, "tid": tenant_id},
+            )
 
     async def _mark_receipt_failed(
         self, s: AsyncSession, receipt_id: UUID, tenant_id: UUID
@@ -402,23 +422,30 @@ class ExtractionWorker:
         error: str | None,
         *,
         attempts: int | None = None,
-    ) -> None:
-        """Fenced terminal status write (WHERE lease_token matches)."""
-        await s.execute(
-            text(
-                "UPDATE receipt_extraction_jobs SET status=:st, completed_at=now(), "
-                "last_error=COALESCE(:err, last_error), "
-                "attempts=COALESCE(:att, attempts) "
-                "WHERE id=:jid AND lease_token=:tok"
-            ),
-            {
-                "st": status,
-                "err": error[:500] if error else None,
-                "att": attempts,
-                "jid": jid,
-                "tok": token,
-            },
-        )
+    ) -> bool:
+        """Fenced terminal status write (WHERE lease_token matches). Returns False
+        when the fence missed — the lease was reclaimed or rotated (reset-extraction
+        sets lease_token NULL, which never equals a held token). The CALLER must
+        treat False as lost-lease and not let any sibling receipt/line writes in the
+        same transaction commit."""
+        row = (
+            await s.execute(
+                text(
+                    "UPDATE receipt_extraction_jobs SET status=:st, completed_at=now(), "
+                    "last_error=COALESCE(:err, last_error), "
+                    "attempts=COALESCE(:att, attempts) "
+                    "WHERE id=:jid AND lease_token=:tok RETURNING id"
+                ),
+                {
+                    "st": status,
+                    "err": error[:500] if error else None,
+                    "att": attempts,
+                    "jid": jid,
+                    "tok": token,
+                },
+            )
+        ).fetchone()
+        return row is not None
 
 
 # ── lenient coercions (LLM output is untrusted data) ──────────────────────────

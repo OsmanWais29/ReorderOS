@@ -1,20 +1,27 @@
-// Stock tab (Sprint 6 FE) — makes the depletion engine's output visible.
-// Reads GET /inventory/items (computed on_hand + par_level + stock_status), offers a
-// low-stock filter, and a one-shot "set starting stock" form (POST opening-balance —
-// server-idempotent per item, so it can never double-add) for items with nothing on hand.
-// Bilingual via useLang.
+// Stock tab (Sprint 6 FE) — the operational hub of the inbound+outbound loops:
+// a Receive section (photo/manual intake → drafts, spec §7 Phase B), a pending-
+// receipts strip (drafts from ALL sources → the shared review screen), and the
+// inventory list (computed on_hand + par_level + stock_status) with a low-stock
+// filter and a one-shot "set starting stock" form (POST opening-balance —
+// server-idempotent per item, so it can never double-add). Bilingual via useLang.
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
   FlatList,
   Pressable,
   RefreshControl,
+  ScrollView,
+  Alert,
   StyleSheet,
 } from 'react-native';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import * as ImagePicker from 'expo-image-picker';
 import { Button, Field, Pill } from '@/components/atoms';
+import { Icon } from '@/components/Icon';
+import { ReceiptSourceBadge } from '@/components/ReceiptBits';
 import { useAuth } from '@/auth/AuthContext';
 import { useLang } from '@/i18n/LangProvider';
 import { T, TYPE } from '@/theme/tokens';
@@ -25,6 +32,14 @@ import {
   type StockItem,
   type StockStatus,
 } from '@/api/items';
+import {
+  listReceipts,
+  uploadReceiptPhoto,
+  createManualReceipt,
+  extractReceipt,
+  ReceiptApiError,
+  type ReceiptListItem,
+} from '@/api/receipts';
 
 type Filter = 'all' | 'low';
 
@@ -45,6 +60,7 @@ function fmtQty(n: number): string {
 export default function Stock() {
   const { token } = useAuth();
   const { t } = useLang();
+  const router = useRouter();
 
   const [items, setItems] = useState<StockItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +70,9 @@ export default function Stock() {
   const [qty, setQty] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [drafts, setDrafts] = useState<ReceiptListItem[]>([]);
+  const [receiving, setReceiving] = useState(false);
+  const canListDrafts = useRef(true); // GET /receipts is manager+ — staff gets 403 once, then hide
 
   const refresh = useCallback(async () => {
     if (!token) return;
@@ -64,11 +83,77 @@ export default function Stock() {
     } catch (e: unknown) {
       setError(e instanceof ItemsApiError ? e.detail : t.stockError);
     }
+    if (canListDrafts.current) {
+      try {
+        const pending = await listReceipts(token, { commit_state: 'draft' });
+        setDrafts(pending);
+      } catch (e: unknown) {
+        if (e instanceof ReceiptApiError && e.status === 403) canListDrafts.current = false;
+        // transient failures keep the last strip — the list refetches on next focus
+      }
+    }
   }, [token, t.stockError]);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  // Refetch every time the tab regains focus — a commit on the review screen
+  // must be visible in on_hand the moment the operator lands back here (FE-R4).
+  useFocusEffect(
+    useCallback(() => {
+      void refresh();
+    }, [refresh]),
+  );
+
+  // ── receive flow: photo → upload (server validates+strips) → extract → review ──
+  const receivePhoto = useCallback(
+    async (fromCamera: boolean) => {
+      if (!token || receiving) return;
+      const picker = fromCamera
+        ? ImagePicker.launchCameraAsync
+        : ImagePicker.launchImageLibraryAsync;
+      if (fromCamera) {
+        const perm = await ImagePicker.requestCameraPermissionsAsync();
+        if (!perm.granted) return;
+      }
+      // quality<1 re-encodes to JPEG on iOS — the client-side HEIC transcode the
+      // server's HEIC-reject expects (D-606-20 defense-in-depth).
+      const result = await picker({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.8 });
+      if (result.canceled || !result.assets[0]) return;
+      const asset = result.assets[0];
+      setReceiving(true);
+      try {
+        const up = await uploadReceiptPhoto(token, {
+          uri: asset.uri,
+          fileName: asset.fileName,
+          mimeType: asset.mimeType,
+        });
+        await extractReceipt(token, up.receipt_id);
+        router.push(`/receipt/${up.receipt_id}`);
+      } catch (e: unknown) {
+        Alert.alert(
+          t.rcptUploadFailedTitle,
+          e instanceof ReceiptApiError ? e.detail : t.rcptUploadFailedBody,
+        );
+      } finally {
+        setReceiving(false);
+      }
+    },
+    [token, receiving, router, t],
+  );
+
+  const receiveManual = useCallback(async () => {
+    if (!token || receiving) return;
+    setReceiving(true);
+    try {
+      const created = await createManualReceipt(token, {});
+      router.push(`/receipt/${created.receipt_id}`);
+    } catch (e: unknown) {
+      Alert.alert(
+        t.rcptUploadFailedTitle,
+        e instanceof ReceiptApiError ? e.detail : t.rcptUploadFailedBody,
+      );
+    } finally {
+      setReceiving(false);
+    }
+  }, [token, receiving, router, t]);
 
   const onPullRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -180,6 +265,61 @@ export default function Stock() {
       <View style={styles.head}>
         <Text style={styles.h1}>{t.stockTitle}</Text>
         <Text style={styles.sub}>{t.stockSub}</Text>
+
+        {/* Receive invoices (spec §7): photo/library/manual intake. The Gmail and
+            Postmark cards land with the channel PRs — same drafts, same strip. */}
+        <View style={styles.receiveRow}>
+          <Pressable
+            style={[styles.receiveBtn, receiving && styles.receiveBtnDisabled]}
+            onPress={() => void receivePhoto(true)}
+          >
+            <Icon name="camera" size={16} color={T.ac} />
+            <Text style={styles.receiveLabel}>{t.rcptTakePhoto}</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.receiveBtn, receiving && styles.receiveBtnDisabled]}
+            onPress={() => void receivePhoto(false)}
+          >
+            <Text style={styles.receiveLabel}>{t.rcptPickPhoto}</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.receiveBtn, receiving && styles.receiveBtnDisabled]}
+            onPress={() => void receiveManual()}
+          >
+            <Icon name="plus" size={16} color={T.ac} />
+            <Text style={styles.receiveLabel}>{t.rcptManual}</Text>
+          </Pressable>
+        </View>
+
+        {/* pending-receipts strip — drafts from every source open the ONE review screen */}
+        {drafts.length > 0 ? (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.strip}
+          >
+            {drafts.map((d) => (
+              <Pressable
+                key={d.id}
+                style={({ pressed }) => [styles.draftCard, pressed && styles.rowPressed]}
+                onPress={() => router.push(`/receipt/${d.id}`)}
+              >
+                <ReceiptSourceBadge source={d.source} />
+                <Text style={styles.draftName} numberOfLines={1}>
+                  {d.supplier_name ?? t.rcptDraftUntitled}
+                </Text>
+                <Text style={styles.draftMeta}>
+                  {d.extraction_status === 'pending' || d.extraction_status === 'processing'
+                    ? t.rcptExtracting
+                    : d.manual_entry_required
+                      ? t.rcptManualNeeded
+                      : t.rcptDraftReady}
+                </Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        ) : null}
+
         <View style={styles.filters}>
           {(['all', 'low'] as const).map((f) => (
             <Pressable
@@ -224,6 +364,28 @@ const styles = StyleSheet.create({
   head: { padding: T.pad, gap: 6 },
   h1: { ...TYPE.largeTitle, color: T.text },
   sub: { ...TYPE.body, color: T.sec },
+  receiveRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  receiveBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: T.acSoft,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  receiveBtnDisabled: { opacity: 0.5 },
+  receiveLabel: { ...TYPE.subhead, color: T.ac },
+  strip: { gap: 8, paddingVertical: 8 },
+  draftCard: {
+    backgroundColor: T.elev1,
+    borderRadius: 12,
+    padding: 12,
+    gap: 6,
+    width: 160,
+  },
+  draftName: { ...TYPE.subhead, color: T.text },
+  draftMeta: { ...TYPE.caption1, color: T.sec },
   filters: { flexDirection: 'row', gap: 8, marginTop: 10 },
   filterChip: {
     paddingHorizontal: 14,

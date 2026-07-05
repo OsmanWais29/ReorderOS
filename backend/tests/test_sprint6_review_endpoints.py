@@ -16,6 +16,7 @@ HTTP-level coverage of the review surface that closes the extraction → commit 
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -28,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from app.core.database import engine, get_db_session, make_bound_session
 from app.core.security import Principal, get_principal
 from app.main import create_app
+from app.modules.receipts.extraction_worker import ExtractionWorker
 
 pytestmark = pytest.mark.integration
 
@@ -476,6 +478,130 @@ async def test_reset_extraction_full_flow(
     assert r_extract2.status_code == 202
 
 
+class _ForbiddenLLM:
+    """Fake client that fails the test if the stale worker ever reaches the LLM."""
+
+    async def extract_invoice(self, **_kw: Any) -> Any:
+        raise AssertionError("stale worker must not call the LLM in this scenario")
+
+
+async def test_reset_mid_flight_supersedes_processing_and_fences_stale_worker(
+    app_instance: Any, conn: AsyncConnection, client: AsyncClient
+) -> None:
+    """The in-flight race: a worker CLAIMED a job (holds lease_token), is mid-LLM,
+    and the operator resets. The reset must (a) supersede every non-terminal job —
+    processing and retriable failed included, since the claim SQL re-claims both —
+    and (b) rotate the lease so the stale worker's fenced writes match ZERO rows:
+    no raw_extraction checkpoint, no lines, no receipt-header stomp."""
+    s = await _seed(conn)
+    _as(app_instance, str(s["tenant_id"]), str(s["user_id"]))
+
+    stale_payload = {
+        "document_type": "invoice",
+        "supplier_name": "Stale Supplier Inc",
+        "lines": [{"name": "Stale line", "qty": 1, "unit": "g", "confidence": 0.99}],
+    }
+    old_token = uuid.uuid4()
+    # Job A: mid-flight (claimed: processing + locked_at + held token), with its
+    # raw_extraction ALREADY checkpointed — the worst case, because the post-LLM
+    # code path proceeds straight to line application.
+    job_a = (
+        await conn.execute(
+            text("""
+                INSERT INTO receipt_extraction_jobs
+                    (tenant_id, receipt_id, job_attempt, status, locked_at, lease_token,
+                     raw_extraction, attempts)
+                VALUES (:tid, :rid, 2, 'processing', now(), :tok, CAST(:raw AS jsonb), 1)
+                RETURNING id
+            """),
+            {
+                "tid": s["tenant_id"],
+                "rid": s["receipt_id"],
+                "tok": old_token,
+                "raw": json.dumps(stale_payload),
+            },
+        )
+    ).scalar_one()
+    # Job B: a retriable failure — the claim SQL re-claims 'failed', so reset must
+    # supersede it too or it resurrects later.
+    job_b = (
+        await conn.execute(
+            text("""
+                INSERT INTO receipt_extraction_jobs
+                    (tenant_id, receipt_id, job_attempt, status, attempts, last_error)
+                VALUES (:tid, :rid, 3, 'failed', 1, 'transient')
+                RETURNING id
+            """),
+            {"tid": s["tenant_id"], "rid": s["receipt_id"]},
+        )
+    ).scalar_one()
+
+    r = await client.post(
+        f"/api/v1/receipts/{s['receipt_id']}/reset-extraction", json={"discard_edits": True}
+    )
+    assert r.status_code == 202, r.text
+
+    # (a) BOTH non-terminal jobs superseded, lease rotated (token+locked_at cleared).
+    jobs = (
+        (
+            await conn.execute(
+                text(
+                    "SELECT id, status, lease_token, locked_at FROM receipt_extraction_jobs "
+                    "WHERE id IN (:a, :b)"
+                ),
+                {"a": job_a, "b": job_b},
+            )
+        )
+        .mappings()
+        .all()
+    )
+    assert {row["status"] for row in jobs} == {"superseded"}
+    assert all(row["lease_token"] is None and row["locked_at"] is None for row in jobs)
+
+    # (b) The stale worker comes back from its LLM call and runs the real post-claim
+    # code with the token it still holds.
+    worker = ExtractionWorker(_ForbiddenLLM())
+    ws = make_bound_session(conn)
+
+    # Its checkpoint write is fenced out (nothing new lands in raw_extraction)...
+    assert await worker._checkpoint(ws, job_a, old_token, {"late": True}) is False
+
+    # ...and its line application reports a lost lease; per the _process contract
+    # the transaction is rolled back — NOTHING it wrote survives.
+    job_row = {"id": job_a, "job_attempt": 2, "tenant_id": s["tenant_id"], "attempts": 1}
+    applied = await worker._apply(
+        ws, job_a, old_token, job_row, s["receipt_id"], s["tenant_id"], stale_payload
+    )
+    assert applied is False
+    await ws.rollback()  # what _process does on fence miss
+
+    n_lines = (
+        await conn.execute(
+            text("SELECT count(*) FROM receipt_lines WHERE receipt_id = :r"),
+            {"r": s["receipt_id"]},
+        )
+    ).scalar_one()
+    assert n_lines == 0  # the reset receipt stays empty — no stale lines
+    header = (
+        (
+            await conn.execute(
+                text("SELECT extraction_status, supplier_name FROM receipts WHERE id = :r"),
+                {"r": s["receipt_id"]},
+            )
+        )
+        .mappings()
+        .one()
+    )
+    assert header["extraction_status"] == "pending"  # still the post-reset state
+    assert header["supplier_name"] is None  # stale header data did not land
+    status_a = (
+        await conn.execute(
+            text("SELECT status FROM receipt_extraction_jobs WHERE id = :a"), {"a": job_a}
+        )
+    ).scalar_one()
+    assert status_a == "superseded"  # the stale 'complete' flip was fenced out
+
+
 # ── notes ─────────────────────────────────────────────────────────────────────
 
 
@@ -485,10 +611,19 @@ async def test_notes_append_any_state(
     s = await _seed(conn)
     _as(app_instance, str(s["tenant_id"]), str(s["user_id"]))
 
-    r1 = await client.post(f"/api/v1/receipts/{s['receipt_id']}/notes", json={"text": "first"})
+    # Author + timestamp are SERVER-stamped: client-supplied user_id/created_at/id
+    # are ignored (NoteCreate accepts only `text`), and the endpoint can only append.
+    spoof = {
+        "text": "first",
+        "user_id": str(uuid.uuid4()),
+        "created_at": "1999-01-01T00:00:00Z",
+        "notes_log": [],
+    }
+    r1 = await client.post(f"/api/v1/receipts/{s['receipt_id']}/notes", json=spoof)
     assert r1.status_code == 201
     assert r1.json()["text"] == "first"
-    assert r1.json()["user_id"] == str(s["user_id"])
+    assert r1.json()["user_id"] == str(s["user_id"])  # the principal, not the spoof
+    assert r1.json()["created_at"].startswith("20")  # server now(), not 1999
 
     # Notes stay writable after commit (audit trail for adjustments).
     await _force_committed(conn, s)

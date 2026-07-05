@@ -426,9 +426,16 @@ async def reset_extraction(
 ) -> dict[str, Any]:
     """Destructive start-over (spec §5, v6.6): requires discard_edits=true. Deletes
     ALL lines (machine + operator), clears review_started_at / reviewed_affirmation /
-    quota_blocked(+until), supersedes any still-queued jobs (a stale pending job must
-    not resurrect the pre-reset state), then re-enqueues. Notes are PRESERVED (audit).
-    """
+    quota_blocked(+until), supersedes EVERY non-terminal job, then re-enqueues.
+    Notes are PRESERVED (audit).
+
+    The supersede covers all four resurrectable states — 'pending' and
+    'quota_blocked' (queued), 'failed' (the claim SQL re-claims retriable failures),
+    and 'processing' (in flight) — and ROTATES the lease (lease_token=NULL,
+    locked_at=NULL) so an in-flight worker's fenced writes (`WHERE lease_token=:tok`)
+    match zero rows from this moment on: it cannot checkpoint raw_extraction, apply
+    lines, or flip status after the reset. Terminal states (complete,
+    failed_terminal, skipped, superseded) are history and stay untouched."""
     if not discard_edits:
         raise ResetNeedsConfirm
     await _lock_editable_receipt(db, tenant_id, receipt_id)
@@ -452,9 +459,11 @@ async def reset_extraction(
     await db.execute(
         text("""
             UPDATE receipt_extraction_jobs
-               SET status = 'superseded'
+               SET status = 'superseded',
+                   lease_token = NULL,
+                   locked_at = NULL
              WHERE tenant_id = :tid AND receipt_id = :rid
-               AND status IN ('pending', 'quota_blocked')
+               AND status IN ('pending', 'quota_blocked', 'processing', 'failed')
         """),
         {"tid": tenant_id, "rid": receipt_id},
     )

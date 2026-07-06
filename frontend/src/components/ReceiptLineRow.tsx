@@ -10,6 +10,7 @@ import { View, Text, TextInput, Pressable, StyleSheet } from 'react-native';
 import { Pill } from '@/components/atoms';
 import { useLang } from '@/i18n/LangProvider';
 import { T, TYPE } from '@/theme/tokens';
+import { CANONICAL_UNITS } from '@/api/units';
 import type { LineUpdatePayload, ReceiptLine } from '@/api/receipts';
 
 export function ReceiptLineRow({
@@ -28,6 +29,7 @@ export function ReceiptLineRow({
   const [cost, setCost] = useState(
     line.unit_cost_cents != null ? (line.unit_cost_cents / 100).toFixed(2) : '',
   );
+  const [unitOpen, setUnitOpen] = useState(false);
 
   // Server state is the draft owner — resync local fields when the line changes.
   useEffect(() => {
@@ -85,7 +87,16 @@ export function ReceiptLineRow({
               keyboardType="decimal-pad"
               editable={!busy}
             />
-            <Text style={styles.unit}>{line.extracted_unit ?? '—'}</Text>
+            {/* the unit is EDITABLE — extraction may guess wrong or return no unit,
+                and commit converts purchase→storage from this string. Tap to pick. */}
+            <Pressable
+              disabled={busy}
+              onPress={() => setUnitOpen((o) => !o)}
+              hitSlop={6}
+              accessibilityLabel={t.rcptLineUnitEdit}
+            >
+              <Text style={styles.unitEditable}>{line.extracted_unit ?? t.rcptLineUnitNone}</Text>
+            </Pressable>
           </View>
           <View style={styles.field}>
             <Text style={styles.fieldLabel}>{t.rcptLineCost}</Text>
@@ -100,6 +111,28 @@ export function ReceiptLineRow({
               editable={!busy}
             />
           </View>
+        </View>
+      ) : null}
+
+      {!skipped && unitOpen ? (
+        <View style={styles.unitChips}>
+          {CANONICAL_UNITS.map((u) => (
+            <Pressable
+              key={u}
+              disabled={busy}
+              onPress={() => {
+                setUnitOpen(false);
+                if (u !== line.extracted_unit) onPatch({ extracted_unit: u });
+              }}
+              style={[styles.unitChip, line.extracted_unit === u && styles.unitChipOn]}
+            >
+              <Text
+                style={[styles.unitChipLabel, line.extracted_unit === u && styles.unitChipLabelOn]}
+              >
+                {u}
+              </Text>
+            </Pressable>
+          ))}
         </View>
       ) : null}
 
@@ -155,7 +188,25 @@ const styles = StyleSheet.create({
     minWidth: 64,
     textAlign: 'right',
   },
-  unit: { ...TYPE.footnote, color: T.sec },
+  unitEditable: {
+    ...TYPE.footnote,
+    color: T.ac,
+    backgroundColor: T.acSoft,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    overflow: 'hidden',
+  },
+  unitChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  unitChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 12,
+    backgroundColor: T.elev2,
+  },
+  unitChipOn: { backgroundColor: T.acSoft },
+  unitChipLabel: { ...TYPE.footnote, color: T.sec },
+  unitChipLabelOn: { color: T.ac },
   suggestions: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   suggestionChip: {
     backgroundColor: T.acSoft,

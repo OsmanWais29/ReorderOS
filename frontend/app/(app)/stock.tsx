@@ -13,7 +13,6 @@ import {
   Pressable,
   RefreshControl,
   ScrollView,
-  Alert,
   StyleSheet,
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -22,6 +21,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Button, Field, Pill } from '@/components/atoms';
 import { Icon } from '@/components/Icon';
 import { ReceiptSourceBadge } from '@/components/ReceiptBits';
+import { showError } from '@/ui/dialogs';
 import { useAuth } from '@/auth/AuthContext';
 import { useLang } from '@/i18n/LangProvider';
 import { T, TYPE } from '@/theme/tokens';
@@ -128,7 +128,7 @@ export default function Stock() {
         await extractReceipt(token, up.receipt_id);
         router.push(`/receipt/${up.receipt_id}`);
       } catch (e: unknown) {
-        Alert.alert(
+        showError(
           t.rcptUploadFailedTitle,
           e instanceof ReceiptApiError ? e.detail : t.rcptUploadFailedBody,
         );
@@ -146,7 +146,7 @@ export default function Stock() {
       const created = await createManualReceipt(token, {});
       router.push(`/receipt/${created.receipt_id}`);
     } catch (e: unknown) {
-      Alert.alert(
+      showError(
         t.rcptUploadFailedTitle,
         e instanceof ReceiptApiError ? e.detail : t.rcptUploadFailedBody,
       );

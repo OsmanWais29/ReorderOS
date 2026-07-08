@@ -7,7 +7,7 @@
 // Re-scan (reset-extraction) is explicitly confirmed — it discards all edits.
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, ScrollView, Pressable, Switch, TextInput, Alert, StyleSheet } from 'react-native';
+import { View, Text, ScrollView, Pressable, Switch, TextInput, StyleSheet } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Field } from '@/components/atoms';
@@ -15,6 +15,7 @@ import { Icon } from '@/components/Icon';
 import { ReceiptSourceBadge, ExtractionStatusBanner, ReceiptPhotoPreview } from '@/components/ReceiptBits';
 import { ReceiptLineRow } from '@/components/ReceiptLineRow';
 import { InventoryItemPicker, type ItemChoice } from '@/components/InventoryItemPicker';
+import { confirmDestructive, showSuccess } from '@/ui/dialogs';
 import { useAuth } from '@/auth/AuthContext';
 import { useLang } from '@/i18n/LangProvider';
 import { T, TYPE } from '@/theme/tokens';
@@ -153,9 +154,7 @@ export default function ReceiptReview() {
     setCommitError(null);
     try {
       await commitReceipt(token, id, affirmed);
-      Alert.alert(t.rcptCommitDoneTitle, t.rcptCommitDoneBody, [
-        { text: 'OK', onPress: () => router.back() },
-      ]);
+      showSuccess(t.rcptCommitDoneTitle, t.rcptCommitDoneBody, () => router.back());
     } catch (e: unknown) {
       if (e instanceof ReceiptApiError) {
         if (e.code === 'RECEIPT_REVIEW_REQUIRED') setCommitError(t.rcptNeedReview);
@@ -171,25 +170,24 @@ export default function ReceiptReview() {
   }, [token, id, affirmed, router, t]);
 
   const doRescan = useCallback(() => {
-    Alert.alert(t.rcptRescanTitle, t.rcptRescanBody, [
-      { text: t.rcptRescanCancel, style: 'cancel' },
-      {
-        text: t.rcptRescanConfirm,
-        style: 'destructive',
-        onPress: () => {
-          if (!token || !id) return;
-          void resetExtraction(token, id, true)
-            .then(() => {
-              pollStarted.current = null;
-              setAffirmed(false);
-              return refresh();
-            })
-            .catch((e: unknown) =>
-              setCommitError(e instanceof ReceiptApiError ? e.detail : t.rcptSaveError),
-            );
-        },
+    confirmDestructive({
+      title: t.rcptRescanTitle,
+      message: t.rcptRescanBody,
+      confirmLabel: t.rcptRescanConfirm,
+      cancelLabel: t.rcptRescanCancel,
+      onConfirm: () => {
+        if (!token || !id) return;
+        void resetExtraction(token, id, true)
+          .then(() => {
+            pollStarted.current = null;
+            setAffirmed(false);
+            return refresh();
+          })
+          .catch((e: unknown) =>
+            setCommitError(e instanceof ReceiptApiError ? e.detail : t.rcptSaveError),
+          );
       },
-    ]);
+    });
   }, [token, id, refresh, t]);
 
   const doDismiss = useCallback(async () => {
@@ -203,21 +201,19 @@ export default function ReceiptReview() {
   }, [token, id, dismissReason, router, t.rcptSaveError]);
 
   const doCancel = useCallback(() => {
-    Alert.alert(t.rcptCancelTitle, undefined, [
-      { text: t.rcptRescanCancel, style: 'cancel' },
-      {
-        text: t.rcptCancelConfirm,
-        style: 'destructive',
-        onPress: () => {
-          if (!token || !id) return;
-          void cancelReceipt(token, id)
-            .then(() => router.back())
-            .catch((e: unknown) =>
-              setCommitError(e instanceof ReceiptApiError ? e.detail : t.rcptSaveError),
-            );
-        },
+    confirmDestructive({
+      title: t.rcptCancelTitle,
+      confirmLabel: t.rcptCancelConfirm,
+      cancelLabel: t.rcptRescanCancel,
+      onConfirm: () => {
+        if (!token || !id) return;
+        void cancelReceipt(token, id)
+          .then(() => router.back())
+          .catch((e: unknown) =>
+            setCommitError(e instanceof ReceiptApiError ? e.detail : t.rcptSaveError),
+          );
       },
-    ]);
+    });
   }, [token, id, router, t]);
 
   const editable = receipt?.commit_state === 'draft' || receipt?.commit_state === 'pending_review';

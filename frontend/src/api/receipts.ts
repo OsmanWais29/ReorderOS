@@ -14,6 +14,8 @@
 // TYPE-PIN: types are hand-mirrored from app/modules/receipts/schemas.py (same
 // caveat as recipes.ts — the server's own validation is the enforcement backstop).
 
+import { Platform } from 'react-native';
+
 import { API_BASE } from '../auth/config';
 import { tenantHeader } from './activeTenant';
 
@@ -168,17 +170,25 @@ export const getReceipt = (token: string, receiptId: string) =>
   req<ReceiptDetail>(token, `/receipts/${receiptId}`);
 
 /** API-mediated photo upload (D-606-14): bytes go THROUGH the server. */
-export const uploadReceiptPhoto = (
+export const uploadReceiptPhoto = async (
   token: string,
   photo: { uri: string; fileName?: string | null; mimeType?: string | null },
 ) => {
   const form = new FormData();
-  // RN FormData file part: {uri, name, type}.
-  form.append('file', {
-    uri: photo.uri,
-    name: photo.fileName ?? 'receipt.jpg',
-    type: photo.mimeType ?? 'image/jpeg',
-  } as unknown as Blob);
+  const name = photo.fileName ?? 'receipt.jpg';
+  if (Platform.OS === 'web') {
+    // Web: the RN {uri,name,type} file-part trick serializes to "[object Object]"
+    // — fetch the picker's blob/data URI and append a real Blob instead.
+    const blob = await (await fetch(photo.uri)).blob();
+    form.append('file', blob, name);
+  } else {
+    // Native FormData file part: {uri, name, type}.
+    form.append('file', {
+      uri: photo.uri,
+      name,
+      type: photo.mimeType ?? 'image/jpeg',
+    } as unknown as Blob);
+  }
   return req<UploadResponse>(token, `/receipts/uploads`, { method: 'POST', body: form });
 };
 

@@ -168,6 +168,82 @@ async def set_active_tenant(
     )
 
 
+# ── LOCAL-ONLY dev sign-in (WorkOS-free laptop smoke tests) ───────────────────
+
+
+class DevSignInResponse(BaseModel):
+    access_token: str
+    tenant_id: str
+    email: str
+    role: str
+
+
+@router.post("/dev-sign-in", response_model=DevSignInResponse)
+async def dev_sign_in(
+    session: Annotated[object, Depends(get_session)],
+) -> DevSignInResponse:
+    """Create-or-reuse the local dev tenant + owner user and mint a dev token.
+
+    DOUBLE-GATED (modules/auth/dev_local.py): requires LOCAL_DEV_AUTH=true AND
+    app_env in {local, ci} — re-checked here on every call. Outside the gate the
+    route answers 404 (indistinguishable from not existing), so an accidentally
+    deployed flag exposes nothing. No secrets involved beyond the pre-existing
+    env-provided TOKEN_ENCRYPTION_KEY the token key derives from.
+    """
+    from app.modules.auth.dev_local import (
+        DEV_EMAIL,
+        DEV_TENANT_NAME,
+        DEV_TENANT_SLUG,
+        DEV_WORKOS_ID,
+        dev_local_auth_enabled,
+        mint_dev_token,
+    )
+
+    s = get_settings()
+    if not dev_local_auth_enabled(s):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    from sqlalchemy.ext.asyncio import AsyncSession as _AS
+
+    db: _AS = session  # type: ignore[assignment]
+
+    identity = Identity(
+        workos_id=DEV_WORKOS_ID,
+        email=DEV_EMAIL,
+        email_verified=True,
+        first_name="Dev",
+        last_name="Manager",
+    )
+    user = await upsert_user(db, identity)
+
+    # Reuse the dev tenant when this user already owns one; otherwise create it.
+    tenants = await list_tenants_for_user(db, user.id)
+    tenant = next((t for t in tenants if t.slug == DEV_TENANT_SLUG), None)
+    if tenant is None:
+        try:
+            tenant, user, _membership = await register_tenant(
+                db, identity, slug=DEV_TENANT_SLUG, name=DEV_TENANT_NAME
+            )
+        except IntegrityError:
+            # Slug exists but this user isn't a member (partially wiped dev DB):
+            # adopt the existing tenant by adding the owner membership.
+            await db.rollback()
+            from sqlalchemy import select
+
+            user = await upsert_user(db, identity)
+            found = await db.execute(select(Tenant).where(Tenant.slug == DEV_TENANT_SLUG))
+            tenant = found.scalar_one()
+            db.add(UserTenant(user_id=user.id, tenant_id=tenant.id, role="owner", active=True))
+    await db.commit()
+
+    return DevSignInResponse(
+        access_token=mint_dev_token(s),
+        tenant_id=str(tenant.id),
+        email=DEV_EMAIL,
+        role="owner",
+    )
+
+
 # ── PKCE code exchange ────────────────────────────────────────────────────────
 
 

@@ -243,6 +243,25 @@ async def get_identity(
     """Validate JWT and return Identity.  Raises 401 on any failure."""
     if not credentials:
         raise HTTPException(status_code=401, detail="Missing Authorization header")
+
+    # LOCAL-ONLY dev sign-in (modules/auth/dev_local.py). Double-gated per request:
+    # LOCAL_DEV_AUTH=true AND app_env in {local, ci} — dead code in staging/prod
+    # regardless of the flag. Non-dev tokens fall through to WorkOS UNCHANGED.
+    settings = get_settings()
+    if settings.local_dev_auth:
+        from app.modules.auth.dev_local import dev_local_auth_enabled, verify_dev_token
+
+        if dev_local_auth_enabled(settings):
+            dev_claims = verify_dev_token(settings, credentials.credentials)
+            if dev_claims is not None:
+                return Identity(
+                    workos_id=dev_claims["sub"],
+                    email=dev_claims["email"],
+                    email_verified=bool(dev_claims.get("email_verified", False)),
+                    first_name=dev_claims.get("first_name"),
+                    last_name=dev_claims.get("last_name"),
+                )
+
     claims = await verifier.verify(credentials.credentials)
 
     workos_id: str = claims["sub"]

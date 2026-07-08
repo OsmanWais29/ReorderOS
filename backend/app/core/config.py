@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     app_log_level: str = Field(default="INFO", alias="APP_LOG_LEVEL")
     app_port: int = Field(default=8000, alias="APP_PORT")
 
+    # WorkOS-free dev sign-in for laptop smoke tests (modules/auth/dev_local.py).
+    # DOUBLE-GATED: this flag AND app_env in {local, ci}. Staging/production never
+    # qualify regardless of the flag; the gate is re-checked on every request.
+    local_dev_auth: bool = Field(default=False, alias="LOCAL_DEV_AUTH")
+
     # ── Database ─────────────────────────────────────────────────────────────
     # Async DSN (asyncpg). DigitalOcean App Platform injects ``postgresql://``
     # when binding a managed database; the validator upgrades that to the

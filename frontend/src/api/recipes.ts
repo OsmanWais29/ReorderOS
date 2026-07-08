@@ -16,6 +16,7 @@
 // option; not built now (codegen toolchain isn't worth it for this surface yet).
 
 import { API_BASE } from '../auth/config';
+import { tenantHeader } from './activeTenant';
 
 // ── Error type: lets the UI branch on 409 (confirmed) / 400 (zero ingredients) ──────────
 export class RecipeApiError extends Error {
@@ -34,6 +35,7 @@ async function req<T>(token: string, path: string, init?: RequestInit): Promise<
     ...init,
     headers: {
       Authorization: `Bearer ${token}`,
+      ...tenantHeader(), // X-Tenant-Id — required by resolve_principal (400 without)
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
       ...(init?.headers ?? {}),
     },

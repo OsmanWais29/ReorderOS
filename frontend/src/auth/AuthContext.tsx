@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { loadToken, saveToken, clearToken } from './storage';
 import { fetchMe, type MeResponse } from './api';
+import { setActiveTenantId } from '../api/activeTenant';
 
 type AuthState = {
   token: string | null;
@@ -30,6 +31,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           const profile = await fetchMe(stored);
           setToken(stored);
           setMe(profile);
+          setActiveTenantId(profile.tenants[0]?.id ?? null);
         } catch {
           await clearToken();
         }
@@ -43,12 +45,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const profile = await fetchMe(newToken);
     setToken(newToken);
     setMe(profile);
+    setActiveTenantId(profile.tenants[0]?.id ?? null);
   };
 
   const signOut = async () => {
     await clearToken();
     setToken(null);
     setMe(null);
+    setActiveTenantId(null);
   };
 
   return (

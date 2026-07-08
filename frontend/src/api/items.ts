@@ -13,6 +13,7 @@
 // (same caveat as recipes.ts — the server's own validation is the enforcement backstop).
 
 import { API_BASE } from '../auth/config';
+import { tenantHeader } from './activeTenant';
 
 export class ItemsApiError extends Error {
   status: number;
@@ -30,6 +31,7 @@ async function req<T>(token: string, path: string, init?: RequestInit): Promise<
     ...init,
     headers: {
       Authorization: `Bearer ${token}`,
+      ...tenantHeader(), // X-Tenant-Id — required by resolve_principal (400 without)
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
       ...(init?.headers ?? {}),
     },

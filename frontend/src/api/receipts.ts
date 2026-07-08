@@ -15,6 +15,7 @@
 // caveat as recipes.ts — the server's own validation is the enforcement backstop).
 
 import { API_BASE } from '../auth/config';
+import { tenantHeader } from './activeTenant';
 
 // ── Error type: stable codes let the UI branch (RECEIPT_REVIEW_REQUIRED, ...) ──
 export class ReceiptApiError extends Error {
@@ -35,6 +36,7 @@ async function req<T>(token: string, path: string, init?: RequestInit): Promise<
     ...init,
     headers: {
       Authorization: `Bearer ${token}`,
+      ...tenantHeader(), // X-Tenant-Id — required by resolve_principal (400 without)
       // JSON content-type ONLY for string bodies — a FormData body must keep the
       // fetch-generated multipart boundary (uploadReceiptPhoto).
       ...(typeof init?.body === 'string' ? { 'Content-Type': 'application/json' } : {}),

@@ -6,7 +6,7 @@
 // D-606-25) → affirm → commit (manager; server-authoritative gate, D-606-22).
 // Re-scan (reset-extraction) is explicitly confirmed — it discards all edits.
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, ScrollView, Pressable, Switch, TextInput, StyleSheet } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -54,6 +54,7 @@ export default function ReceiptReview() {
   const [addName, setAddName] = useState('');
   const [addQty, setAddQty] = useState('');
   const [addUnit, setAddUnit] = useState<string | null>(null);
+  const [addCost, setAddCost] = useState(''); // unit cost in dollars; '' = not entered
   const pollStarted = useRef<number | null>(null);
   const [pollTick, setPollTick] = useState(0);
 
@@ -130,23 +131,44 @@ export default function ReceiptReview() {
     if (!token || !id || !addUnit) return;
     const n = Number(addQty.replace(',', '.'));
     if (!addName.trim() || !Number.isFinite(n) || n <= 0) return;
+    // Unit cost is optional at add-time (an operator may not know it yet), but when
+    // present it must be a valid non-negative amount. Dollars → integer cents.
+    const costTrimmed = addCost.trim();
+    let costCents: number | null = null;
+    if (costTrimmed !== '') {
+      const c = Number(costTrimmed.replace(',', '.'));
+      if (!Number.isFinite(c) || c < 0) return;
+      costCents = Math.round(c * 100);
+    }
     setCommitError(null);
     try {
       await addLine(token, id, {
         extracted_name: addName.trim(),
         received_quantity: n,
         extracted_unit: addUnit,
+        unit_cost_cents: costCents,
       });
       setAddName('');
       setAddQty('');
       setAddUnit(null);
+      setAddCost('');
       setAddOpen(false);
       setAffirmed(false);
       await refresh();
     } catch (e: unknown) {
       setCommitError(e instanceof ReceiptApiError ? e.detail : t.rcptSaveError);
     }
-  }, [token, id, addName, addQty, addUnit, refresh, t.rcptSaveError]);
+  }, [token, id, addName, addQty, addUnit, addCost, refresh, t.rcptSaveError]);
+
+  // Live line total for the add form (quantity × unit cost), shown when both are valid.
+  const addLineTotal = useMemo(() => {
+    const q = Number(addQty.replace(',', '.'));
+    const c = Number(addCost.replace(',', '.'));
+    if (!Number.isFinite(q) || q <= 0 || addCost.trim() === '' || !Number.isFinite(c) || c < 0) {
+      return null;
+    }
+    return (q * c).toFixed(2);
+  }, [addQty, addCost]);
 
   const doCommit = useCallback(async () => {
     if (!token || !id) return;
@@ -218,6 +240,16 @@ export default function ReceiptReview() {
 
   const editable = receipt?.commit_state === 'draft' || receipt?.commit_state === 'pending_review';
   const committed = receipt?.commit_state === 'committed';
+
+  // Receiving lines (not skipped) that will move stock but carry no unit cost — these
+  // leave food cost incomplete for that item, so we warn before commit (D-606-09).
+  const missingCostCount = useMemo(
+    () =>
+      (receipt?.lines ?? []).filter(
+        (ln) => ln.match_status !== 'skipped' && ln.unit_cost_cents == null,
+      ).length,
+    [receipt?.lines],
+  );
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
@@ -306,6 +338,19 @@ export default function ReceiptReview() {
                     </Pressable>
                   ))}
                 </View>
+                <Field
+                  label={t.rcptAddCost}
+                  hint={addCost.trim() === '' ? t.rcptCostMissing : undefined}
+                  value={addCost}
+                  onChangeText={setAddCost}
+                  keyboardType="decimal-pad"
+                  placeholder="0.00"
+                />
+                {addLineTotal !== null ? (
+                  <Text style={styles.addTotal}>
+                    {t.rcptLineTotal}: ${addLineTotal}
+                  </Text>
+                ) : null}
                 <Button label={t.rcptAddSave} size="md" onPress={() => void submitAddLine()} />
               </View>
             ) : (
@@ -318,6 +363,15 @@ export default function ReceiptReview() {
           {/* commit block */}
           {editable ? (
             <View style={styles.commitBox}>
+              {/* Food-cost honesty (D-606-09 warn-not-block): if any receiving line has
+                  no unit cost, say so plainly rather than let the operator assume the
+                  cost is captured. A warning, not a hard gate — a legit receipt without
+                  a known cost must still be committable. */}
+              {missingCostCount > 0 ? (
+                <Text style={styles.costWarn}>
+                  {t.rcptCostWarn.replace('{n}', String(missingCostCount))}
+                </Text>
+              ) : null}
               <View style={styles.affirmRow}>
                 <Text style={styles.affirmText}>{t.rcptAffirm}</Text>
                 <Switch
@@ -413,6 +467,8 @@ const styles = StyleSheet.create({
   unitChipOn: { backgroundColor: T.acSoft },
   unitLabel: { ...TYPE.footnote, color: T.sec },
   unitLabelOn: { color: T.ac },
+  addTotal: { ...TYPE.subhead, color: T.sec },
+  costWarn: { ...TYPE.subhead, color: T.amber },
   commitBox: { gap: 12, marginTop: 8 },
   affirmRow: {
     flexDirection: 'row',

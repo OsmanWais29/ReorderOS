@@ -131,11 +131,30 @@ class ExtractionWorker:
                     raw = storage.get_bytes(receipt["photo_object_key"])
                     _mime, _clean = validate_and_clean(raw, filename=None)
                 except ReceiptValidationError as exc:
+                    # SAFE telemetry (D-606-15: no bytes/content) — proves the provider
+                    # was NOT reached and the stage that stopped it.
+                    log.warning(
+                        "receipt.extraction.telemetry",
+                        receipt_id=str(receipt_id),
+                        stage="validation",
+                        provider_called=False,
+                        error_class="ReceiptValidationError",
+                        error_code=exc.code,
+                        raw_extraction_present=False,
+                    )
                     if await self._terminal(s, jid, token, "failed_terminal", exc.code):
                         await self._mark_receipt_failed(s, receipt_id, tenant_id)
                     await s.commit()
                     return
                 except storage.SpacesNotConfigured:
+                    log.warning(
+                        "receipt.extraction.telemetry",
+                        receipt_id=str(receipt_id),
+                        stage="download",
+                        provider_called=False,
+                        error_class="SpacesNotConfigured",
+                        raw_extraction_present=False,
+                    )
                     await self._transient_fail(
                         s, jid, token, job, receipt_id, tenant_id, "storage unavailable"
                     )
@@ -146,6 +165,13 @@ class ExtractionWorker:
                 if job["attempts"] == 0:
                     jobs_today = await self._charge_quota(s, tenant_id)
                     if jobs_today is None:
+                        log.info(
+                            "receipt.extraction.telemetry",
+                            receipt_id=str(receipt_id),
+                            stage="quota",
+                            provider_called=False,
+                            raw_extraction_present=False,
+                        )
                         await self._quota_block(s, jid, token, receipt_id, tenant_id)
                         await s.commit()
                         return
@@ -156,6 +182,16 @@ class ExtractionWorker:
                         file_bytes=raw, mime_type=receipt["mime_type"]
                     )
                 except ExtractionUnavailable as exc:
+                    # Provider WAS called but errored — record the class (never the body).
+                    log.warning(
+                        "receipt.extraction.telemetry",
+                        receipt_id=str(receipt_id),
+                        stage="provider",
+                        provider_called=True,
+                        provider_status="error",
+                        provider_error_class=type(exc).__name__,
+                        raw_extraction_present=False,
+                    )
                     await self._transient_fail(s, jid, token, job, receipt_id, tenant_id, str(exc))
                     await s.commit()
                     return
@@ -168,6 +204,16 @@ class ExtractionWorker:
                     model=result.model_version,
                     input_tokens=result.input_tokens,
                     output_tokens=result.output_tokens,
+                )
+                # SAFE provider telemetry — call succeeded, response captured. Booleans/
+                # counts only; the response body is NEVER logged (D-606-15).
+                log.info(
+                    "receipt.extraction.telemetry",
+                    receipt_id=str(receipt_id),
+                    stage="provider",
+                    provider_called=True,
+                    provider_status="success",
+                    raw_extraction_present=True,
                 )
                 # CHECKPOINT before any line write (fenced): a crash here means the
                 # retry finds the payload and skips a second paid LLM call.

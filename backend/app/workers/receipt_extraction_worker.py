@@ -28,6 +28,30 @@ async def _main() -> None:
         log.error("receipt_extraction_worker.no_api_key")
         raise SystemExit(1)
 
+    # Boot-time RUNTIME readiness — booleans only, never values (D-606-15). The worker
+    # has no HTTP surface, so this log is the only way to confirm its OWN process env
+    # injected (the api's /health/storage can't see the worker process). Mirrors the
+    # storage fields extraction needs: a False here means a job will fail at download.
+    log.info(
+        "receipt_extraction_worker.storage_readiness",
+        endpoint=bool(settings.spaces_endpoint),
+        region=bool(settings.spaces_region),
+        bucket=bool(settings.spaces_bucket),
+        key=bool(settings.spaces_key),
+        secret=bool(settings.spaces_secret),
+        anthropic_key=bool(settings.anthropic_api_key),
+        service_db=bool(settings.service_database_url),
+        configured=all(
+            (
+                settings.spaces_endpoint,
+                settings.spaces_region,
+                settings.spaces_bucket,
+                settings.spaces_key,
+                settings.spaces_secret,
+            )
+        ),
+    )
+
     worker = ExtractionWorker(
         AnthropicExtractionClient(settings.anthropic_api_key, settings.anthropic_model)
     )

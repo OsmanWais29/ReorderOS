@@ -107,13 +107,20 @@ def dispose_engine_sync() -> None:
         _sessionmaker = None
 
 
-def get_db_session() -> AsyncSession:
-    """FastAPI dependency: returns a fresh session from the connection pool.
+async def get_db_session() -> AsyncIterator[AsyncSession]:
+    """FastAPI dependency: yields a fresh pooled session and ALWAYS closes it.
 
-    Route handlers call ``await db.commit()`` / ``await db.rollback()``
-    explicitly; the session is closed when garbage-collected.
+    close() returns the connection to the pool — it does NOT commit. Route
+    handlers still call ``await db.commit()`` explicitly (the durability rule).
+    The session must be closed here deterministically: leaving close() to the
+    garbage collector lets sustained request traffic (e.g. a 2.5s poll) outrun
+    GC and exhaust the pool (size 5 + overflow 5), 500ing every endpoint.
     """
-    return get_sessionmaker()()
+    session = get_sessionmaker()()
+    try:
+        yield session
+    finally:
+        await session.close()
 
 
 def make_bound_session(conn: AsyncConnection) -> AsyncSession:

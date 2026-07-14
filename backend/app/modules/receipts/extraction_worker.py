@@ -35,7 +35,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import storage
 from app.core.logging import get_logger
 from app.core.service_db import get_service_sessionmaker
-from app.modules.inventory.depletion.units import is_canonical
 from app.modules.receipts.extraction_llm import ExtractionClient, ExtractionUnavailable
 from app.modules.receipts.validation import ReceiptValidationError, validate_and_clean
 
@@ -44,6 +43,10 @@ log = get_logger(__name__)
 MAX_ATTEMPTS = 3
 _LEASE_TTL_SQL = "INTERVAL '5 minutes'"
 _LOW_CONFIDENCE = 0.4
+
+# Non-item rows the extractor classifies (see extraction_llm.LINE_TYPES); each
+# gets its own content-free skip counter in apply telemetry.
+_SPECIAL_LINE_TYPES = ("discount", "credit", "backorder", "fee_or_deposit")
 
 # Future hook: a per-tenant spend kill switch would be checked here (before the quota
 # charge) and set status='skipped' if exceeded. No such component exists yet.
@@ -277,16 +280,24 @@ class ExtractionWorker:
         raw_lines = payload.get("lines")
         lines = raw_lines if isinstance(raw_lines, list) else []
         confidences: list[float] = []
-        skipped_invalid_qty = 0
+        skipped: dict[str, int] = {}
         for ordinal, raw_line in enumerate(lines):
+            # Only line_type='item' rows become receive lines. Discounts, credits/
+            # returns, backorders and deposits/fees must NEVER commit as normal
+            # receives (a credit is not a positive receive with negative cost);
+            # v1 keeps them out of receipt_lines entirely — they stay visible in
+            # raw_extraction and force manual review below. Counted content-free.
+            line_type = str(raw_line.get("line_type") or "item")
+            if line_type != "item":
+                key = line_type if line_type in _SPECIAL_LINE_TYPES else "unknown_type"
+                skipped[key] = skipped.get(key, 0) + 1
+                continue
             qty = _to_decimal(raw_line.get("qty"))
-            # LLM output is untrusted: a qty <= 0 row (deposit/promo/zero line)
-            # would violate receipt_lines_qty_positive and abort the whole
-            # transaction — one bad line must never discard the good ones. The
-            # tool schema forbids qty <= 0, but the DB constraint is the floor:
-            # skip the line, count it (content-free, D-606-15), flag manual.
+            # Untrusted LLM output: a qty <= 0 'item' would violate
+            # receipt_lines_qty_positive and abort the whole transaction — one
+            # bad line must never discard the good ones.
             if qty <= 0:
-                skipped_invalid_qty += 1
+                skipped["invalid_qty"] = skipped.get("invalid_qty", 0) + 1
                 continue
             unit = str(raw_line.get("unit", ""))
             conf = _to_float(raw_line.get("confidence"))
@@ -310,7 +321,9 @@ class ExtractionWorker:
                     "qty": qty,
                     "cost": _to_int(raw_line.get("unit_price_cents")),
                     "name": str(raw_line.get("name", "")).strip() or None,
-                    "unit": unit if is_canonical(unit) else (unit or None),
+                    # Supplier U/M verbatim (CS/SAC/EA/...): the operator maps it
+                    # to a storage unit at review/commit — never normalized here.
+                    "unit": unit.strip() or None,
                     "conf": conf,
                     "jid": job["id"],
                     "att": job["job_attempt"],
@@ -318,21 +331,22 @@ class ExtractionWorker:
                 },
             )
 
-        if skipped_invalid_qty:
+        if skipped:
             log.warning(
                 "receipt.extraction.telemetry",
                 receipt_id=str(receipt_id),
                 stage="apply",
-                lines_skipped_invalid_qty=skipped_invalid_qty,
                 lines_applied=len(confidences),
+                **{f"lines_skipped_{k}": v for k, v in sorted(skipped.items())},
             )
 
         # D-606-08: aggregate = min(line confidences); NULL when zero lines, which
         # always pairs with manual_entry_required. Low aggregate also flags manual.
-        # A skipped invalid line means the machine extraction is known-incomplete,
-        # so it flags manual too — the operator must fill the gap.
+        # Any skipped row (special line_type or invalid qty) means the machine
+        # extraction is known-incomplete → manual: the operator must reconcile
+        # the raw document against the applied lines.
         agg = min(confidences) if confidences else None
-        manual = agg is None or agg < _LOW_CONFIDENCE or skipped_invalid_qty > 0
+        manual = agg is None or agg < _LOW_CONFIDENCE or bool(skipped)
         await s.execute(
             text("""
                 UPDATE receipts SET

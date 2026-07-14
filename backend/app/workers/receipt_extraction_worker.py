@@ -21,6 +21,16 @@ from app.modules.receipts.extraction_worker import ExtractionWorker
 log = get_logger(__name__)
 
 
+def log_unhandled(exc: Exception) -> None:
+    """Log an unhandled worker error by CLASS ONLY (D-606-15).
+
+    Never log str(exc): SQLAlchemy/asyncpg exception strings embed the failing
+    row and bind parameters — i.e. extracted invoice content — and the smoke
+    test proved that leaks supplier/line text into platform logs.
+    """
+    log.error("receipt_extraction_worker.unhandled", error_class=type(exc).__name__)
+
+
 async def _main() -> None:
     configure_logging()
     settings = get_settings()
@@ -70,7 +80,7 @@ async def _main() -> None:
         try:
             did_work = await worker.process_once()
         except Exception as exc:  # never let one job kill the loop
-            log.error("receipt_extraction_worker.unhandled", error=f"{type(exc).__name__}: {exc!s}")
+            log_unhandled(exc)
             did_work = False
         if not did_work:
             await asyncio.sleep(2)

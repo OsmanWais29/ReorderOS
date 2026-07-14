@@ -58,7 +58,14 @@ def _line_schema() -> dict[str, Any]:
         "type": "object",
         "properties": {
             "name": {"type": "string", "description": "Line item / product name as printed"},
-            "qty": {"type": "number", "description": "Quantity received"},
+            "qty": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": (
+                    "Quantity received — must be greater than zero. Skip zero-quantity "
+                    "rows (deposits, promos, notes) entirely."
+                ),
+            },
             "unit": {"type": "string", "enum": sorted(CANONICAL_UNITS)},
             "unit_price_cents": {"type": "integer", "description": "Per-unit price in cents"},
             "confidence": {

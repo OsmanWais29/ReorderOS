@@ -326,3 +326,95 @@ def test_content_block_image_vs_pdf() -> None:
     assert img["type"] == "image" and img["source"]["media_type"] == "image/jpeg"
     pdf = _content_block(b"%PDF-", "application/pdf")
     assert pdf["type"] == "document" and pdf["source"]["media_type"] == "application/pdf"
+
+
+# ── invalid-qty lines (smoke-test regression 2026-07-14) ──────────────────────
+# The live smoke test hit a receipt where the LLM returned a qty=0 line
+# (a deposit/zero row) at high confidence: the INSERT violated
+# receipt_lines_qty_positive and rolled back EVERY line. One bad line must
+# never discard the good ones, and the skip must leak no content (D-606-15).
+
+
+async def test_invalid_qty_line_skipped_valid_lines_applied(
+    admin_conn: Any, monkeypatch: Any
+) -> None:
+    from structlog.testing import capture_logs
+
+    payload = {
+        "document_type": "invoice",
+        "lines": [
+            {
+                "name": "ZERO-QTY-SENTINEL-DEPOSIT",
+                "qty": 0,
+                "unit": "ea",
+                "unit_price_cents": 1140,
+                "confidence": 0.99,
+            },
+            {"name": "Flour", "qty": 5, "unit": "kg", "unit_price_cents": 250, "confidence": 0.9},
+        ],
+    }
+    tid, rid, jid = await _seed(admin_conn)
+    try:
+        with capture_logs() as logs:
+            assert await _run(admin_conn, monkeypatch, FakeExtractionClient(payload)) is True
+
+        # The job completes and the VALID line is applied at its original ordinal.
+        assert (
+            await admin_conn.fetchval("SELECT status FROM receipt_extraction_jobs WHERE id=$1", jid)
+            == "complete"
+        )
+        lines = await admin_conn.fetch(
+            "SELECT extracted_name, line_ordinal FROM receipt_lines WHERE receipt_id=$1", rid
+        )
+        assert [(r["extracted_name"], r["line_ordinal"]) for r in lines] == [("Flour", 1)]
+
+        # Extraction is known-incomplete → manual flag; confidence from applied lines only.
+        rec = await admin_conn.fetchrow(
+            "SELECT extraction_status, extraction_confidence, manual_entry_required "
+            "FROM receipts WHERE id=$1",
+            rid,
+        )
+        assert rec["extraction_status"] == "complete"
+        assert float(rec["extraction_confidence"]) == pytest.approx(0.9)
+        assert rec["manual_entry_required"] is True
+
+        # Content-free telemetry: the skip is COUNTED, the line text never logged.
+        skip_events = [e for e in logs if e.get("lines_skipped_invalid_qty")]
+        assert len(skip_events) == 1
+        assert skip_events[0]["lines_skipped_invalid_qty"] == 1
+        assert skip_events[0]["lines_applied"] == 1
+        assert "ZERO-QTY-SENTINEL-DEPOSIT" not in str(logs)
+    finally:
+        await _cleanup(admin_conn, tid)
+
+
+async def test_all_lines_invalid_qty_completes_with_manual_flag(
+    admin_conn: Any, monkeypatch: Any
+) -> None:
+    payload = {
+        "document_type": "invoice",
+        "lines": [{"name": "Deposit", "qty": 0, "unit": "ea", "confidence": 0.9}],
+    }
+    tid, rid, jid = await _seed(admin_conn)
+    try:
+        assert await _run(admin_conn, monkeypatch, FakeExtractionClient(payload)) is True
+        assert (
+            await admin_conn.fetchval("SELECT status FROM receipt_extraction_jobs WHERE id=$1", jid)
+            == "complete"
+        )
+        n = await admin_conn.fetchval("SELECT count(*) FROM receipt_lines WHERE receipt_id=$1", rid)
+        assert n == 0
+        rec = await admin_conn.fetchrow(
+            "SELECT extraction_confidence, manual_entry_required FROM receipts WHERE id=$1", rid
+        )
+        assert rec["extraction_confidence"] is None  # no applied lines
+        assert rec["manual_entry_required"] is True
+    finally:
+        await _cleanup(admin_conn, tid)
+
+
+def test_tool_schema_forbids_nonpositive_qty() -> None:
+    from app.modules.receipts.extraction_llm import tool_schema
+
+    qty = tool_schema()["input_schema"]["properties"]["lines"]["items"]["properties"]["qty"]
+    assert qty["exclusiveMinimum"] == 0

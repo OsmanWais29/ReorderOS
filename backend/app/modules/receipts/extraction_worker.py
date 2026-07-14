@@ -277,8 +277,17 @@ class ExtractionWorker:
         raw_lines = payload.get("lines")
         lines = raw_lines if isinstance(raw_lines, list) else []
         confidences: list[float] = []
+        skipped_invalid_qty = 0
         for ordinal, raw_line in enumerate(lines):
             qty = _to_decimal(raw_line.get("qty"))
+            # LLM output is untrusted: a qty <= 0 row (deposit/promo/zero line)
+            # would violate receipt_lines_qty_positive and abort the whole
+            # transaction — one bad line must never discard the good ones. The
+            # tool schema forbids qty <= 0, but the DB constraint is the floor:
+            # skip the line, count it (content-free, D-606-15), flag manual.
+            if qty <= 0:
+                skipped_invalid_qty += 1
+                continue
             unit = str(raw_line.get("unit", ""))
             conf = _to_float(raw_line.get("confidence"))
             confidences.append(conf)
@@ -309,10 +318,21 @@ class ExtractionWorker:
                 },
             )
 
+        if skipped_invalid_qty:
+            log.warning(
+                "receipt.extraction.telemetry",
+                receipt_id=str(receipt_id),
+                stage="apply",
+                lines_skipped_invalid_qty=skipped_invalid_qty,
+                lines_applied=len(confidences),
+            )
+
         # D-606-08: aggregate = min(line confidences); NULL when zero lines, which
         # always pairs with manual_entry_required. Low aggregate also flags manual.
+        # A skipped invalid line means the machine extraction is known-incomplete,
+        # so it flags manual too — the operator must fill the gap.
         agg = min(confidences) if confidences else None
-        manual = agg is None or agg < _LOW_CONFIDENCE
+        manual = agg is None or agg < _LOW_CONFIDENCE or skipped_invalid_qty > 0
         await s.execute(
             text("""
                 UPDATE receipts SET

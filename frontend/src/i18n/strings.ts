@@ -155,6 +155,7 @@ export const STRINGS = {
     rcptAffirm: 'I reviewed these lines',
     rcptCommit: 'Commit to inventory',
     rcptNeedReview: 'Correct at least one line or switch on “I reviewed these lines”.',
+    rcptLinesUnmatched: 'Link or create an item for every line (or skip it) before committing.',
     rcptNothingToCommit: 'Every line is skipped — nothing to receive. Dismiss this receipt instead.',
     rcptManagerOnly: 'Only a manager can commit a receipt.',
     rcptCommitDoneTitle: 'Received',
@@ -322,6 +323,8 @@ export const STRINGS = {
     rcptAffirm: 'J’ai révisé ces lignes',
     rcptCommit: 'Valider à l’inventaire',
     rcptNeedReview: 'Corrigez au moins une ligne ou activez « J’ai révisé ces lignes ».',
+    rcptLinesUnmatched:
+      'Associez ou créez un article pour chaque ligne (ou ignorez-la) avant de valider.',
     rcptNothingToCommit: 'Toutes les lignes sont ignorées — rien à recevoir. Rejetez plutôt ce reçu.',
     rcptManagerOnly: 'Seul un gestionnaire peut valider un reçu.',
     rcptCommitDoneTitle: 'Reçu',

@@ -158,6 +158,7 @@ export default function ReceiptReview() {
     } catch (e: unknown) {
       if (e instanceof ReceiptApiError) {
         if (e.code === 'RECEIPT_REVIEW_REQUIRED') setCommitError(t.rcptNeedReview);
+        else if (e.code === 'RECEIPT_LINES_UNMATCHED') setCommitError(t.rcptLinesUnmatched);
         else if (e.code === 'RECEIPT_NOTHING_TO_COMMIT') setCommitError(t.rcptNothingToCommit);
         else if (e.status === 403) setCommitError(t.rcptManagerOnly);
         else setCommitError(e.detail);
@@ -327,10 +328,18 @@ export default function ReceiptReview() {
                 />
               </View>
               {commitError ? <Text style={styles.err}>{commitError}</Text> : null}
+              {receipt.lines.some(
+                (l) => l.match_status !== 'skipped' && !l.inventory_item_id,
+              ) ? (
+                <Text style={styles.err}>{t.rcptLinesUnmatched}</Text>
+              ) : null}
               <Button
                 label={t.rcptCommit}
                 loading={committing}
-                disabled={extracting}
+                disabled={
+                  extracting ||
+                  receipt.lines.some((l) => l.match_status !== 'skipped' && !l.inventory_item_id)
+                }
                 onPress={() => void doCommit()}
               />
               <View style={styles.secondary}>

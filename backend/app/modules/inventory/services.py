@@ -33,6 +33,13 @@ class ReceiptNothingToCommit(Exception):
     The operator dismisses; this is not a commit error (→ RECEIPT_NOTHING_TO_COMMIT)."""
 
 
+class ReceiptLinesUnmatched(Exception):
+    """At least one non-skipped line has no inventory item. Distinct from
+    ReceiptNothingToCommit: the receipt HAS receivable lines, the operator just
+    hasn't linked/created items (or skipped them) yet. Committing anyway would
+    silently drop those lines from inventory (→ RECEIPT_LINES_UNMATCHED)."""
+
+
 class ReceiptReviewRequired(Exception):
     """An intake-source commit lacks the human gate: confirm + at least one
     manually-corrected line OR a review affirmation (D-606-22) (→ RECEIPT_REVIEW_REQUIRED)."""
@@ -685,6 +692,16 @@ async def commit_receipt(
         for ln in lines
         if ln["match_status"] != "skipped" and ln["inventory_item_id"] is not None
     ]
+    # Every non-skipped line must be RESOLVED (item linked/created) before any
+    # line commits — silently ignoring unmatched lines would receive a partial
+    # invoice with no operator signal. Skip is the only deliberate way out.
+    unresolved = [
+        ln for ln in lines if ln["match_status"] != "skipped" and ln["inventory_item_id"] is None
+    ]
+    if unresolved:
+        raise ReceiptLinesUnmatched(
+            f"receipt {receipt_id} has {len(unresolved)} line(s) without an inventory item"
+        )
     if not movable:
         raise ReceiptNothingToCommit(f"receipt {receipt_id} has no inventory-moving line")
 

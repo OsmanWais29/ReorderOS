@@ -22,6 +22,7 @@ from app.core.security import Principal, require_role
 from app.modules.inventory.depletion.conversions import ConversionError
 from app.modules.inventory.item_resolver import UnitTypeConflict
 from app.modules.inventory.services import (
+    ReceiptLinesUnmatched,
     ReceiptNothingToCommit,
     ReceiptReviewRequired,
     commit_receipt,
@@ -361,6 +362,15 @@ async def commit_receipt_endpoint(
         )
     except ValueError:
         raise HTTPException(status_code=404, detail="Receipt not found") from None
+    except ReceiptLinesUnmatched:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "RECEIPT_LINES_UNMATCHED",
+                "message": "Link or create an inventory item for every line "
+                "(or skip it) before committing.",
+            },
+        ) from None
     except ReceiptNothingToCommit:
         raise HTTPException(
             status_code=422,

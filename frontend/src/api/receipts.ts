@@ -234,7 +234,8 @@ export const addNote = (token: string, receiptId: string, text: string) =>
   });
 
 /** Manager+. Throws ReceiptApiError with code RECEIPT_REVIEW_REQUIRED /
- * RECEIPT_NOTHING_TO_COMMIT / RECEIPT_UNIT_CONVERSION (422), or 403 for staff. */
+ * RECEIPT_LINES_UNMATCHED / RECEIPT_NOTHING_TO_COMMIT / RECEIPT_UNIT_CONVERSION
+ * (422), or 403 for staff. */
 export const commitReceipt = (token: string, receiptId: string, reviewedAffirmation: boolean) =>
   req<{ receipt_id: string; status: string; movement_ids: string[]; confirmed: boolean }>(
     token,

@@ -162,6 +162,20 @@ async def test_disabled_channel_503(client: AsyncClient, monkeypatch: Any) -> No
     assert r.json()["detail"]["code"] == "POSTMARK_INBOUND_DISABLED"
 
 
+async def test_disabled_worker_runner_exits_cleanly(monkeypatch: Any) -> None:
+    """Clover inbox_worker pattern: channel off → the runner logs .disabled and
+    returns (exit 0) without touching the queue."""
+    monkeypatch.setenv("POSTMARK_INBOUND_ENABLED", "false")
+    get_settings.cache_clear()
+    from app.workers import inbound_email_worker as runner
+
+    # configure_logging() would re-configure structlog and defeat capture_logs.
+    monkeypatch.setattr(runner, "configure_logging", lambda: None)
+    with structlog.testing.capture_logs() as logs:
+        await runner._main()  # returns immediately — no loop, no DB
+    assert any(e.get("event") == "inbound_email_worker.disabled" for e in logs)
+
+
 # ── happy path + lifecycle ownership ──────────────────────────────────────────
 
 
@@ -380,6 +394,17 @@ async def test_unknown_token_metadata_only_alert_once(
         row = await _inbox_row(admin_conn, mid)
         assert row["tenant_id"] is None
         assert row["skip_reason"] == "unknown_token"
+        # Retention = diagnostic minimum: token + sender kept, NO subject, NO
+        # attachment rows (bytes/filenames), counts only.
+        assert row["mailbox_hash"] == "no-such-token"
+        assert row["from_email"] == "orders@lauzon.example"
+        assert row["subject"] is None
+        assert row["attachment_count"] == 1
+        n_att = await admin_conn.fetchval(
+            "SELECT count(*) FROM inbound_email_attachments WHERE inbound_email_id = $1",
+            row["id"],
+        )
+        assert n_att == 0
         alerts = await admin_conn.fetchval(
             "SELECT count(*) FROM monitoring_alerts WHERE monitor_name = 'postmark_unknown_token'"
         )

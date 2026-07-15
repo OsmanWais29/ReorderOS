@@ -15,6 +15,7 @@ import asyncio
 import os
 import signal
 
+from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.modules.receipts.inbound_email_worker import InboundEmailWorker
 from app.ops.env_check import check_env
@@ -29,6 +30,12 @@ def log_unhandled(exc: Exception) -> None:
 
 async def _main() -> None:
     configure_logging()
+    # Postmark-less deployments: this worker exists solely to fan out Postmark
+    # inbox rows — exit cleanly (status 0) when the channel is off (Clover
+    # inbox_worker pattern; Gmail will ship its own sync worker).
+    if not get_settings().postmark_inbound_enabled:
+        log.info("inbound_email_worker.disabled", reason="POSTMARK_INBOUND_ENABLED is not true")
+        return
     if (os.environ.get("APP_ENV") or "").strip().lower() == "production":
         report = check_env("inbound_email_worker")
         if not report.ready:

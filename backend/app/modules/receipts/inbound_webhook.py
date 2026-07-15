@@ -194,7 +194,13 @@ async def _resolve_tenant(s: AsyncSession, token: str) -> UUID | None:
 async def _record_unknown_token(s: AsyncSession, payload: dict[str, Any], message_id: str) -> None:
     """Metadata-only row + alert (#6). No byte work happens for unknown tokens.
     The partial unique on (postmark_message_id) WHERE tenant_id IS NULL dedups
-    replays — the alert fires only when the row is genuinely new."""
+    replays — the alert fires only when the row is genuinely new.
+
+    Retention is the diagnostic minimum: message id (dedup), mailbox_hash (the
+    attempted token — what ops needs to fix a typo'd forward), from_email (who
+    mis-forwarded), counts. NO subject, NO body, NO attachment bytes/filenames —
+    an unknown-token row never reaches a review queue, so content serves nothing
+    (D-606-15 posture)."""
     inserted = (
         await s.execute(
             text("""
@@ -204,7 +210,7 @@ async def _record_unknown_token(s: AsyncSession, payload: dict[str, Any], messag
                      processing_status, suppression_stage, skip_reason)
                 VALUES
                     (NULL, :mid, 'postmark', :hash, :sender,
-                     :subject, :rcvd, :att_count, :has_html,
+                     NULL, :rcvd, :att_count, :has_html,
                      'filtered_out', 'pre_draft', 'unknown_token')
                 ON CONFLICT (postmark_message_id)
                     WHERE tenant_id IS NULL AND postmark_message_id IS NOT NULL
@@ -215,7 +221,6 @@ async def _record_unknown_token(s: AsyncSession, payload: dict[str, Any], messag
                 "mid": message_id,
                 "hash": payload.get("MailboxHash"),
                 "sender": payload.get("From"),
-                "subject": payload.get("Subject"),
                 "rcvd": _received_at(payload),
                 "att_count": len(payload.get("Attachments") or []),
                 "has_html": bool(payload.get("HtmlBody")),

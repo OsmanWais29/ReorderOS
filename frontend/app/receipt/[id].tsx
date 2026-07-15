@@ -21,6 +21,7 @@ import { saveReturnTo } from '@/auth/returnTo';
 import { useLang } from '@/i18n/LangProvider';
 import { T, TYPE } from '@/theme/tokens';
 import { CANONICAL_UNITS } from '@/api/units';
+import { updateItemStorageUnit, ItemsApiError } from '@/api/items';
 import {
   getReceipt,
   updateLine,
@@ -120,6 +121,21 @@ export default function ReceiptReview() {
       }
     },
     [token, id, refresh, t],
+  );
+
+  const fixItemUnit = useCallback(
+    async (itemId: string, unit: string) => {
+      if (!token) return;
+      setCommitError(null);
+      try {
+        await updateItemStorageUnit(token, itemId, unit);
+        await refresh(); // suggestions + mismatch flags recompute server-side
+      } catch (e: unknown) {
+        if (e instanceof ItemsApiError && e.status === 401) setSessionDead(true);
+        setCommitError(e instanceof Error ? e.message : t.rcptSaveError);
+      }
+    },
+    [token, refresh, t],
   );
 
   const onPick = useCallback(
@@ -334,6 +350,7 @@ export default function ReceiptReview() {
                 key={line.id}
                 line={line}
                 busy={busyLineId === line.id || !editable}
+                onFixItemUnit={(itemId, unit) => void fixItemUnit(itemId, unit)}
                 onPatch={(patch) => void patchLine(line.id, patch)}
                 onOpenPicker={() =>
                   setPickerForLine({ lineId: line.id, query: line.extracted_name ?? '' })

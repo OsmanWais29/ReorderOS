@@ -47,6 +47,17 @@ class ReceiptConversionRequired(Exception):
     guesses a factor (→ RECEIPT_CONVERSION_REQUIRED)."""
 
 
+class ItemHasMovements(Exception):
+    """Storage-unit change refused: the item already has ledger movements —
+    rewriting the unit would silently re-denominate history
+    (→ 409 ITEM_HAS_MOVEMENTS)."""
+
+
+class ItemInRecipes(Exception):
+    """Storage-unit change refused: recipes/modifiers reference the item —
+    depletion conversions would silently change meaning (→ 409 ITEM_IN_RECIPES)."""
+
+
 class ReceiptReviewRequired(Exception):
     """An intake-source commit lacks the human gate: confirm + at least one
     manually-corrected line OR a review affirmation (D-606-22) (→ RECEIPT_REVIEW_REQUIRED)."""
@@ -628,6 +639,69 @@ async def _idempotent_movement_insert(
             {"tid": tenant_id, "key": key},
         )
         return UUID(str(existing.scalar_one()))
+
+
+async def change_item_storage_unit(
+    session: AsyncSession,
+    *,
+    tenant_id: UUID,
+    inventory_item_id: UUID,
+    storage_unit: str,
+) -> dict[str, Any]:
+    """Correct an item's storage unit — SAFE cases only (the goblet lesson:
+    a mis-picked oz_weight item for count goods).
+
+    Allowed only while the item's history is empty: zero inventory_movements
+    and zero recipe/modifier references. Anything else would silently
+    re-denominate the ledger or depletion math — those need an explicit
+    migration story, not an UPDATE. recipe_unit_id moves with storage_unit_id
+    (resolver invariant: items are created with both equal)."""
+    from app.modules.inventory.item_resolver import resolve_unit
+
+    row = (
+        await session.execute(
+            text("SELECT id FROM inventory_items WHERE tenant_id = :tid AND id = :iid FOR UPDATE"),
+            {"tid": tenant_id, "iid": inventory_item_id},
+        )
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"inventory_item {inventory_item_id} not found")
+
+    movements = (
+        await session.execute(
+            text(
+                "SELECT count(*) FROM inventory_movements "
+                "WHERE tenant_id = :tid AND inventory_item_id = :iid"
+            ),
+            {"tid": tenant_id, "iid": inventory_item_id},
+        )
+    ).scalar_one()
+    if movements:
+        raise ItemHasMovements(f"{movements} movement(s) exist")
+
+    refs = (
+        await session.execute(
+            text(
+                "SELECT (SELECT count(*) FROM recipe_ingredients "
+                "         WHERE tenant_id = :tid AND inventory_item_id = :iid) + "
+                "       (SELECT count(*) FROM modifier_ingredients "
+                "         WHERE tenant_id = :tid AND inventory_item_id = :iid)"
+            ),
+            {"tid": tenant_id, "iid": inventory_item_id},
+        )
+    ).scalar_one()
+    if refs:
+        raise ItemInRecipes(f"{refs} recipe/modifier reference(s) exist")
+
+    unit_id = await resolve_unit(session, tenant_id, storage_unit)
+    await session.execute(
+        text(
+            "UPDATE inventory_items SET storage_unit_id = :uid, recipe_unit_id = :uid "
+            "WHERE tenant_id = :tid AND id = :iid"
+        ),
+        {"uid": unit_id, "tid": tenant_id, "iid": inventory_item_id},
+    )
+    return {"id": inventory_item_id, "storage_unit": storage_unit}
 
 
 async def commit_receipt(

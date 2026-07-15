@@ -19,11 +19,13 @@ export function ReceiptLineRow({
   busy,
   onPatch,
   onOpenPicker,
+  onFixItemUnit,
 }: {
   line: ReceiptLine;
   busy: boolean;
   onPatch: (patch: LineUpdatePayload) => void;
   onOpenPicker: () => void;
+  onFixItemUnit?: (itemId: string, unit: string) => void;
 }) {
   const { t } = useLang();
   const [qty, setQty] = useState(line.received_quantity != null ? String(line.received_quantity) : '');
@@ -103,6 +105,7 @@ export function ReceiptLineRow({
         <ConversionPanel
           line={line}
           busy={busy}
+          onFixItemUnit={onFixItemUnit}
           convQty={convQty}
           convFactor={convFactor}
           onQty={(v) => {
@@ -243,6 +246,7 @@ function ConversionPanel({
   onQty,
   onFactor,
   onConfirm,
+  onFixItemUnit,
 }: {
   line: ReceiptLine;
   busy: boolean;
@@ -251,7 +255,9 @@ function ConversionPanel({
   onQty: (v: string) => void;
   onFactor: (v: string) => void;
   onConfirm: (overrideMismatch: boolean) => void;
+  onFixItemUnit?: (itemId: string, unit: string) => void;
 }) {
+  const [fixingUnit, setFixingUnit] = useState(false);
   const { t } = useLang();
   // Accept/Edit: with a server suggestion the operator just approves — no
   // mental arithmetic. Editing (or no suggestion) exposes the inputs.
@@ -306,6 +312,28 @@ function ConversionPanel({
       {line.unit_mismatch_warning ? (
         <>
           <Text style={styles.convWarn}>{t.rcptConvDimWarn.replace('{unit}', su)}</Text>
+          {onFixItemUnit && line.inventory_item_id ? (
+            fixingUnit ? (
+              <View style={styles.convRow}>
+                {CANONICAL_UNITS.map((u) => (
+                  <Pressable
+                    key={u}
+                    disabled={busy}
+                    onPress={() => {
+                      setFixingUnit(false);
+                      onFixItemUnit(line.inventory_item_id as string, u);
+                    }}
+                  >
+                    <Text style={styles.actionText}>{u}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : (
+              <Pressable disabled={busy} onPress={() => setFixingUnit(true)}>
+                <Text style={styles.actionText}>{t.rcptFixItemUnit}</Text>
+              </Pressable>
+            )
+          ) : null}
           <View style={styles.convRow}>
             <Text style={styles.convLabel}>{t.rcptConvOverride}</Text>
             <Switch

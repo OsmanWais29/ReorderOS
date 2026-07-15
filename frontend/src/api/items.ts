@@ -89,3 +89,12 @@ export const postOpeningBalance = (token: string, itemId: string, quantity: numb
     method: 'POST',
     body: JSON.stringify({ quantity }),
   });
+
+/** Manager+. Fix a mis-picked storage unit — only while the item has zero
+ * movements and zero recipe references (409 ITEM_HAS_MOVEMENTS /
+ * ITEM_IN_RECIPES otherwise). */
+export const updateItemStorageUnit = (token: string, itemId: string, storageUnit: string) =>
+  req<{ id: string; storage_unit: string }>(token, `/inventory/items/${itemId}/storage-unit`, {
+    method: 'PUT',
+    body: JSON.stringify({ storage_unit: storageUnit }),
+  });

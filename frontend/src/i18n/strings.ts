@@ -173,6 +173,7 @@ export const STRINGS = {
     rcptConvActual: 'actual weight',
     rcptConvDimWarn: 'Invoice looks like a different unit type than this item ({unit}). Check the item.',
     rcptConvOverride: 'Use this item anyway',
+    rcptFixItemUnit: 'Fix item unit…',
     rcptConvInconsistent:
       'Received quantity must equal invoice quantity x pack conversion. Check the numbers.',
     sessionExpired: 'Session expired — sign in again to continue reviewing.',
@@ -365,6 +366,7 @@ export const STRINGS = {
     rcptConvDimWarn:
       'La facture suggère un autre type d’unité que cet article ({unit}). Vérifiez l’article.',
     rcptConvOverride: 'Utiliser cet article quand même',
+    rcptFixItemUnit: 'Corriger l’unité de l’article…',
     rcptConvInconsistent:
       'La quantité reçue doit égaler la quantité facturée x la conversion. Vérifiez les valeurs.',
     sessionExpired: 'Session expirée — reconnectez-vous pour continuer la révision.',

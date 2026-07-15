@@ -32,24 +32,12 @@ class UnitTypeConflict(Exception):
     (which would corrupt every future conversion for the ingredient)."""
 
 
-async def resolve_inventory_item(db: AsyncSession, tenant_id: UUID, name: str, unit: str) -> UUID:
-    """Step 1 of confirm, per ingredient — resolve-or-create the storage unit and
-    dedup-or-create the inventory_item, race-safe via existing unique constraints.
-
-    inventory_items.storage_unit_id is NOT NULL (FK → units_of_measure). v5 §8 says
-    'create with Mode A default' but the schema forces a unit, so we resolve-or-create
-    a units_of_measure row from the ingredient's canonical unit (storage unit ==
-    recipe unit, storage_to_recipe_factor defaults 1.0). If a row for that unit name
-    already exists with a different unit_type (units_of_measure is dirty with test
-    residue), we abort the whole confirm — UNIQUE(tenant_id, name) leaves no second-row
-    escape, and silently reusing a mismatched unit corrupts every later conversion.
-
-    Then dedup-or-create the inventory_item on (tenant_id, lower(btrim(name))) via the
-    0019 unique index, so two concurrent confirms of a new ingredient converge on one
-    row instead of duplicating it."""
-    dimension = DIMENSION_OF[unit]  # unit is canonical (PATCH-validated); KeyError = bug
-
-    # resolve-or-create the storage unit (race-safe via UNIQUE(tenant_id, name))
+async def resolve_unit(db: AsyncSession, tenant_id: UUID, unit: str) -> UUID:
+    """Resolve-or-create the units_of_measure row for a canonical unit string
+    (race-safe via UNIQUE(tenant_id, name)); UnitTypeConflict when the existing
+    row carries the wrong dimension. Extracted from resolve_inventory_item so
+    item-unit correction shares the exact same semantics."""
+    dimension = DIMENSION_OF[unit]  # unit must be canonical; KeyError = caller bug
     await db.execute(
         text("""
             INSERT INTO units_of_measure (tenant_id, name, abbreviation, unit_type)
@@ -76,7 +64,28 @@ async def resolve_inventory_item(db: AsyncSession, tenant_id: UUID, name: str, u
             f"unit {unit!r} exists for this tenant with unit_type "
             f"{uom['unit_type']!r}, expected {dimension!r}"
         )
-    unit_id = uom["id"]
+    unit_id: UUID = uom["id"]
+    return unit_id
+
+
+async def resolve_inventory_item(db: AsyncSession, tenant_id: UUID, name: str, unit: str) -> UUID:
+    """Step 1 of confirm, per ingredient — resolve-or-create the storage unit and
+    dedup-or-create the inventory_item, race-safe via existing unique constraints.
+
+    inventory_items.storage_unit_id is NOT NULL (FK → units_of_measure). v5 §8 says
+    'create with Mode A default' but the schema forces a unit, so we resolve-or-create
+    a units_of_measure row from the ingredient's canonical unit (storage unit ==
+    recipe unit, storage_to_recipe_factor defaults 1.0). If a row for that unit name
+    already exists with a different unit_type (units_of_measure is dirty with test
+    residue), we abort the whole confirm — UNIQUE(tenant_id, name) leaves no second-row
+    escape, and silently reusing a mismatched unit corrupts every later conversion.
+
+    Then dedup-or-create the inventory_item on (tenant_id, lower(btrim(name))) via the
+    0019 unique index, so two concurrent confirms of a new ingredient converge on one
+    row instead of duplicating it."""
+    # resolve-or-create the storage unit — shared helper (same race-safety +
+    # UnitTypeConflict semantics as before the extraction).
+    unit_id = await resolve_unit(db, tenant_id, unit)
 
     # dedup-or-create the inventory_item (race-safe via 0019 unique index). Store the
     # display name TRIMMED but CASE-PRESERVED (btrim, not lower) — lower(btrim()) is the

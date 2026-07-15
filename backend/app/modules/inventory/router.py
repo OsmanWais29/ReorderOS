@@ -12,16 +12,19 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, field_validator
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_rls_session
-from app.core.security import Principal, get_principal
+from app.core.security import Principal, get_principal, require_role
+from app.modules.inventory.depletion.units import CANONICAL_UNITS
 from app.modules.inventory.idempotency import (
     check_and_lock,
     compute_fingerprint,
     store_response,
 )
+from app.modules.inventory.item_resolver import UnitTypeConflict
 from app.modules.inventory.schemas import (
     CountEventCreate,
     OpeningBalanceCreate,
@@ -29,11 +32,14 @@ from app.modules.inventory.schemas import (
     ReceiptLineCreate,
 )
 from app.modules.inventory.services import (
+    ItemHasMovements,
+    ItemInRecipes,
     ReceiptConversionRequired,
     ReceiptLinesUnmatched,
     ReceiptNothingToCommit,
     ReceiptReviewRequired,
     add_receipt_line,
+    change_item_storage_unit,
     commit_receipt,
     create_receipt,
     record_count_event,
@@ -117,6 +123,68 @@ async def create_count_event(
         await db.commit()
 
     return JSONResponse(response_data, status_code=201)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PUT /inventory/items/{item_id}/storage-unit — SAFE unit correction
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class StorageUnitPatch(BaseModel):
+    storage_unit: str
+
+    @field_validator("storage_unit")
+    @classmethod
+    def _canonical(cls, v: str) -> str:
+        if v not in CANONICAL_UNITS:
+            raise ValueError(f"unit {v!r} is not canonical")
+        return v
+
+
+@router.put("/items/{item_id}/storage-unit")
+async def change_storage_unit(
+    item_id: UUID,
+    body: StorageUnitPatch,
+    db: AsyncSession = Depends(get_rls_session),
+    principal: Principal = require_role("manager"),
+) -> dict[str, Any]:
+    """Fix a mis-picked storage unit (the oz_weight-goblets lesson). Allowed only
+    while the item has ZERO movements and ZERO recipe/modifier references —
+    anything else would silently re-denominate history and needs a real
+    migration, not an UPDATE."""
+    try:
+        result = await change_item_storage_unit(
+            db,
+            tenant_id=UUID(principal.tenant_id),
+            inventory_item_id=item_id,
+            storage_unit=body.storage_unit,
+        )
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Item not found") from None
+    except ItemHasMovements:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "ITEM_HAS_MOVEMENTS",
+                "message": "This item already has stock history — its unit can't be "
+                "changed in place. Create a new item with the right unit.",
+            },
+        ) from None
+    except ItemInRecipes:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "ITEM_IN_RECIPES",
+                "message": "Recipes use this item — changing its unit would change "
+                "depletion math. Update the recipes first.",
+            },
+        ) from None
+    except UnitTypeConflict as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": "UNIT_TYPE_CONFLICT", "message": str(exc)}
+        ) from None
+    await db.commit()
+    return {"id": str(result["id"]), "storage_unit": result["storage_unit"]}
 
 
 # ═════════════════════════════════════════════════════════════════════════════

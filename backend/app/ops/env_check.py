@@ -58,6 +58,9 @@ _PLACEHOLDERS = frozenset(
 class Var:
     name: str
     secret: bool = False  # secret keys get the production placeholder check
+    # Required only when this env var is truthy ("1"/"true"/"yes"/"on") —
+    # e.g. Clover secrets only matter when CLOVER_ENABLED=true.
+    when: str | None = None
 
 
 _DB = (Var("DATABASE_URL", secret=True),)
@@ -70,9 +73,9 @@ _SPACES = (
     Var("DO_SPACES_SECRET", secret=True),
 )
 _CLOVER = (
-    Var("CLOVER_APP_ID"),
-    Var("CLOVER_APP_SECRET", secret=True),
-    Var("CLOVER_WEBHOOK_AUTH_CODE", secret=True),
+    Var("CLOVER_APP_ID", when="CLOVER_ENABLED"),
+    Var("CLOVER_APP_SECRET", secret=True, when="CLOVER_ENABLED"),
+    Var("CLOVER_WEBHOOK_AUTH_CODE", secret=True, when="CLOVER_ENABLED"),
 )
 _WORKOS = (
     Var("WORKOS_CLIENT_ID"),
@@ -89,8 +92,8 @@ _TOKENS = (Var("TOKEN_ENCRYPTION_KEY", secret=True),)
 _SETTINGS_FAIL_CLOSED = (
     Var("TOKEN_ENCRYPTION_KEY", secret=True),
     Var("SERVICE_DATABASE_URL", secret=True),
-    Var("CLOVER_APP_SECRET", secret=True),
-    Var("CLOVER_WEBHOOK_AUTH_CODE", secret=True),
+    Var("CLOVER_APP_SECRET", secret=True, when="CLOVER_ENABLED"),
+    Var("CLOVER_WEBHOOK_AUTH_CODE", secret=True, when="CLOVER_ENABLED"),
 )
 
 
@@ -110,7 +113,12 @@ PROFILES: dict[str, tuple[Var, ...]] = {
         _SERVICE_DB, _SPACES, (Var("ANTHROPIC_API_KEY", secret=True),)
     ),
     "inbox_worker": _dedupe(
-        _SERVICE_DB, _TOKENS, (Var("CLOVER_APP_ID"), Var("CLOVER_APP_SECRET", secret=True))
+        _SERVICE_DB,
+        _TOKENS,
+        (
+            Var("CLOVER_APP_ID", when="CLOVER_ENABLED"),
+            Var("CLOVER_APP_SECRET", secret=True, when="CLOVER_ENABLED"),
+        ),
     ),
     "migrate_job": _dedupe(_DB, _SETTINGS_FAIL_CLOSED),
 }
@@ -129,7 +137,14 @@ class EnvReport:
     failures: dict[str, str]
 
 
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
 def _check_one(var: Var, environ: Mapping[str, str], production: bool) -> str | None:
+    if var.when is not None:
+        gate = (environ.get(var.when) or "").strip().lower()
+        if gate not in _TRUTHY:
+            return None  # feature off → var not required
     raw = environ.get(var.name)
     if raw is None:
         return "missing"

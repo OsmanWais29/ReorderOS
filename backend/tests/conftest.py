@@ -8,6 +8,12 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
+# The POS/webhook/oauth suites predate CLOVER_ENABLED and exercise Clover as
+# ON; flip the default for the test process BEFORE the Settings cache warms.
+# Clover-less behavior is tested explicitly in test_clover_optional.py with a
+# cleared cache.
+os.environ.setdefault("CLOVER_ENABLED", "true")
+
 import asyncpg
 import pytest
 from httpx import ASGITransport, AsyncClient

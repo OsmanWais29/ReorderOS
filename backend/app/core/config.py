@@ -82,6 +82,11 @@ class Settings(BaseSettings):
 
     # ── Token encryption (Fernet; supports key rotation via _previous) ───────────
     token_encryption_key: str | None = Field(default=None, alias="TOKEN_ENCRYPTION_KEY")
+    # Clover POS integration master switch. Default OFF: receipts (upload →
+    # review → commit) must run without any Clover credentials. Environments
+    # that intentionally run Clover (staging sandbox, prod pilots) set
+    # CLOVER_ENABLED=true, which restores the fail-closed secret requirements.
+    clover_enabled: bool = Field(default=False, alias="CLOVER_ENABLED")
     token_encryption_key_previous: str | None = Field(
         default=None, alias="TOKEN_ENCRYPTION_KEY_PREVIOUS"
     )
@@ -137,10 +142,17 @@ class Settings(BaseSettings):
             "SERVICE_DATABASE_URL": self.service_database_url,
             "WORKOS_CLIENT_ID": self.workos_client_id,
             "WORKOS_JWKS_URL": self.workos_jwks_url,
-            "CLOVER_APP_ID": self.clover_app_id,
-            "CLOVER_APP_SECRET": self.clover_app_secret,
-            "CLOVER_WEBHOOK_AUTH_CODE": self.clover_webhook_auth_code,
         }
+        # Clover secrets are fail-closed ONLY when the integration is on —
+        # receipts-only deployments boot without any Clover credentials.
+        if self.clover_enabled:
+            required.update(
+                {
+                    "CLOVER_APP_ID": self.clover_app_id,
+                    "CLOVER_APP_SECRET": self.clover_app_secret,
+                    "CLOVER_WEBHOOK_AUTH_CODE": self.clover_webhook_auth_code,
+                }
+            )
         # Sprint 6 (receipts / photo extraction) makes these REQUIRED the moment it ships —
         # move them into `required` above at receipts launch (or NOW if receipts are in the
         # first pilot):

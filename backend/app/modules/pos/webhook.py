@@ -24,7 +24,7 @@ from __future__ import annotations
 import hmac
 import json
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy import text
 from uuid6 import uuid7
@@ -34,7 +34,21 @@ from app.core.logging import get_logger
 from app.core.service_db import get_service_sessionmaker
 
 log = get_logger(__name__)
-router = APIRouter(prefix="/webhooks/pos", tags=["webhooks"])
+
+
+async def _require_clover_enabled() -> None:
+    """503 every Clover route when the integration is switched off — the
+    receipts pipeline must run in Clover-less deployments (CLOVER_ENABLED)."""
+    if not get_settings().clover_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "CLOVER_DISABLED", "message": "Clover integration is disabled."},
+        )
+
+
+router = APIRouter(
+    prefix="/webhooks/pos", tags=["webhooks"], dependencies=[Depends(_require_clover_enabled)]
+)
 
 
 @router.post("/clover")

@@ -11,12 +11,14 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.modules.receipts.extraction_llm import AnthropicExtractionClient
 from app.modules.receipts.extraction_worker import ExtractionWorker
+from app.ops.env_check import check_env
 
 log = get_logger(__name__)
 
@@ -33,6 +35,13 @@ def log_unhandled(exc: Exception) -> None:
 
 async def _main() -> None:
     configure_logging()
+    # Fail loudly on unsafe env BEFORE touching the queue (names only).
+    if (os.environ.get("APP_ENV") or "").strip().lower() == "production":
+        report = check_env("receipt_extraction_worker")
+        if not report.ready:
+            log.error("receipt_extraction_worker.env_not_ready", failures=report.failures)
+            raise SystemExit(1)
+        log.info("receipt_extraction_worker.env_ready")
     settings = get_settings()
     if not settings.anthropic_api_key:
         log.error("receipt_extraction_worker.no_api_key")

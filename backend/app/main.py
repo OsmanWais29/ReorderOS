@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -15,6 +16,7 @@ from app.core.config import get_settings
 from app.core.database import dispose_engine
 from app.core.logging import configure_logging, get_logger
 from app.modules.observability.router import router as observability_router
+from app.ops.env_check import check_env
 
 
 async def _assert_schema_at_head() -> None:
@@ -51,6 +53,16 @@ async def _assert_schema_at_head() -> None:
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     log = get_logger("app.lifespan")
+    # Env readiness BEFORE Settings: a dangling DO secret dies here with a
+    # names-only report instead of a pydantic traceback (2026-07-15 incident).
+    if (os.environ.get("APP_ENV") or "").strip().lower() == "production":
+        report = check_env("api")
+        if not report.ready:
+            log.error("env.not_ready", profile="api", failures=report.failures)
+            raise RuntimeError(
+                "environment not ready (names only): " + ", ".join(sorted(report.failures))
+            )
+        log.info("env.ready", profile="api")
     settings = get_settings()
     log.info("startup", env=settings.app_env, version=__version__)
     await _assert_schema_at_head()

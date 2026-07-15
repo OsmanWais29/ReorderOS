@@ -11,16 +11,25 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
 
 from app.core.logging import configure_logging, get_logger
 from app.modules.pos.worker import InboxWorker
+from app.ops.env_check import check_env
 
 log = get_logger(__name__)
 
 
 async def _main() -> None:
     configure_logging()
+    # Fail loudly on unsafe env BEFORE touching the queue (names only).
+    if (os.environ.get("APP_ENV") or "").strip().lower() == "production":
+        report = check_env("inbox_worker")
+        if not report.ready:
+            log.error("inbox_worker.env_not_ready", failures=report.failures)
+            raise SystemExit(1)
+        log.info("inbox_worker.env_ready")
     log.info("inbox_worker.starting")
 
     worker = InboxWorker()

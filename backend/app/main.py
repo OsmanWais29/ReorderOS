@@ -126,9 +126,11 @@ def create_app() -> FastAPI:
     app.include_router(modifiers_router, prefix="/api/v1")
 
     # Sprint 6: receipts (canonical /api/v1/receipts surface)
+    from app.modules.receipts.inbound_webhook import router as inbound_webhook_router
     from app.modules.receipts.router import router as receipts_router
 
     app.include_router(receipts_router, prefix="/api/v1")
+    app.include_router(inbound_webhook_router, prefix="/api/v1")
 
     return app
 

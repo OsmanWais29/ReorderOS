@@ -91,6 +91,14 @@ class Settings(BaseSettings):
         default=None, alias="TOKEN_ENCRYPTION_KEY_PREVIOUS"
     )
 
+    # ── Postmark inbound email (Sprint 6 Phase 3b) ───────────────────────────
+    # Same optionality pattern as CLOVER_ENABLED: OFF (default) the webhook 503s
+    # and no Postmark credentials are required anywhere; ON restores fail-closed
+    # (both Basic Auth halves required at production boot).
+    postmark_inbound_enabled: bool = Field(default=False, alias="POSTMARK_INBOUND_ENABLED")
+    postmark_webhook_user: str | None = Field(default=None, alias="POSTMARK_WEBHOOK_USER")
+    postmark_webhook_password: str | None = Field(default=None, alias="POSTMARK_WEBHOOK_PASSWORD")
+
     # ── CORS ─────────────────────────────────────────────────────────────────
     cors_origins: list[str] = Field(
         default=["http://localhost:8081"],
@@ -151,6 +159,15 @@ class Settings(BaseSettings):
                     "CLOVER_APP_ID": self.clover_app_id,
                     "CLOVER_APP_SECRET": self.clover_app_secret,
                     "CLOVER_WEBHOOK_AUTH_CODE": self.clover_webhook_auth_code,
+                }
+            )
+        # Postmark inbound Basic Auth is fail-closed ONLY when the channel is on —
+        # a production deploy with the webhook enabled but half-configured must not boot.
+        if self.postmark_inbound_enabled:
+            required.update(
+                {
+                    "POSTMARK_WEBHOOK_USER": self.postmark_webhook_user,
+                    "POSTMARK_WEBHOOK_PASSWORD": self.postmark_webhook_password,
                 }
             )
         # Sprint 6 (receipts / photo extraction) makes these REQUIRED the moment it ships —

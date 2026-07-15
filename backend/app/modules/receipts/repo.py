@@ -38,21 +38,31 @@ async def create_draft(
     supplier_name: str | None = None,
     invoice_date: date | None = None,
     created_by: UUID | None = None,
+    inbound_email_id: UUID | None = None,
+    filter_flags: list[str] | None = None,
+    extraction_status: str = "none",
 ) -> UUID:
     """Insert a draft receipt and return its id. `source` is one of the intake enum
     values (mobile_photo/manual/...). The caller (services) supplies a validated
-    photo_object_key for the upload path."""
+    photo_object_key for the upload path. The email intake worker supplies
+    inbound_email_id/filter_flags/extraction_status at INSERT time — service_worker
+    holds INSERT on receipts but its UPDATE grant is column-scoped and deliberately
+    excludes these intake columns."""
+    import json
+
     rid = receipt_id or uuid4()
     await db.execute(
         text("""
             INSERT INTO receipts
                 (id, tenant_id, commit_state, source, photo_object_key,
                  original_filename, mime_type, file_size_bytes, supplier_name,
-                 invoice_date, created_by)
+                 invoice_date, created_by, inbound_email_id, filter_flags,
+                 extraction_status)
             VALUES
                 (:id, :tid, 'draft', :source, :key,
                  :fname, :mime, :size, :supplier,
-                 :inv_date, :by)
+                 :inv_date, :by, :inbound_email_id, CAST(:flags AS jsonb),
+                 :extraction_status)
         """),
         {
             "id": rid,
@@ -65,6 +75,9 @@ async def create_draft(
             "supplier": supplier_name,
             "inv_date": invoice_date,
             "by": created_by,
+            "inbound_email_id": inbound_email_id,
+            "flags": json.dumps(filter_flags or []),
+            "extraction_status": extraction_status,
         },
     )
     return rid

@@ -84,6 +84,10 @@ _WORKOS = (
     Var("WORKOS_SECRET_KEY", secret=True),
 )
 _TOKENS = (Var("TOKEN_ENCRYPTION_KEY", secret=True),)
+_POSTMARK = (
+    Var("POSTMARK_WEBHOOK_USER", secret=True, when="POSTMARK_INBOUND_ENABLED"),
+    Var("POSTMARK_WEBHOOK_PASSWORD", secret=True, when="POSTMARK_INBOUND_ENABLED"),
+)
 
 # alembic/env.py loads full Settings, whose production fail-closed check demands
 # these four — so the migrate job needs them even though alembic itself only
@@ -108,10 +112,13 @@ def _dedupe(*groups: tuple[Var, ...]) -> tuple[Var, ...]:
 
 
 PROFILES: dict[str, tuple[Var, ...]] = {
-    "api": _dedupe(_DB, _SERVICE_DB, _TOKENS, _WORKOS, _CLOVER, _SPACES),
+    "api": _dedupe(_DB, _SERVICE_DB, _TOKENS, _WORKOS, _CLOVER, _SPACES, _POSTMARK),
     "receipt_extraction_worker": _dedupe(
         _SERVICE_DB, _SPACES, (Var("ANTHROPIC_API_KEY", secret=True),)
     ),
+    # Fan-out only: reads inbox rows, creates drafts + jobs. No Spaces (the
+    # webhook uploaded the bytes), no Anthropic (extraction is a separate worker).
+    "inbound_email_worker": _dedupe(_SERVICE_DB),
     "inbox_worker": _dedupe(
         _SERVICE_DB,
         _TOKENS,

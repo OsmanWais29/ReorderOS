@@ -1,0 +1,64 @@
+"""Inbound email fan-out worker entry point (Sprint 6 Phase 3b).
+
+Runs the InboundEmailWorker claim-process loop indefinitely. Single DigitalOcean
+App Platform Worker component. Requires SERVICE_DATABASE_URL (service_worker);
+no Spaces or Anthropic access — the webhook uploaded the bytes, the extraction
+worker downloads them.
+
+Usage:
+  python -m app.workers.inbound_email_worker
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import signal
+
+from app.core.logging import configure_logging, get_logger
+from app.modules.receipts.inbound_email_worker import InboundEmailWorker
+from app.ops.env_check import check_env
+
+log = get_logger(__name__)
+
+
+def log_unhandled(exc: Exception) -> None:
+    """Class only (D-606-15) — driver exception strings embed row content."""
+    log.error("inbound_email_worker.unhandled", error_class=type(exc).__name__)
+
+
+async def _main() -> None:
+    configure_logging()
+    if (os.environ.get("APP_ENV") or "").strip().lower() == "production":
+        report = check_env("inbound_email_worker")
+        if not report.ready:
+            log.error("inbound_email_worker.env_not_ready", failures=report.failures)
+            raise SystemExit(1)
+        log.info("inbound_email_worker.env_ready")
+
+    worker = InboundEmailWorker()
+    log.info("inbound_email_worker.starting")
+    loop = asyncio.get_running_loop()
+    stop_event = asyncio.Event()
+
+    def _handle_signal() -> None:
+        log.info("inbound_email_worker.shutdown_requested")
+        stop_event.set()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, _handle_signal)
+
+    while not stop_event.is_set():
+        try:
+            did_work = await worker.process_once()
+        except Exception as exc:  # never let one row kill the loop
+            log_unhandled(exc)
+            did_work = False
+        if not did_work:
+            await asyncio.sleep(2)
+
+    log.info("inbound_email_worker.stopped")
+
+
+if __name__ == "__main__":
+    asyncio.run(_main())

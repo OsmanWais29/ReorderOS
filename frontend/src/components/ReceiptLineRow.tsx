@@ -260,7 +260,11 @@ function ConversionPanel({
   const su = line.item_storage_unit ?? '';
   const pq = line.received_quantity; // pre-confirm, this IS the invoice qty
   const q = Number(convQty.replace(',', '.'));
-  const totalCents = line.unit_cost_cents != null && pq ? line.unit_cost_cents * pq : null;
+  // Printed line total is the costing truth (weight-priced lines make
+  // unit_cost x purchase_qty wrong); fall back to the product only without it.
+  const totalCents =
+    line.line_total_cents ??
+    (line.unit_cost_cents != null && pq ? line.unit_cost_cents * pq : null);
   const perUnit =
     totalCents != null && Number.isFinite(q) && q > 0 ? totalCents / q / 100 : null;
   const valid =
@@ -295,6 +299,11 @@ function ConversionPanel({
         {t.rcptConvInvoiceSays} {pq} {line.extracted_unit}
       </Text>
       {clue ? <Text style={styles.convCost}>{clue}</Text> : null}
+      {line.unit_mismatch_warning ? (
+        <Text style={styles.convWarn}>
+          {t.rcptConvDimWarn.replace('{unit}', su)}
+        </Text>
+      ) : null}
 
       {!editing && hasSuggestion ? (
         <>
@@ -375,6 +384,7 @@ const styles = StyleSheet.create({
   convUnit: { ...TYPE.subhead, color: T.sec },
   convCost: { ...TYPE.footnote, color: T.ter },
   convSuggest: { ...TYPE.headline, color: T.text },
+  convWarn: { ...TYPE.footnote, color: T.amber },
   nameSkipped: { textDecorationLine: 'line-through', color: T.sec },
   fields: { flexDirection: 'row', gap: 12 },
   field: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },

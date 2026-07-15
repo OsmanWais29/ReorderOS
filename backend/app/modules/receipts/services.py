@@ -57,6 +57,12 @@ class LineNotLinked(Exception):
     conversion is item-relative (→ 422 RECEIPT_LINE_NOT_LINKED)."""
 
 
+class LineConversionInconsistent(Exception):
+    """received_quantity, purchase_quantity and conversion_factor disagree —
+    committing the mismatch would move the wrong stock quantity
+    (→ 422 RECEIPT_CONVERSION_INCONSISTENT)."""
+
+
 class ResetNeedsConfirm(Exception):
     """reset-extraction called without discard_edits=true — destructive action
     requires the explicit flag (→ 409 RECEIPT_RESET_NEEDS_CONFIRM)."""
@@ -269,7 +275,7 @@ async def update_line(
             await db.execute(
                 text("""
                     SELECT id, inventory_item_id, match_status, received_quantity,
-                           extracted_unit, purchase_unit
+                           extracted_unit, purchase_unit, purchase_quantity
                       FROM receipt_lines
                      WHERE tenant_id = :tid AND receipt_id = :rid AND id = :lid
                      FOR UPDATE
@@ -324,6 +330,20 @@ async def update_line(
         effective_item = params.get("iid") or line["inventory_item_id"]
         if effective_item is None:
             raise LineNotLinked
+        # Consistency floor (live smoke: a line saved qty=2 ml with factor
+        # 5676 ml/CS — 2 CS became a 2 ml movement). The three numbers must
+        # agree: received_quantity = purchase_quantity x conversion_factor,
+        # within 1% (suggestion factors are quantized to 4 dp).
+        purchase_qty = line["purchase_quantity"] or line["received_quantity"]
+        if purchase_qty is not None and patch.conversion_factor is not None:
+            expected = Decimal(str(purchase_qty)) * patch.conversion_factor
+            got = patch.received_quantity
+            assert got is not None  # schema-enforced with received_unit
+            if expected <= 0 or abs(got - expected) / expected > Decimal("0.01"):
+                raise LineConversionInconsistent(
+                    f"received_quantity {got} != purchase_quantity {purchase_qty} "
+                    f"x factor {patch.conversion_factor} (= {expected})"
+                )
         # Stash the invoice originals ONCE (SET expressions read the OLD row, so
         # COALESCE keeps a prior stash and received_quantity is pre-overwrite).
         sets.append("purchase_quantity = COALESCE(purchase_quantity, received_quantity)")

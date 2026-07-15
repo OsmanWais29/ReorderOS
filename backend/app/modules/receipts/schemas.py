@@ -208,6 +208,11 @@ class ReceiptLineOut(BaseModel):
     pack_size_unit: str | None = None
     actual_weight_qty: float | None = None
     actual_weight_unit: str | None = None
+    # Invoice's printed extended total — the costing ground truth at commit.
+    line_total_cents: int | None = None
+    # Invoice evidence and item storage unit live in different dimensions
+    # (count vs weight etc.) — the operator is probably on the wrong item.
+    unit_mismatch_warning: bool = False
     received_quantity: float | None
     extracted_unit: str | None
     unit_cost_cents: int | None

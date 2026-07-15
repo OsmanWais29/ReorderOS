@@ -101,6 +101,10 @@ export type ReceiptLine = {
   pack_size_unit: string | null;
   actual_weight_qty: number | null;
   actual_weight_unit: string | null;
+  /** Invoice's printed extended total — costing ground truth. */
+  line_total_cents: number | null;
+  /** Invoice evidence vs item storage unit dimension mismatch (wrong item?). */
+  unit_mismatch_warning: boolean;
   received_quantity: number | null;
   extracted_unit: string | null;
   unit_cost_cents: number | null;

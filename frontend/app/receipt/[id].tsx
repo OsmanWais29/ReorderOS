@@ -176,6 +176,8 @@ export default function ReceiptReview() {
         else if (e.code === 'RECEIPT_REVIEW_REQUIRED') setCommitError(t.rcptNeedReview);
         else if (e.code === 'RECEIPT_LINES_UNMATCHED') setCommitError(t.rcptLinesUnmatched);
         else if (e.code === 'RECEIPT_CONVERSION_REQUIRED') setCommitError(t.rcptConvNeeded);
+        else if (e.code === 'RECEIPT_CONVERSION_INCONSISTENT')
+          setCommitError(t.rcptConvInconsistent);
         else if (e.code === 'RECEIPT_NOTHING_TO_COMMIT') setCommitError(t.rcptNothingToCommit);
         else if (e.status === 403) setCommitError(t.rcptManagerOnly);
         else setCommitError(e.detail);

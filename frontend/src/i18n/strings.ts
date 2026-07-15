@@ -165,6 +165,9 @@ export const STRINGS = {
     rcptConvRemembered: 'remembered',
     rcptConvClue: 'Package:',
     rcptConvActual: 'actual weight',
+    rcptConvDimWarn: 'Invoice looks like a different unit type than this item ({unit}). Check the item.',
+    rcptConvInconsistent:
+      'Received quantity must equal invoice quantity x pack conversion. Check the numbers.',
     sessionExpired: 'Session expired — sign in again to continue reviewing.',
     signInAgain: 'Sign in again',
     rcptNothingToCommit: 'Every line is skipped — nothing to receive. Dismiss this receipt instead.',
@@ -346,6 +349,10 @@ export const STRINGS = {
     rcptConvRemembered: 'mémorisée',
     rcptConvClue: 'Emballage :',
     rcptConvActual: 'poids réel',
+    rcptConvDimWarn:
+      'La facture suggère un autre type d’unité que cet article ({unit}). Vérifiez l’article.',
+    rcptConvInconsistent:
+      'La quantité reçue doit égaler la quantité facturée x la conversion. Vérifiez les valeurs.',
     sessionExpired: 'Session expirée — reconnectez-vous pour continuer la révision.',
     signInAgain: 'Se reconnecter',
     rcptNothingToCommit: 'Toutes les lignes sont ignorées — rien à recevoir. Rejetez plutôt ce reçu.',

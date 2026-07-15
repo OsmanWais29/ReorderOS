@@ -309,13 +309,13 @@ class ExtractionWorker:
                          unit_cost_cents, extracted_name, extracted_unit, confidence,
                          manually_corrected, match_status, extraction_job_id, job_attempt,
                          line_ordinal, pack_count, pack_size_qty, pack_size_unit,
-                         actual_weight_qty, actual_weight_unit)
+                         actual_weight_qty, actual_weight_unit, line_total_cents)
                     VALUES
                         (:tid, :rid, NULL, :qty,
                          :cost, :name, :unit, :conf,
                          false, 'unmatched', :jid, :att,
                          :ord, :pack_count, :pack_size_qty, :pack_size_unit,
-                         :aw_qty, :aw_unit)
+                         :aw_qty, :aw_unit, :line_total)
                 """),
                 {
                     "tid": tenant_id,
@@ -337,6 +337,8 @@ class ExtractionWorker:
                     "pack_size_unit": _str_or_none(raw_line.get("pack_size_unit")),
                     "aw_qty": _to_optional_decimal(raw_line.get("actual_weight_qty")),
                     "aw_unit": _str_or_none(raw_line.get("actual_weight_unit")),
+                    # Printed extended total — the costing ground truth at commit.
+                    "line_total": _to_int(raw_line.get("line_total_cents")),
                 },
             )
 

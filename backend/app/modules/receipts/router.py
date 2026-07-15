@@ -192,6 +192,15 @@ async def update_receipt_line(
                 "message": "Link an inventory item before confirming its conversion.",
             },
         ) from None
+    except services.LineConversionInconsistent:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "RECEIPT_CONVERSION_INCONSISTENT",
+                "message": "Received quantity must equal invoice quantity x pack "
+                "conversion. Check the numbers and try again.",
+            },
+        ) from None
     except services.ReceiptImmutable:
         raise HTTPException(
             status_code=409,

@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -678,7 +678,7 @@ async def commit_receipt(
                 SELECT rl.id, rl.inventory_item_id, rl.received_quantity,
                        rl.purchase_unit_id, rl.unit_cost_cents, rl.idempotency_key,
                        rl.match_status, rl.manually_corrected, rl.extracted_unit,
-                       rl.received_unit,
+                       rl.received_unit, rl.line_total_cents,
                        pu.name AS purchase_unit_name, su.name AS storage_unit_name
                   FROM receipt_lines rl
                   LEFT JOIN units_of_measure pu ON pu.id = rl.purchase_unit_id
@@ -771,18 +771,30 @@ async def commit_receipt(
             key=key,
         )
 
-        if ln["unit_cost_cents"] is not None:
+        # Cost basis precedence: the invoice's printed line total over storage
+        # qty (exact, survives weight-priced lines and sub-cent unit costs) →
+        # else the line's unit_cost_cents (manual path; already per received
+        # unit). NUMERIC column is the truth; the legacy int column is a
+        # rounded convenience for existing readers.
+        exact_cost: Decimal | None = None
+        if ln["line_total_cents"] is not None and storage_qty > 0:
+            exact_cost = Decimal(ln["line_total_cents"]) / storage_qty
+        elif ln["unit_cost_cents"] is not None:
+            exact_cost = Decimal(ln["unit_cost_cents"])
+        if exact_cost is not None:
             await session.execute(
                 text("""
                     INSERT INTO ingredient_cost_snapshots
                         (id, tenant_id, inventory_item_id, unit_cost_cents,
-                         purchase_unit_id, source_receipt_line_id)
-                    VALUES (gen_random_uuid(), :tid, :iid, :cost, :puid, :lid)
+                         unit_cost_cents_exact, purchase_unit_id,
+                         source_receipt_line_id)
+                    VALUES (gen_random_uuid(), :tid, :iid, :cost, :exact, :puid, :lid)
                 """),
                 {
                     "tid": tenant_id,
                     "iid": item_id,
-                    "cost": ln["unit_cost_cents"],
+                    "cost": int(exact_cost.quantize(Decimal("1"), rounding=ROUND_HALF_UP)),
+                    "exact": exact_cost.quantize(Decimal("0.0001")),
                     "puid": ln["purchase_unit_id"],
                     "lid": line_id,
                 },

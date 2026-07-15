@@ -17,8 +17,9 @@ from uuid import UUID, uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.inventory.depletion.units import DIMENSION_OF
 from app.modules.inventory.item_resolver import suggest_inventory_items
-from app.modules.receipts.conversion import suggest_conversion
+from app.modules.receipts.conversion import hint_dimension, suggest_conversion
 
 # commit_states a draft can still be dismissed/cancelled/deleted from.
 _MUTABLE_STATES = ("draft", "pending_review")
@@ -108,7 +109,7 @@ async def get_receipt(db: AsyncSession, tenant_id: UUID, receipt_id: UUID) -> di
                        rl.conversion_factor, rl.conversion_source,
                        rl.conversion_confirmed_at,
                        rl.pack_count, rl.pack_size_qty, rl.pack_size_unit,
-                       rl.actual_weight_qty, rl.actual_weight_unit
+                       rl.actual_weight_qty, rl.actual_weight_unit, rl.line_total_cents
                   FROM receipt_lines rl
                   LEFT JOIN inventory_items ii ON ii.id = rl.inventory_item_id
                   LEFT JOIN units_of_measure su ON su.id = ii.storage_unit_id
@@ -149,7 +150,12 @@ async def get_receipt(db: AsyncSession, tenant_id: UUID, receipt_id: UUID) -> di
             else []
         )
         row.update(
-            {"suggested_quantity": None, "suggested_factor": None, "suggestion_source": None}
+            {
+                "suggested_quantity": None,
+                "suggested_factor": None,
+                "suggestion_source": None,
+                "unit_mismatch_warning": False,
+            }
         )
         # Conversion prefill: only for linked, not-yet-confirmed lines whose
         # invoice U/M isn't already the storage unit.
@@ -175,6 +181,15 @@ async def get_receipt(db: AsyncSession, tenant_id: UUID, receipt_id: UUID) -> di
                 row["suggested_quantity"] = float(s.quantity)
                 row["suggested_factor"] = float(s.factor)
                 row["suggestion_source"] = s.source
+            # Cross-dimension smell: invoice evidence says count/volume/weight
+            # but the item stores in a different dimension → the OPERATOR is
+            # probably on the wrong item. Strong UI warning, not a block (v1).
+            hd = hint_dimension(
+                row["pack_size_unit"], row["actual_weight_unit"], row["extracted_unit"]
+            )
+            sd = DIMENSION_OF.get(row["item_storage_unit"] or "")
+            if hd is not None and sd is not None and hd != sd:
+                row["unit_mismatch_warning"] = True
         result["lines"].append(row)
     return result
 

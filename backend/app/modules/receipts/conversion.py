@@ -138,6 +138,21 @@ def suggest_conversion(
     return None
 
 
+def hint_dimension(
+    pack_size_unit: str | None,
+    actual_weight_unit: str | None,
+    purchase_unit: str | None,
+) -> str | None:
+    """The dimension (weight/volume/count) the INVOICE evidence points at —
+    used to flag a linked item whose storage unit lives in a different
+    dimension (live smoke: a 1000CT goblet case linked to an oz_weight item)."""
+    for raw in (pack_size_unit, actual_weight_unit, purchase_unit):
+        norm = normalize_hint_unit(raw)
+        if norm is not None:
+            return DIMENSION_OF[norm]
+    return None
+
+
 def round_unit_cost_cents(line_total_cents: int, storage_qty: Decimal) -> int | None:
     """Per-storage-unit cost from the printed line total (8244 / 48 L → 172)."""
     if storage_qty <= 0:

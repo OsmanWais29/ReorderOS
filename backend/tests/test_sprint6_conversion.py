@@ -383,10 +383,10 @@ async def _seed_commitable(db: Any) -> dict[str, Any]:
         text("""
             INSERT INTO receipt_lines
                 (id, tenant_id, receipt_id, extracted_name, received_quantity,
-                 extracted_unit, unit_cost_cents, match_status, manually_corrected,
-                 inventory_item_id, line_ordinal)
-            VALUES (:id, :t, :r, 'LAIT 3.25% 4x4L', 3, 'CS', 2748, 'matched', true,
-                    :i, 0)
+                 extracted_unit, unit_cost_cents, line_total_cents, match_status,
+                 manually_corrected, inventory_item_id, line_ordinal)
+            VALUES (:id, :t, :r, 'LAIT 3.25% 4x4L', 3, 'CS', 2748, 8244, 'matched',
+                    true, :i, 0)
         """),
         {"id": lid, "t": tid, "r": rid, "i": item_id},
     )
@@ -456,14 +456,15 @@ async def test_commit_after_confirm_moves_48L_and_costs_per_L(db: Any) -> None:
     snap = (
         await db.execute(
             text(
-                "SELECT unit_cost_cents FROM ingredient_cost_snapshots "
+                "SELECT unit_cost_cents, unit_cost_cents_exact FROM ingredient_cost_snapshots "
                 "WHERE tenant_id=:t AND inventory_item_id=:i"
             ),
             {"t": s["tenant_id"], "i": s["item_id"]},
         )
     ).fetchall()
     assert len(snap) == 1
-    assert snap[0][0] == 172  # cents per L
+    assert snap[0][0] == 172  # rounded legacy column
+    assert Decimal(str(snap[0][1])) == D("171.75")  # exact: 8244 / 48 L
 
     oh = await on_hand(db, tenant_id=s["tenant_id"], inventory_item_id=s["item_id"])
     assert oh is not None and Decimal(str(oh)) == D(48)
@@ -516,3 +517,219 @@ async def test_depletion_math_48L_minus_10_sales_of_quarter_L(db: Any) -> None:
         )
     oh = await on_hand(db, tenant_id=s["tenant_id"], inventory_item_id=s["item_id"])
     assert oh is not None and Decimal(str(oh)) == D("45.5")
+
+
+# ── cost precision: the full Lauzon examples table (blocker 1) ────────────────
+
+
+async def _seed_costed_line(
+    db: Any,
+    tid: uuid.UUID,
+    rid: uuid.UUID,
+    ordinal: int,
+    *,
+    name: str,
+    storage: str,
+    unit_type: str,
+    line_total: int,
+    purchase_qty: str,
+    purchase_unit: str,
+    recv_qty: str,
+    factor: str,
+) -> uuid.UUID:
+    unit_id = (
+        await db.execute(
+            text(
+                "INSERT INTO units_of_measure (tenant_id, name, abbreviation, unit_type) "
+                "VALUES (:t, :n, :n, :ut) ON CONFLICT (tenant_id, name) DO UPDATE "
+                "SET abbreviation=EXCLUDED.abbreviation RETURNING id"
+            ),
+            {"t": tid, "n": storage, "ut": unit_type},
+        )
+    ).scalar_one()
+    item_id = (
+        await db.execute(
+            text(
+                "INSERT INTO inventory_items (tenant_id, name, inventory_mode, "
+                "storage_unit_id, recipe_unit_id) VALUES (:t, :n, 'recipe_deducted', :u, :u) "
+                "RETURNING id"
+            ),
+            {"t": tid, "n": name, "u": unit_id},
+        )
+    ).scalar_one()
+    await db.execute(
+        text("""
+            INSERT INTO receipt_lines
+                (tenant_id, receipt_id, extracted_name, received_quantity, received_unit,
+                 extracted_unit, purchase_quantity, purchase_unit, conversion_factor,
+                 conversion_source, conversion_confirmed_at, line_total_cents,
+                 match_status, manually_corrected, inventory_item_id, line_ordinal)
+            VALUES (:t, :r, :n, CAST(:rq AS numeric), :ru, :pu, CAST(:pq AS numeric), :pu,
+                    CAST(:f AS numeric), 'operator_confirmed', now(), :lt, 'matched',
+                    true, :i, :o)
+        """),
+        {
+            "t": tid,
+            "r": rid,
+            "n": name,
+            "rq": recv_qty,
+            "ru": storage,
+            "pu": purchase_unit,
+            "pq": purchase_qty,
+            "f": factor,
+            "lt": line_total,
+            "i": item_id,
+            "o": ordinal,
+        },
+    )
+    return item_id
+
+
+async def test_cost_snapshots_exact_lauzon_examples(db: Any) -> None:
+    """Blocker-1 acceptance: exact NUMERIC unit costs from printed line totals.
+    milk 8244/48=171.75 ¢/L · espresso 18171/10.18=1784.9706 ¢/kg ·
+    oat 6588/11352=0.5803 ¢/ml · goblets 9230/1000=9.23 ¢/ea."""
+    tid, rid = uuid.uuid4(), uuid.uuid4()
+    await db.execute(
+        text("INSERT INTO tenants (id, slug, name) VALUES (:id, :s, 'CostP')"),
+        {"id": tid, "s": f"cp-{tid.hex[:8]}"},
+    )
+    await db.execute(
+        text(
+            "INSERT INTO receipts (id, tenant_id, commit_state, source) "
+            "VALUES (:id, :t, 'draft', 'manual')"
+        ),
+        {"id": rid, "t": tid},
+    )
+    cases = [
+        # (name, storage, unit_type, line_total, pq, pu, rq, factor, expected_exact, expected_int)
+        ("LAIT 3.25%", "L", "volume", 8244, "3", "CS", "48", "16", "171.75", 172),
+        ("ESPRESSO", "kg", "weight", 18171, "2", "SAC", "10.18", "5.09", "1784.9705", 1785),
+        ("AVOINE", "ml", "volume", 6588, "2", "CS", "11352", "5676", "0.5803", 1),
+        ("GOBELET", "ea", "count", 9230, "1", "CS", "1000", "1000", "9.23", 9),
+    ]
+    items = {}
+    for i, (name, storage, ut, lt, pq, pu, rq, f, _, _e) in enumerate(cases):
+        items[name] = await _seed_costed_line(
+            db,
+            tid,
+            rid,
+            i,
+            name=name,
+            storage=storage,
+            unit_type=ut,
+            line_total=lt,
+            purchase_qty=pq,
+            purchase_unit=pu,
+            recv_qty=rq,
+            factor=f,
+        )
+
+    result = await commit_receipt(
+        db, tenant_id=tid, receipt_id=rid, confirm=True, reviewed_affirmation=True
+    )
+    assert result["status"] == "committed"
+
+    for name, _storage, _ut, lt, _pq, _pu, rq, _f, expected_exact, expected_int in cases:
+        row = (
+            await db.execute(
+                text(
+                    "SELECT unit_cost_cents, unit_cost_cents_exact "
+                    "FROM ingredient_cost_snapshots WHERE tenant_id=:t "
+                    "AND inventory_item_id=:i"
+                ),
+                {"t": tid, "i": items[name]},
+            )
+        ).fetchone()
+        assert row is not None, name
+        assert row[0] == expected_int, f"{name} int"
+        got = Decimal(str(row[1]))
+        assert abs(got - D(expected_exact)) <= D("0.0001"), f"{name} exact: {got}"
+        # storage never destroyed the precision display would round away
+        mv = (
+            await db.execute(
+                text(
+                    "SELECT delta FROM inventory_movements WHERE tenant_id=:t "
+                    "AND inventory_item_id=:i AND movement_type='receive'"
+                ),
+                {"t": tid, "i": items[name]},
+            )
+        ).scalar_one()
+        assert Decimal(str(mv)) == D(rq), f"{name} movement"
+
+
+# ── conversion consistency (blocker 2) ────────────────────────────────────────
+
+
+async def test_inconsistent_conversion_rejected_422(
+    app_instance: Any, conn: AsyncConnection, client: AsyncClient
+) -> None:
+    """The live-smoke escape: qty 2 CS, factor 5676, received_quantity 2 —
+    the three numbers must agree or the confirm is rejected wholesale."""
+    s = await _seed_milk(conn)
+    _as(app_instance, str(s["tenant_id"]), str(s["user_id"]))
+    url = f"/api/v1/receipts/{s['receipt_id']}/lines/{s['line_id']}"
+    r = await client.put(url, json={"inventory_item_id": str(s["item_id"])})
+    assert r.status_code == 200
+
+    r = await client.put(
+        url,
+        json={"received_quantity": 2, "received_unit": "L", "conversion_factor": 5676},
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "RECEIPT_CONVERSION_INCONSISTENT"
+    # nothing changed on the line
+    detail = await client.get(f"/api/v1/receipts/{s['receipt_id']}")
+    [line] = detail.json()["lines"]
+    assert line["received_unit"] is None
+    assert line["conversion_confirmed_at"] is None
+
+    # tolerance: quantized factors still pass (10.18 vs 2 x 5.09 exact)
+    r = await client.put(
+        url,
+        json={"received_quantity": 48, "received_unit": "L", "conversion_factor": 16},
+    )
+    assert r.status_code == 200
+
+
+# ── dimension mismatch warning (blocker 3) ────────────────────────────────────
+
+
+async def test_count_invoice_vs_weight_item_warns(
+    app_instance: Any, conn: AsyncConnection, client: AsyncClient
+) -> None:
+    s = await _seed_milk(conn)
+    _as(app_instance, str(s["tenant_id"]), str(s["user_id"]))
+    # a weight-stored item (like the mis-picked oz_weight goblets)
+    unit_id, item_id, lid = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    await conn.execute(
+        text(
+            "INSERT INTO units_of_measure (id, tenant_id, name, abbreviation, unit_type) "
+            "VALUES (:id, :t, 'oz_weight', 'oz', 'weight')"
+        ),
+        {"id": unit_id, "t": s["tenant_id"]},
+    )
+    await conn.execute(
+        text(
+            "INSERT INTO inventory_items (id, tenant_id, name, inventory_mode, "
+            "storage_unit_id, recipe_unit_id) "
+            "VALUES (:id, :t, 'GOBELET CARTON', 'recipe_deducted', :u, :u)"
+        ),
+        {"id": item_id, "t": s["tenant_id"], "u": unit_id},
+    )
+    await conn.execute(
+        text("""
+            INSERT INTO receipt_lines
+                (id, tenant_id, receipt_id, extracted_name, received_quantity,
+                 extracted_unit, match_status, line_ordinal, inventory_item_id,
+                 pack_count, pack_size_qty, pack_size_unit)
+            VALUES (:id, :t, :r, 'GOBELET 12OZ 1000CT', 1, 'CS', 'matched', 5, :i,
+                    1000, 1, 'CT')
+        """),
+        {"id": lid, "t": s["tenant_id"], "r": s["receipt_id"], "i": item_id},
+    )
+    detail = await client.get(f"/api/v1/receipts/{s['receipt_id']}")
+    lines = {ln["id"]: ln for ln in detail.json()["lines"]}
+    assert lines[str(lid)]["unit_mismatch_warning"] is True  # CT clue vs oz_weight
+    # milk (L clue, unlinked) carries no warning
+    assert lines[str(s["line_id"])]["unit_mismatch_warning"] is False

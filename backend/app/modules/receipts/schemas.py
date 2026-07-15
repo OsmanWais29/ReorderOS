@@ -162,6 +162,9 @@ class ReceiptLineOut(BaseModel):
     id: UUID
     extracted_name: str | None
     inventory_item_id: UUID | None
+    # Linked item's CURRENT name — operator-visible proof of what a match/create
+    # actually linked (extracted_name stays the verbatim invoice text).
+    item_name: str | None = None
     received_quantity: float | None
     extracted_unit: str | None
     unit_cost_cents: int | None

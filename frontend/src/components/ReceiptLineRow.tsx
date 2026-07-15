@@ -74,6 +74,11 @@ export function ReceiptLineRow({
         </Text>
         <Pill label={matchLabel[line.match_status]} tone={matchTone} />
       </View>
+      {!skipped && line.item_name ? (
+        <Text style={styles.linkedItem} numberOfLines={1}>
+          → {line.item_name}
+        </Text>
+      ) : null}
 
       {!skipped ? (
         <View style={styles.fields}>
@@ -174,6 +179,7 @@ const styles = StyleSheet.create({
   cardSkipped: { opacity: 0.55 },
   top: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10 },
   name: { ...TYPE.headline, color: T.text, flex: 1 },
+  linkedItem: { ...TYPE.subhead, color: T.ac },
   nameSkipped: { textDecorationLine: 'line-through', color: T.sec },
   fields: { flexDirection: 'row', gap: 12 },
   field: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },

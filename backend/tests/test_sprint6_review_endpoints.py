@@ -251,6 +251,38 @@ async def test_create_new_item_becomes_created(
     assert created == "Basil"
 
 
+async def test_created_item_uses_edited_name_and_response_echoes_it(
+    app_instance: Any, conn: AsyncConnection, client: AsyncClient
+) -> None:
+    """Live smoke 2026-07-15: operator edited the picker name before creating,
+    but the row kept showing the invoice text and nothing surfaced what got
+    linked. The item must be created with the OPERATOR'S name (never the
+    extracted line text) and every line payload must echo item_name."""
+    s = await _seed(conn)
+    _as(app_instance, str(s["tenant_id"]), str(s["user_id"]))
+
+    r = await client.put(
+        _line_url(s),
+        json={"new_item_name": "Café Grains Espresso Foncé", "new_item_unit": "kg"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["item_name"] == "Café Grains Espresso Foncé"  # echoed for the UI
+    created = (
+        await conn.execute(
+            text("SELECT name FROM inventory_items WHERE tenant_id = :t AND id = :i"),
+            {"t": s["tenant_id"], "i": body["inventory_item_id"]},
+        )
+    ).scalar_one()
+    assert created == "Café Grains Espresso Foncé"  # edited name, not invoice text
+
+    # GET detail carries item_name too (the row's linked-item display).
+    detail = await client.get(f"/api/v1/receipts/{s['receipt_id']}")
+    assert detail.status_code == 200
+    [line] = [ln for ln in detail.json()["lines"] if ln["id"] == str(s["line_ids"][0])]
+    assert line["item_name"] == "Café Grains Espresso Foncé"
+
+
 async def test_clear_item_reverts_to_machine_state(
     app_instance: Any, conn: AsyncConnection, client: AsyncClient
 ) -> None:

@@ -334,11 +334,13 @@ async def update_line(
         (
             await db.execute(
                 text("""
-                    SELECT id, extracted_name, inventory_item_id, received_quantity,
-                           extracted_unit, unit_cost_cents, confidence,
-                           manually_corrected, match_status, line_ordinal
-                      FROM receipt_lines
-                     WHERE tenant_id = :tid AND receipt_id = :rid AND id = :lid
+                    SELECT rl.id, rl.extracted_name, rl.inventory_item_id,
+                           rl.received_quantity, rl.extracted_unit, rl.unit_cost_cents,
+                           rl.confidence, rl.manually_corrected, rl.match_status,
+                           rl.line_ordinal, ii.name AS item_name
+                      FROM receipt_lines rl
+                      LEFT JOIN inventory_items ii ON ii.id = rl.inventory_item_id
+                     WHERE rl.tenant_id = :tid AND rl.receipt_id = :rid AND rl.id = :lid
                 """),
                 {"tid": tenant_id, "rid": receipt_id, "lid": line_id},
             )

@@ -78,6 +78,8 @@ export type ReceiptLine = {
   id: string;
   extracted_name: string | null;
   inventory_item_id: string | null;
+  /** Linked item's current name — proof of what matched/created actually linked. */
+  item_name: string | null;
   received_quantity: number | null;
   extracted_unit: string | null;
   unit_cost_cents: number | null;

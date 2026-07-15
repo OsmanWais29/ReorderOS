@@ -307,16 +307,26 @@ def test_spend_hook_is_documented_disabled() -> None:
 # ── extraction LLM module (no network) ────────────────────────────────────────
 
 
-def test_tool_schema_constrains_units_and_requires_document_type() -> None:
-    from app.modules.inventory.depletion.units import CANONICAL_UNITS
-    from app.modules.receipts.extraction_llm import tool_schema
+def test_tool_schema_preserves_supplier_um_and_classifies_lines() -> None:
+    """Extraction must keep the invoice U/M verbatim (no canonical-unit enum —
+    that enum is what collapsed SAC/CS into kg/ea on the live smoke) and must
+    classify special rows via line_type."""
+    from app.modules.receipts.extraction_llm import LINE_TYPES, tool_schema
 
     schema = tool_schema()
     props = schema["input_schema"]["properties"]
     assert "document_type" in schema["input_schema"]["required"]
     assert props["document_type"]["enum"] == ["invoice", "not_invoice"]
-    unit_enum = props["lines"]["items"]["properties"]["unit"]["enum"]
-    assert set(unit_enum) == set(CANONICAL_UNITS)
+    line_props = props["lines"]["items"]["properties"]
+    assert "enum" not in line_props["unit"]  # U/M is free text, verbatim
+    assert "exactly as printed" in line_props["unit"]["description"].lower()
+    assert line_props["line_type"]["enum"] == LINE_TYPES
+    assert LINE_TYPES == ["item", "discount", "credit", "backorder", "fee_or_deposit"]
+    assert line_props["line_total_cents"]["type"] == "integer"
+    assert "line_type" in props["lines"]["items"]["required"]
+    # qty must allow 0 (backorder) and negatives (credit) — no positivity bound.
+    assert "exclusiveMinimum" not in line_props["qty"]
+    assert "minimum" not in line_props["qty"]
 
 
 def test_content_block_image_vs_pdf() -> None:
@@ -326,3 +336,290 @@ def test_content_block_image_vs_pdf() -> None:
     assert img["type"] == "image" and img["source"]["media_type"] == "image/jpeg"
     pdf = _content_block(b"%PDF-", "application/pdf")
     assert pdf["type"] == "document" and pdf["source"]["media_type"] == "application/pdf"
+
+
+# ── invalid-qty lines (smoke-test regression 2026-07-14) ──────────────────────
+# The live smoke test hit a receipt where the LLM returned a qty=0 line
+# (a deposit/zero row) at high confidence: the INSERT violated
+# receipt_lines_qty_positive and rolled back EVERY line. One bad line must
+# never discard the good ones, and the skip must leak no content (D-606-15).
+
+
+async def test_invalid_qty_line_skipped_valid_lines_applied(
+    admin_conn: Any, monkeypatch: Any
+) -> None:
+    from structlog.testing import capture_logs
+
+    payload = {
+        "document_type": "invoice",
+        "lines": [
+            {
+                "name": "ZERO-QTY-SENTINEL-DEPOSIT",
+                "qty": 0,
+                "unit": "ea",
+                "unit_price_cents": 1140,
+                "confidence": 0.99,
+            },
+            {"name": "Flour", "qty": 5, "unit": "kg", "unit_price_cents": 250, "confidence": 0.9},
+        ],
+    }
+    tid, rid, jid = await _seed(admin_conn)
+    try:
+        with capture_logs() as logs:
+            assert await _run(admin_conn, monkeypatch, FakeExtractionClient(payload)) is True
+
+        # The job completes and the VALID line is applied at its original ordinal.
+        assert (
+            await admin_conn.fetchval("SELECT status FROM receipt_extraction_jobs WHERE id=$1", jid)
+            == "complete"
+        )
+        lines = await admin_conn.fetch(
+            "SELECT extracted_name, line_ordinal FROM receipt_lines WHERE receipt_id=$1", rid
+        )
+        assert [(r["extracted_name"], r["line_ordinal"]) for r in lines] == [("Flour", 1)]
+
+        # Extraction is known-incomplete → manual flag; confidence from applied lines only.
+        rec = await admin_conn.fetchrow(
+            "SELECT extraction_status, extraction_confidence, manual_entry_required "
+            "FROM receipts WHERE id=$1",
+            rid,
+        )
+        assert rec["extraction_status"] == "complete"
+        assert float(rec["extraction_confidence"]) == pytest.approx(0.9)
+        assert rec["manual_entry_required"] is True
+
+        # Content-free telemetry: the skip is COUNTED, the line text never logged.
+        skip_events = [e for e in logs if e.get("lines_skipped_invalid_qty")]
+        assert len(skip_events) == 1
+        assert skip_events[0]["lines_skipped_invalid_qty"] == 1
+        assert skip_events[0]["lines_applied"] == 1
+        assert "ZERO-QTY-SENTINEL-DEPOSIT" not in str(logs)
+    finally:
+        await _cleanup(admin_conn, tid)
+
+
+async def test_all_lines_invalid_qty_completes_with_manual_flag(
+    admin_conn: Any, monkeypatch: Any
+) -> None:
+    payload = {
+        "document_type": "invoice",
+        "lines": [{"name": "Deposit", "qty": 0, "unit": "ea", "confidence": 0.9}],
+    }
+    tid, rid, jid = await _seed(admin_conn)
+    try:
+        assert await _run(admin_conn, monkeypatch, FakeExtractionClient(payload)) is True
+        assert (
+            await admin_conn.fetchval("SELECT status FROM receipt_extraction_jobs WHERE id=$1", jid)
+            == "complete"
+        )
+        n = await admin_conn.fetchval("SELECT count(*) FROM receipt_lines WHERE receipt_id=$1", rid)
+        assert n == 0
+        rec = await admin_conn.fetchrow(
+            "SELECT extraction_confidence, manual_entry_required FROM receipts WHERE id=$1", rid
+        )
+        assert rec["extraction_confidence"] is None  # no applied lines
+        assert rec["manual_entry_required"] is True
+    finally:
+        await _cleanup(admin_conn, tid)
+
+
+def test_prompts_forbid_unit_conversion() -> None:
+    from app.modules.receipts import extraction_llm as m
+
+    assert "never convert" in m._SYSTEM.lower()
+    assert "canonical" not in m._SYSTEM.lower()
+
+
+# ── supplier U/M + special-line semantics (live-invoice regression 2026-07-14) ─
+# Structured fixture of the real smoke-test invoice: mixed SAC/CS/EA purchase
+# units, a case+unit split of the same product, a promo discount, a backordered
+# qty-0 row, and a damaged-goods credit. The first live extraction collapsed
+# SAC/CS into canonical kg/ea and turned the credit into a positive receive with
+# negative cost — these assertions pin the corrected semantics.
+
+_LIVE_INVOICE = {
+    "document_type": "invoice",
+    "supplier_name": "Distribution Alimentaire QC",
+    "invoice_number": "INV-2026-4417",
+    "lines": [
+        {
+            "name": "Café Grains Espresso Foncé 5kg",
+            "line_type": "item",
+            "qty": 2,
+            "unit": "SAC",
+            "unit_price_cents": 1785,
+            "line_total_cents": 18171,
+            "confidence": 0.95,
+        },
+        {
+            "name": "Lait 3.25% 4x4L",
+            "line_type": "item",
+            "qty": 3,
+            "unit": "CS",
+            "unit_price_cents": 2748,
+            "line_total_cents": 8244,
+            "confidence": 0.97,
+        },
+        {
+            "name": "Crème à Fouetter 35% 12x1L",
+            "line_type": "item",
+            "qty": 1,
+            "unit": "CS",
+            "unit_price_cents": 5820,
+            "line_total_cents": 5820,
+            "confidence": 0.96,
+        },
+        {
+            "name": "Boisson Avoine Barista 6x946mL",
+            "line_type": "item",
+            "qty": 2,
+            "unit": "CS",
+            "unit_price_cents": 3294,
+            "line_total_cents": 6588,
+            "confidence": 0.95,
+        },
+        {
+            "name": "Boisson Avoine Barista 946mL Unit",
+            "line_type": "item",
+            "qty": 4,
+            "unit": "EA",
+            "unit_price_cents": 579,
+            "line_total_cents": 2316,
+            "confidence": 0.94,
+        },
+        {
+            "name": "Sirop Vanille 750mL",
+            "line_type": "item",
+            "qty": 6,
+            "unit": "EA",
+            "unit_price_cents": 895,
+            "line_total_cents": 5370,
+            "confidence": 0.96,
+        },
+        {
+            "name": "Promo Discount 10%",
+            "line_type": "discount",
+            "qty": 1,
+            "unit": "EA",
+            "line_total_cents": -537,
+            "confidence": 0.9,
+        },
+        {
+            "name": "Frozen Butter Croissants 70g 90ct",
+            "line_type": "item",
+            "qty": 1,
+            "unit": "CS",
+            "unit_price_cents": 6165,
+            "line_total_cents": 6165,
+            "confidence": 0.95,
+        },
+        {
+            "name": "Goblet Carton 12oz 1000ct",
+            "line_type": "item",
+            "qty": 1,
+            "unit": "CS",
+            "unit_price_cents": 9230,
+            "line_total_cents": 9230,
+            "confidence": 0.95,
+        },
+        {
+            "name": "White Sugar 2kg",
+            "line_type": "item",
+            "qty": 3,
+            "unit": "EA",
+            "unit_price_cents": 429,
+            "line_total_cents": 1287,
+            "confidence": 0.96,
+        },
+        {
+            "name": "Thé Chai Concentré 946mL (backordered)",
+            "line_type": "backorder",
+            "qty": 0,
+            "unit": "EA",
+            "unit_price_cents": 1140,
+            "line_total_cents": 0,
+            "confidence": 0.93,
+        },
+        {
+            "name": "CR-889 Credit Lait 2% damaged",
+            "line_type": "credit",
+            "qty": -1,
+            "unit": "CS",
+            "unit_price_cents": 2510,
+            "line_total_cents": -2510,
+            "confidence": 0.92,
+        },
+    ],
+}
+
+
+async def test_live_invoice_semantics_um_preserved_specials_not_received(
+    admin_conn: Any, monkeypatch: Any
+) -> None:
+    from structlog.testing import capture_logs
+
+    tid, rid, jid = await _seed(admin_conn)
+    try:
+        with capture_logs() as logs:
+            assert await _run(admin_conn, monkeypatch, FakeExtractionClient(_LIVE_INVOICE)) is True
+
+        assert (
+            await admin_conn.fetchval("SELECT status FROM receipt_extraction_jobs WHERE id=$1", jid)
+            == "complete"
+        )
+
+        rows = await admin_conn.fetch(
+            "SELECT extracted_name, extracted_unit, received_quantity, unit_cost_cents "
+            "FROM receipt_lines WHERE receipt_id=$1 ORDER BY line_ordinal",
+            rid,
+        )
+        by_name = {r["extracted_name"]: r for r in rows}
+
+        # Only the 9 item rows became receive lines.
+        assert len(rows) == 9
+
+        # Supplier U/M preserved VERBATIM — never collapsed to canonical units.
+        milk = by_name["Lait 3.25% 4x4L"]
+        assert milk["extracted_unit"] == "CS"
+        assert milk["received_quantity"] == 3
+        assert milk["unit_cost_cents"] == 2748
+        assert by_name["Café Grains Espresso Foncé 5kg"]["extracted_unit"] == "SAC"
+        assert by_name["Café Grains Espresso Foncé 5kg"]["received_quantity"] == 2
+        assert by_name["Boisson Avoine Barista 6x946mL"]["extracted_unit"] == "CS"
+        assert by_name["Boisson Avoine Barista 6x946mL"]["received_quantity"] == 2
+        assert by_name["Boisson Avoine Barista 946mL Unit"]["extracted_unit"] == "EA"
+        assert by_name["Boisson Avoine Barista 946mL Unit"]["received_quantity"] == 4
+        assert by_name["White Sugar 2kg"]["extracted_unit"] == "EA"
+        assert by_name["White Sugar 2kg"]["received_quantity"] == 3
+
+        # Credit is NOT a normal positive receive; discount and backorder create
+        # no receive line either.
+        assert not any("Credit" in n for n in by_name)
+        assert not any("Discount" in n for n in by_name)
+        assert not any("Chai" in n for n in by_name)
+        assert all(r["received_quantity"] > 0 for r in rows)
+        assert all((r["unit_cost_cents"] or 0) >= 0 for r in rows)
+
+        # Skips surfaced explicitly per type + operator must review.
+        [skip_event] = [e for e in logs if e.get("stage") == "apply"]
+        assert skip_event["lines_applied"] == 9
+        assert skip_event["lines_skipped_discount"] == 1
+        assert skip_event["lines_skipped_credit"] == 1
+        assert skip_event["lines_skipped_backorder"] == 1
+        assert (
+            await admin_conn.fetchval("SELECT manual_entry_required FROM receipts WHERE id=$1", rid)
+        ) is True
+
+        # Full fidelity (incl. line_total_cents 8244 on the milk line) is retained
+        # in the raw_extraction checkpoint for the operator/later phases.
+        import json as _json
+
+        raw = await admin_conn.fetchval(
+            "SELECT raw_extraction FROM receipt_extraction_jobs WHERE id=$1", jid
+        )
+        raw_lines = _json.loads(raw)["lines"] if isinstance(raw, str) else raw["lines"]
+        milk_raw = next(ln for ln in raw_lines if ln["name"] == "Lait 3.25% 4x4L")
+        assert milk_raw["line_total_cents"] == 8244
+        assert milk_raw["unit"] == "CS"
+    finally:
+        await _cleanup(admin_conn, tid)

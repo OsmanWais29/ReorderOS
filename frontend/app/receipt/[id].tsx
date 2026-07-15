@@ -17,6 +17,7 @@ import { ReceiptLineRow } from '@/components/ReceiptLineRow';
 import { InventoryItemPicker, type ItemChoice } from '@/components/InventoryItemPicker';
 import { confirmDestructive, showSuccess } from '@/ui/dialogs';
 import { useAuth } from '@/auth/AuthContext';
+import { saveReturnTo } from '@/auth/returnTo';
 import { useLang } from '@/i18n/LangProvider';
 import { T, TYPE } from '@/theme/tokens';
 import { CANONICAL_UNITS } from '@/api/units';
@@ -28,6 +29,7 @@ import {
   cancelReceipt,
   dismissReceipt,
   resetExtraction,
+  lineNeedsConversion,
   ReceiptApiError,
   type LineUpdatePayload,
   type ReceiptDetail,
@@ -48,6 +50,7 @@ export default function ReceiptReview() {
   const [affirmed, setAffirmed] = useState(false);
   const [committing, setCommitting] = useState(false);
   const [commitError, setCommitError] = useState<string | null>(null);
+  const [sessionDead, setSessionDead] = useState(false);
   const [pickerForLine, setPickerForLine] = useState<{ lineId: string; query: string } | null>(null);
   const [dismissReason, setDismissReason] = useState<string | null>(null); // null = hidden
   const [addOpen, setAddOpen] = useState(false);
@@ -64,13 +67,19 @@ export default function ReceiptReview() {
       const r = await getReceipt(token, id);
       setReceipt(r);
       setError(null);
+      setSessionDead(false);
       // The server clears the affirmation on every edit (D-606-25) — mirror it
       // locally so the operator re-affirms against what they now see.
       if (!r.reviewed_affirmation) setAffirmed((a) => (r.review_started_at ? a : false));
     } catch (e: unknown) {
-      setError(e instanceof ReceiptApiError ? e.detail : t.rcptLoadError);
+      if (e instanceof ReceiptApiError && e.status === 401) {
+        setSessionDead(true);
+        setError(t.sessionExpired);
+      } else {
+        setError(e instanceof ReceiptApiError ? e.detail : t.rcptLoadError);
+      }
     }
-  }, [token, id, t.rcptLoadError]);
+  }, [token, id, t]);
 
   useEffect(() => {
     void refresh();
@@ -104,12 +113,13 @@ export default function ReceiptReview() {
         setAffirmed(false); // the server cleared reviewed_affirmation — re-affirm after edits
         await refresh();
       } catch (e: unknown) {
-        setCommitError(e instanceof ReceiptApiError ? e.detail : t.rcptSaveError);
+        if (e instanceof ReceiptApiError && e.status === 401) setSessionDead(true);
+        setCommitError(e instanceof ReceiptApiError ? (e.status === 401 ? t.sessionExpired : e.detail) : t.rcptSaveError);
       } finally {
         setBusyLineId(null);
       }
     },
-    [token, id, refresh, t.rcptSaveError],
+    [token, id, refresh, t],
   );
 
   const onPick = useCallback(
@@ -156,11 +166,12 @@ export default function ReceiptReview() {
       setAffirmed(false);
       await refresh();
     } catch (e: unknown) {
-      setCommitError(e instanceof ReceiptApiError ? e.detail : t.rcptSaveError);
+      if (e instanceof ReceiptApiError && e.status === 401) setSessionDead(true);
+      setCommitError(e instanceof ReceiptApiError ? (e.status === 401 ? t.sessionExpired : e.detail) : t.rcptSaveError);
     }
-  }, [token, id, addName, addQty, addUnit, addCost, refresh, t.rcptSaveError]);
+  }, [token, id, addName, addQty, addUnit, addCost, refresh, t]);
 
-  // Live line total for the add form (quantity × unit cost), shown when both are valid.
+  // Live line total for the add form (quantity x unit cost), shown when both are valid.
   const addLineTotal = useMemo(() => {
     const q = Number(addQty.replace(',', '.'));
     const c = Number(addCost.replace(',', '.'));
@@ -176,10 +187,24 @@ export default function ReceiptReview() {
     setCommitError(null);
     try {
       await commitReceipt(token, id, affirmed);
-      showSuccess(t.rcptCommitDoneTitle, t.rcptCommitDoneBody, () => router.back());
+      // Leave the committed receipt deterministically: back() is a silent no-op
+      // when this screen was reached via replace (e.g. the session-recovery
+      // redirect) — land on Stock, where the just-updated on-hand is visible.
+      showSuccess(t.rcptCommitDoneTitle, t.rcptCommitDoneBody, () => {
+        if (router.canGoBack()) router.back();
+        else router.replace('/(app)/stock');
+      });
     } catch (e: unknown) {
       if (e instanceof ReceiptApiError) {
-        if (e.code === 'RECEIPT_REVIEW_REQUIRED') setCommitError(t.rcptNeedReview);
+        if (e.status === 401) {
+          setSessionDead(true);
+          setCommitError(t.sessionExpired);
+        }
+        else if (e.code === 'RECEIPT_REVIEW_REQUIRED') setCommitError(t.rcptNeedReview);
+        else if (e.code === 'RECEIPT_LINES_UNMATCHED') setCommitError(t.rcptLinesUnmatched);
+        else if (e.code === 'RECEIPT_CONVERSION_REQUIRED') setCommitError(t.rcptConvNeeded);
+        else if (e.code === 'RECEIPT_CONVERSION_INCONSISTENT')
+          setCommitError(t.rcptConvInconsistent);
         else if (e.code === 'RECEIPT_NOTHING_TO_COMMIT') setCommitError(t.rcptNothingToCommit);
         else if (e.status === 403) setCommitError(t.rcptManagerOnly);
         else setCommitError(e.detail);
@@ -205,9 +230,10 @@ export default function ReceiptReview() {
             setAffirmed(false);
             return refresh();
           })
-          .catch((e: unknown) =>
-            setCommitError(e instanceof ReceiptApiError ? e.detail : t.rcptSaveError),
-          );
+          .catch((e: unknown) => {
+            if (e instanceof ReceiptApiError && e.status === 401) setSessionDead(true);
+            setCommitError(e instanceof ReceiptApiError ? (e.status === 401 ? t.sessionExpired : e.detail) : t.rcptSaveError);
+          });
       },
     });
   }, [token, id, refresh, t]);
@@ -218,7 +244,8 @@ export default function ReceiptReview() {
       await dismissReceipt(token, id, dismissReason.trim());
       router.back();
     } catch (e: unknown) {
-      setCommitError(e instanceof ReceiptApiError ? e.detail : t.rcptSaveError);
+      if (e instanceof ReceiptApiError && e.status === 401) setSessionDead(true);
+      setCommitError(e instanceof ReceiptApiError ? (e.status === 401 ? t.sessionExpired : e.detail) : t.rcptSaveError);
     }
   }, [token, id, dismissReason, router, t.rcptSaveError]);
 
@@ -231,9 +258,10 @@ export default function ReceiptReview() {
         if (!token || !id) return;
         void cancelReceipt(token, id)
           .then(() => router.back())
-          .catch((e: unknown) =>
-            setCommitError(e instanceof ReceiptApiError ? e.detail : t.rcptSaveError),
-          );
+          .catch((e: unknown) => {
+            if (e instanceof ReceiptApiError && e.status === 401) setSessionDead(true);
+            setCommitError(e instanceof ReceiptApiError ? (e.status === 401 ? t.sessionExpired : e.detail) : t.rcptSaveError);
+          });
       },
     });
   }, [token, id, router, t]);
@@ -268,7 +296,7 @@ export default function ReceiptReview() {
         </View>
       ) : receipt === null ? null : (
         <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
-          <ReceiptPhotoPreview url={receipt.photo_url} />
+          <ReceiptPhotoPreview url={receipt.photo_url} mimeType={receipt.mime_type} />
           <ExtractionStatusBanner
             status={receipt.extraction_status}
             manualEntryRequired={receipt.manual_entry_required}
@@ -381,10 +409,35 @@ export default function ReceiptReview() {
                 />
               </View>
               {commitError ? <Text style={styles.err}>{commitError}</Text> : null}
+              {sessionDead ? (
+                <Button
+                  label={t.signInAgain}
+                  size="md"
+                  onPress={() => {
+                    saveReturnTo(`/receipt/${id}`);
+                    router.replace('/onboarding/sign-in');
+                  }}
+                />
+              ) : null}
+              {receipt.lines.some(
+                (l) => l.match_status !== 'skipped' && !l.inventory_item_id,
+              ) ? (
+                <Text style={styles.err}>{t.rcptLinesUnmatched}</Text>
+              ) : receipt.lines.some(lineNeedsConversion) ? (
+                <Text style={styles.err}>{t.rcptConvNeeded}</Text>
+              ) : null}
               <Button
                 label={t.rcptCommit}
                 loading={committing}
-                disabled={extracting}
+                disabled={
+                  extracting ||
+                  sessionDead ||
+                  !affirmed ||
+                  receipt.lines.some(
+                    (l) => l.match_status !== 'skipped' && !l.inventory_item_id,
+                  ) ||
+                  receipt.lines.some(lineNeedsConversion)
+                }
                 onPress={() => void doCommit()}
               />
               <View style={styles.secondary}>

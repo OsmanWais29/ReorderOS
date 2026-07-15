@@ -89,6 +89,27 @@ def test_rejects_unsupported_type() -> None:
     assert e.value.code == "RECEIPT_UNSUPPORTED_TYPE"
 
 
+@pytest.mark.parametrize(
+    ("label", "data"),
+    [
+        # DOCX/XLSX are ZIP containers: PK\x03\x04 at offset 0.
+        ("docx", b"PK\x03\x04" + b"\x14\x00\x06\x00" + b"word/document.xml" + b"\x00" * 32),
+        ("xlsx", b"PK\x03\x04" + b"\x14\x00\x06\x00" + b"xl/workbook.xml" + b"\x00" * 32),
+        # Legacy DOC/XLS: OLE2 compound-file signature.
+        ("doc", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64),
+        ("xls", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64 + b"Workbook"),
+        # CSV: plain text, no container signature at all.
+        ("csv", b"item,qty,price\nFlour,5,2.50\nSugar,2,1.80\n"),
+    ],
+)
+def test_rejects_office_and_csv_formats(label: str, data: bytes) -> None:
+    """Sprint 6 scope: JPEG/PNG/PDF only. Word/Excel/CSV must reject cleanly
+    (RECEIPT_UNSUPPORTED_TYPE), never reach Spaces, never create a job."""
+    with pytest.raises(ReceiptValidationError) as e:
+        validate_and_clean(data, filename=f"invoice.{label}")
+    assert e.value.code == "RECEIPT_UNSUPPORTED_TYPE"
+
+
 def test_rejects_heic() -> None:
     with pytest.raises(ReceiptValidationError) as e:
         validate_and_clean(_heic())

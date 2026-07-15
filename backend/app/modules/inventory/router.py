@@ -29,6 +29,8 @@ from app.modules.inventory.schemas import (
     ReceiptLineCreate,
 )
 from app.modules.inventory.services import (
+    ReceiptConversionRequired,
+    ReceiptLinesUnmatched,
     ReceiptNothingToCommit,
     ReceiptReviewRequired,
     add_receipt_line,
@@ -250,6 +252,24 @@ async def commit_receipt_endpoint(
             confirm=True,
             reviewed_affirmation=True,
         )
+    except ReceiptLinesUnmatched:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "RECEIPT_LINES_UNMATCHED",
+                "message": "Link or create an inventory item for every line "
+                "(or skip it) before committing.",
+            },
+        ) from None
+    except ReceiptConversionRequired:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "RECEIPT_CONVERSION_REQUIRED",
+                "message": "Confirm the pack conversion (e.g. 1 CS = 16 L) for every "
+                "case/pack line before committing.",
+            },
+        ) from None
     except ReceiptNothingToCommit:
         raise HTTPException(
             status_code=422,

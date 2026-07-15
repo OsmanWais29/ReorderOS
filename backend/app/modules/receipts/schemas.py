@@ -71,8 +71,19 @@ class LineUpdate(BaseModel):
     unit_cost_cents: int | None = Field(default=None, ge=0)
     extracted_name: str | None = Field(default=None, min_length=1, max_length=500)
     skipped: bool | None = None
+    # Conversion confirmation (purchase U/M → storage unit). Setting received_unit
+    # means "receive received_quantity x received_unit for this line"; the line's
+    # invoice qty/U-M are stashed into purchase_quantity/purchase_unit. Requires
+    # received_quantity + conversion_factor in the same call — an explicit,
+    # operator-confirmed statement, never a partial one.
+    received_unit: str | None = None
+    conversion_factor: Decimal | None = Field(default=None, gt=0)
+    remember_conversion: bool = False
+    # Explicit operator override for a dimension-mismatched item (count-based
+    # invoice into a weight-stored item). Without it the confirm is refused.
+    override_unit_mismatch: bool = False
 
-    @field_validator("extracted_unit", "new_item_unit")
+    @field_validator("extracted_unit", "new_item_unit", "received_unit")
     @classmethod
     def _canonical_unit(cls, v: str | None) -> str | None:
         if v is not None and v not in CANONICAL_UNITS:
@@ -111,6 +122,20 @@ class LineUpdate(BaseModel):
                 "clearing the item reverts the line to machine state — "
                 "no field edits in the same call"
             )
+        confirms = "received_unit" in self.model_fields_set
+        if confirms and (
+            self.received_unit is None
+            or self.received_quantity is None
+            or self.conversion_factor is None
+        ):
+            raise ValueError(
+                "confirming a conversion requires received_unit, received_quantity "
+                "and conversion_factor together"
+            )
+        if self.remember_conversion and not confirms:
+            raise ValueError("remember_conversion is only valid with a conversion confirmation")
+        if confirms and (self.skipped is not None or clears_item):
+            raise ValueError("confirm conversion on an active, linked line only")
         return self
 
 
@@ -162,6 +187,35 @@ class ReceiptLineOut(BaseModel):
     id: UUID
     extracted_name: str | None
     inventory_item_id: UUID | None
+    # Linked item's CURRENT name — operator-visible proof of what a match/create
+    # actually linked (extracted_name stays the verbatim invoice text).
+    item_name: str | None = None
+    # Linked item's canonical storage unit — the conversion panel's target.
+    item_storage_unit: str | None = None
+    # Invoice originals (stashed when a conversion is confirmed).
+    purchase_quantity: float | None = None
+    purchase_unit: str | None = None
+    # Confirmed conversion state.
+    received_unit: str | None = None
+    conversion_factor: float | None = None
+    conversion_source: str | None = None
+    conversion_confirmed_at: datetime | None = None
+    # Prefill suggestion (pack hints / actual weight / remembered) — never authority.
+    suggested_quantity: float | None = None
+    suggested_factor: float | None = None
+    suggestion_source: str | None = None
+    # Raw packaging clues from extraction — shown so the operator can verify the
+    # suggestion against what the invoice actually printed ("4x4L").
+    pack_count: float | None = None
+    pack_size_qty: float | None = None
+    pack_size_unit: str | None = None
+    actual_weight_qty: float | None = None
+    actual_weight_unit: str | None = None
+    # Invoice's printed extended total — the costing ground truth at commit.
+    line_total_cents: int | None = None
+    # Invoice evidence and item storage unit live in different dimensions
+    # (count vs weight etc.) — the operator is probably on the wrong item.
+    unit_mismatch_warning: bool = False
     received_quantity: float | None
     extracted_unit: str | None
     unit_cost_cents: int | None

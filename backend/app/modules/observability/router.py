@@ -42,6 +42,25 @@ async def startup() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@router.get("/health/storage", summary="Object-storage readiness (Sprint 6 receipts)")
+async def storage_ready() -> dict[str, Any]:
+    """Which Spaces settings the RUNNING process actually sees — booleans only, NEVER
+    values. Receipts uploads need all five present; this makes a config/injection gap
+    visible without a token or a log dive (added during the Sprint 6 staging smoke,
+    where an env-injection gap read as an opaque 503)."""
+    from app.core.config import get_settings
+
+    s = get_settings()
+    fields = {
+        "endpoint": bool(s.spaces_endpoint),
+        "region": bool(s.spaces_region),
+        "bucket": bool(s.spaces_bucket),
+        "key": bool(s.spaces_key),
+        "secret": bool(s.spaces_secret),
+    }
+    return {"configured": all(fields.values()), "fields": fields}
+
+
 @router.get("/version", summary="Build info")
 async def version() -> dict[str, str]:
     return {"version": __version__}

@@ -35,7 +35,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import storage
 from app.core.logging import get_logger
 from app.core.service_db import get_service_sessionmaker
-from app.modules.inventory.depletion.units import is_canonical
 from app.modules.receipts.extraction_llm import ExtractionClient, ExtractionUnavailable
 from app.modules.receipts.validation import ReceiptValidationError, validate_and_clean
 
@@ -44,6 +43,10 @@ log = get_logger(__name__)
 MAX_ATTEMPTS = 3
 _LEASE_TTL_SQL = "INTERVAL '5 minutes'"
 _LOW_CONFIDENCE = 0.4
+
+# Non-item rows the extractor classifies (see extraction_llm.LINE_TYPES); each
+# gets its own content-free skip counter in apply telemetry.
+_SPECIAL_LINE_TYPES = ("discount", "credit", "backorder", "fee_or_deposit")
 
 # Future hook: a per-tenant spend kill switch would be checked here (before the quota
 # charge) and set status='skipped' if exceeded. No such component exists yet.
@@ -131,11 +134,30 @@ class ExtractionWorker:
                     raw = storage.get_bytes(receipt["photo_object_key"])
                     _mime, _clean = validate_and_clean(raw, filename=None)
                 except ReceiptValidationError as exc:
+                    # SAFE telemetry (D-606-15: no bytes/content) — proves the provider
+                    # was NOT reached and the stage that stopped it.
+                    log.warning(
+                        "receipt.extraction.telemetry",
+                        receipt_id=str(receipt_id),
+                        stage="validation",
+                        provider_called=False,
+                        error_class="ReceiptValidationError",
+                        error_code=exc.code,
+                        raw_extraction_present=False,
+                    )
                     if await self._terminal(s, jid, token, "failed_terminal", exc.code):
                         await self._mark_receipt_failed(s, receipt_id, tenant_id)
                     await s.commit()
                     return
                 except storage.SpacesNotConfigured:
+                    log.warning(
+                        "receipt.extraction.telemetry",
+                        receipt_id=str(receipt_id),
+                        stage="download",
+                        provider_called=False,
+                        error_class="SpacesNotConfigured",
+                        raw_extraction_present=False,
+                    )
                     await self._transient_fail(
                         s, jid, token, job, receipt_id, tenant_id, "storage unavailable"
                     )
@@ -146,6 +168,13 @@ class ExtractionWorker:
                 if job["attempts"] == 0:
                     jobs_today = await self._charge_quota(s, tenant_id)
                     if jobs_today is None:
+                        log.info(
+                            "receipt.extraction.telemetry",
+                            receipt_id=str(receipt_id),
+                            stage="quota",
+                            provider_called=False,
+                            raw_extraction_present=False,
+                        )
                         await self._quota_block(s, jid, token, receipt_id, tenant_id)
                         await s.commit()
                         return
@@ -156,6 +185,16 @@ class ExtractionWorker:
                         file_bytes=raw, mime_type=receipt["mime_type"]
                     )
                 except ExtractionUnavailable as exc:
+                    # Provider WAS called but errored — record the class (never the body).
+                    log.warning(
+                        "receipt.extraction.telemetry",
+                        receipt_id=str(receipt_id),
+                        stage="provider",
+                        provider_called=True,
+                        provider_status="error",
+                        provider_error_class=type(exc).__name__,
+                        raw_extraction_present=False,
+                    )
                     await self._transient_fail(s, jid, token, job, receipt_id, tenant_id, str(exc))
                     await s.commit()
                     return
@@ -168,6 +207,16 @@ class ExtractionWorker:
                     model=result.model_version,
                     input_tokens=result.input_tokens,
                     output_tokens=result.output_tokens,
+                )
+                # SAFE provider telemetry — call succeeded, response captured. Booleans/
+                # counts only; the response body is NEVER logged (D-606-15).
+                log.info(
+                    "receipt.extraction.telemetry",
+                    receipt_id=str(receipt_id),
+                    stage="provider",
+                    provider_called=True,
+                    provider_status="success",
+                    raw_extraction_present=True,
                 )
                 # CHECKPOINT before any line write (fenced): a crash here means the
                 # retry finds the payload and skips a second paid LLM call.
@@ -231,8 +280,25 @@ class ExtractionWorker:
         raw_lines = payload.get("lines")
         lines = raw_lines if isinstance(raw_lines, list) else []
         confidences: list[float] = []
+        skipped: dict[str, int] = {}
         for ordinal, raw_line in enumerate(lines):
+            # Only line_type='item' rows become receive lines. Discounts, credits/
+            # returns, backorders and deposits/fees must NEVER commit as normal
+            # receives (a credit is not a positive receive with negative cost);
+            # v1 keeps them out of receipt_lines entirely — they stay visible in
+            # raw_extraction and force manual review below. Counted content-free.
+            line_type = str(raw_line.get("line_type") or "item")
+            if line_type != "item":
+                key = line_type if line_type in _SPECIAL_LINE_TYPES else "unknown_type"
+                skipped[key] = skipped.get(key, 0) + 1
+                continue
             qty = _to_decimal(raw_line.get("qty"))
+            # Untrusted LLM output: a qty <= 0 'item' would violate
+            # receipt_lines_qty_positive and abort the whole transaction — one
+            # bad line must never discard the good ones.
+            if qty <= 0:
+                skipped["invalid_qty"] = skipped.get("invalid_qty", 0) + 1
+                continue
             unit = str(raw_line.get("unit", ""))
             conf = _to_float(raw_line.get("confidence"))
             confidences.append(conf)
@@ -242,12 +308,14 @@ class ExtractionWorker:
                         (tenant_id, receipt_id, inventory_item_id, received_quantity,
                          unit_cost_cents, extracted_name, extracted_unit, confidence,
                          manually_corrected, match_status, extraction_job_id, job_attempt,
-                         line_ordinal)
+                         line_ordinal, pack_count, pack_size_qty, pack_size_unit,
+                         actual_weight_qty, actual_weight_unit, line_total_cents)
                     VALUES
                         (:tid, :rid, NULL, :qty,
                          :cost, :name, :unit, :conf,
                          false, 'unmatched', :jid, :att,
-                         :ord)
+                         :ord, :pack_count, :pack_size_qty, :pack_size_unit,
+                         :aw_qty, :aw_unit, :line_total)
                 """),
                 {
                     "tid": tenant_id,
@@ -255,18 +323,41 @@ class ExtractionWorker:
                     "qty": qty,
                     "cost": _to_int(raw_line.get("unit_price_cents")),
                     "name": str(raw_line.get("name", "")).strip() or None,
-                    "unit": unit if is_canonical(unit) else (unit or None),
+                    # Supplier U/M verbatim (CS/SAC/EA/...): the operator maps it
+                    # to a storage unit at review/commit — never normalized here.
+                    "unit": unit.strip() or None,
                     "conf": conf,
                     "jid": job["id"],
                     "att": job["job_attempt"],
                     "ord": ordinal,
+                    # Packaging hints (4x4L, ACTUAL WT ...) — prefill data for the
+                    # operator's conversion confirmation, never applied silently.
+                    "pack_count": _to_optional_decimal(raw_line.get("pack_count")),
+                    "pack_size_qty": _to_optional_decimal(raw_line.get("pack_size_qty")),
+                    "pack_size_unit": _str_or_none(raw_line.get("pack_size_unit")),
+                    "aw_qty": _to_optional_decimal(raw_line.get("actual_weight_qty")),
+                    "aw_unit": _str_or_none(raw_line.get("actual_weight_unit")),
+                    # Printed extended total — the costing ground truth at commit.
+                    "line_total": _to_int(raw_line.get("line_total_cents")),
                 },
+            )
+
+        if skipped:
+            log.warning(
+                "receipt.extraction.telemetry",
+                receipt_id=str(receipt_id),
+                stage="apply",
+                lines_applied=len(confidences),
+                **{f"lines_skipped_{k}": v for k, v in sorted(skipped.items())},
             )
 
         # D-606-08: aggregate = min(line confidences); NULL when zero lines, which
         # always pairs with manual_entry_required. Low aggregate also flags manual.
+        # Any skipped row (special line_type or invalid qty) means the machine
+        # extraction is known-incomplete → manual: the operator must reconcile
+        # the raw document against the applied lines.
         agg = min(confidences) if confidences else None
-        manual = agg is None or agg < _LOW_CONFIDENCE
+        manual = agg is None or agg < _LOW_CONFIDENCE or bool(skipped)
         await s.execute(
             text("""
                 UPDATE receipts SET
@@ -457,6 +548,17 @@ def _to_decimal(v: Any) -> Decimal:
         return d if d.is_finite() else Decimal(0)
     except (InvalidOperation, TypeError, ValueError):
         return Decimal(0)
+
+
+def _to_optional_decimal(v: Any) -> Decimal | None:
+    """Hint fields: absent/garbage → NULL (a hint must never invent a zero)."""
+    if v is None:
+        return None
+    try:
+        d = Decimal(str(v))
+        return d if d.is_finite() and d > 0 else None
+    except (InvalidOperation, TypeError, ValueError):
+        return None
 
 
 def _to_float(v: Any) -> float:

@@ -18,6 +18,8 @@ import { Platform } from 'react-native';
 
 import { API_BASE } from '../auth/config';
 import { tenantHeader } from './activeTenant';
+import { CANONICAL_UNITS } from './units';
+import { tryRefresh } from '../auth/session';
 
 // ── Error type: stable codes let the UI branch (RECEIPT_REVIEW_REQUIRED, ...) ──
 export class ReceiptApiError extends Error {
@@ -34,17 +36,24 @@ export class ReceiptApiError extends Error {
 }
 
 async function req<T>(token: string, path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}/api/v1${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...tenantHeader(), // X-Tenant-Id — required by resolve_principal (400 without)
-      // JSON content-type ONLY for string bodies — a FormData body must keep the
-      // fetch-generated multipart boundary (uploadReceiptPhoto).
-      ...(typeof init?.body === 'string' ? { 'Content-Type': 'application/json' } : {}),
-      ...(init?.headers ?? {}),
-    },
-  });
+  const doFetch = (auth: string) =>
+    fetch(`${API_BASE}/api/v1${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${auth}`,
+        ...tenantHeader(), // X-Tenant-Id — required by resolve_principal (400 without)
+        // JSON content-type ONLY for string bodies — a FormData body must keep the
+        // fetch-generated multipart boundary (uploadReceiptPhoto).
+        ...(typeof init?.body === 'string' ? { 'Content-Type': 'application/json' } : {}),
+        ...(init?.headers ?? {}),
+      },
+    });
+  let res = await doFetch(token);
+  if (res.status === 401) {
+    // Access token expired mid-session: silent single-flight refresh, one retry.
+    const fresh = await tryRefresh();
+    if (fresh) res = await doFetch(fresh);
+  }
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as {
       detail?: string | { code?: string; message?: string };
@@ -78,6 +87,32 @@ export type ReceiptLine = {
   id: string;
   extracted_name: string | null;
   inventory_item_id: string | null;
+  /** Linked item's current name — proof of what matched/created actually linked. */
+  item_name: string | null;
+  /** Linked item's canonical storage unit — the conversion target. */
+  item_storage_unit: string | null;
+  /** Invoice originals, stashed once a conversion is confirmed. */
+  purchase_quantity: number | null;
+  purchase_unit: string | null;
+  /** Confirmed conversion state (received_quantity is in received_unit when set). */
+  received_unit: string | null;
+  conversion_factor: number | null;
+  conversion_source: string | null;
+  conversion_confirmed_at: string | null;
+  /** Server prefill (pack hints / actual weight / remembered) — never auto-applied. */
+  suggested_quantity: number | null;
+  suggested_factor: number | null;
+  suggestion_source: string | null;
+  /** Raw packaging clues as extracted from the invoice ("4x4L"). */
+  pack_count: number | null;
+  pack_size_qty: number | null;
+  pack_size_unit: string | null;
+  actual_weight_qty: number | null;
+  actual_weight_unit: string | null;
+  /** Invoice's printed extended total — costing ground truth. */
+  line_total_cents: number | null;
+  /** Invoice evidence vs item storage unit dimension mismatch (wrong item?). */
+  unit_mismatch_warning: boolean;
   received_quantity: number | null;
   extracted_unit: string | null;
   unit_cost_cents: number | null;
@@ -143,7 +178,28 @@ export type LineUpdatePayload = {
   unit_cost_cents?: number | null;
   extracted_name?: string;
   skipped?: boolean;
+  /** Conversion confirmation: send received_unit + received_quantity +
+   * conversion_factor together ("receive 48 L, 1 CS = 16 L"). */
+  received_unit?: string;
+  conversion_factor?: number;
+  remember_conversion?: boolean;
+  /** Explicit consent to confirm into a dimension-mismatched item —
+   * the server refuses without it (RECEIPT_UNIT_MISMATCH). */
+  override_unit_mismatch?: boolean;
 };
+
+/** A linked case/pack line the operator hasn't confirmed a storage conversion
+ * for yet — commit is blocked (RECEIPT_CONVERSION_REQUIRED) until they do.
+ * Mirrors the backend gate: non-canonical purchase unit (CS/SAC/...) that isn't
+ * literally the storage unit. Canonical units (ml → L) convert automatically. */
+export const lineNeedsConversion = (l: ReceiptLine): boolean =>
+  l.match_status !== 'skipped' &&
+  l.inventory_item_id !== null &&
+  l.item_storage_unit !== null &&
+  l.conversion_confirmed_at === null &&
+  l.extracted_unit !== null &&
+  l.extracted_unit !== l.item_storage_unit &&
+  !(CANONICAL_UNITS as readonly string[]).includes(l.extracted_unit);
 
 export type LineCreatePayload = {
   extracted_name: string;
@@ -234,7 +290,8 @@ export const addNote = (token: string, receiptId: string, text: string) =>
   });
 
 /** Manager+. Throws ReceiptApiError with code RECEIPT_REVIEW_REQUIRED /
- * RECEIPT_NOTHING_TO_COMMIT / RECEIPT_UNIT_CONVERSION (422), or 403 for staff. */
+ * RECEIPT_LINES_UNMATCHED / RECEIPT_NOTHING_TO_COMMIT / RECEIPT_UNIT_CONVERSION
+ * (422), or 403 for staff. */
 export const commitReceipt = (token: string, receiptId: string, reviewedAffirmation: boolean) =>
   req<{ receipt_id: string; status: string; movement_ids: string[]; confirmed: boolean }>(
     token,

@@ -95,6 +95,12 @@ export type ReceiptLine = {
   suggested_quantity: number | null;
   suggested_factor: number | null;
   suggestion_source: string | null;
+  /** Raw packaging clues as extracted from the invoice ("4x4L"). */
+  pack_count: number | null;
+  pack_size_qty: number | null;
+  pack_size_unit: string | null;
+  actual_weight_qty: number | null;
+  actual_weight_unit: string | null;
   received_quantity: number | null;
   extracted_unit: string | null;
   unit_cost_cents: number | null;

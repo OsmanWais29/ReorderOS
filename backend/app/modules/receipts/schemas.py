@@ -201,6 +201,13 @@ class ReceiptLineOut(BaseModel):
     suggested_quantity: float | None = None
     suggested_factor: float | None = None
     suggestion_source: str | None = None
+    # Raw packaging clues from extraction — shown so the operator can verify the
+    # suggestion against what the invoice actually printed ("4x4L").
+    pack_count: float | None = None
+    pack_size_qty: float | None = None
+    pack_size_unit: str | None = None
+    actual_weight_qty: float | None = None
+    actual_weight_unit: str | None = None
     received_quantity: float | None
     extracted_unit: str | None
     unit_cost_cents: int | None

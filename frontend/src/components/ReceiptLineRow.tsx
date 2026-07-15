@@ -251,6 +251,12 @@ function ConversionPanel({
   onConfirm: () => void;
 }) {
   const { t } = useLang();
+  // Accept/Edit: with a server suggestion the operator just approves — no
+  // mental arithmetic. Editing (or no suggestion) exposes the inputs.
+  const hasSuggestion = line.suggested_quantity != null && line.suggested_factor != null;
+  const [editing, setEditing] = useState(!hasSuggestion);
+  useEffect(() => setEditing(!hasSuggestion), [line.id, hasSuggestion]);
+
   const su = line.item_storage_unit ?? '';
   const pq = line.received_quantity; // pre-confirm, this IS the invoice qty
   const q = Number(convQty.replace(',', '.'));
@@ -260,46 +266,88 @@ function ConversionPanel({
   const valid =
     Number.isFinite(q) && q > 0 && Number.isFinite(Number(convFactor.replace(',', '.')));
 
+  // Package clue exactly as the invoice printed it.
+  const clue = line.actual_weight_qty
+    ? `${t.rcptConvClue} ${line.actual_weight_qty} ${line.actual_weight_unit ?? ''} (${t.rcptConvActual})`
+    : line.pack_size_qty
+      ? `${t.rcptConvClue} ${line.pack_count ? `${line.pack_count} x ` : ''}${line.pack_size_qty} ${line.pack_size_unit ?? ''}`
+      : null;
+
+  // Calculation explanation for the suggestion, in the invoice's own terms.
+  const explain = !hasSuggestion
+    ? null
+    : line.suggestion_source === 'remembered'
+      ? `1 ${line.extracted_unit} = ${line.suggested_factor} ${su} (${t.rcptConvRemembered})`
+      : line.actual_weight_qty
+        ? `${t.rcptConvActual} ${line.actual_weight_qty} ${line.actual_weight_unit ?? ''} = ${line.suggested_quantity} ${su}`
+        : line.pack_size_qty
+          ? `${pq} ${line.extracted_unit} x ${line.pack_count ? `${line.pack_count} x ` : ''}${line.pack_size_qty} ${line.pack_size_unit ?? ''} = ${line.suggested_quantity} ${su}`
+          : `${pq} ${line.extracted_unit} = ${line.suggested_quantity} ${su}`;
+
+  const costPreview =
+    perUnit != null && totalCents != null
+      ? `${(totalCents / 100).toFixed(2)} $ / ${convQty} ${su} = ${perUnit.toFixed(4)} $ / ${su}`
+      : null;
+
   return (
     <View style={styles.convBox}>
       <Text style={styles.convTitle}>
         {t.rcptConvInvoiceSays} {pq} {line.extracted_unit}
       </Text>
-      <View style={styles.convRow}>
-        <Text style={styles.convLabel}>{t.rcptConvReceiveAs}</Text>
-        <TextInput
-          style={styles.convInput}
-          value={convQty}
-          onChangeText={onQty}
-          keyboardType="decimal-pad"
-          editable={!busy}
-        />
-        <Text style={styles.convUnit}>{su}</Text>
-      </View>
-      <View style={styles.convRow}>
-        <Text style={styles.convLabel}>
-          1 {line.extracted_unit} =
-        </Text>
-        <TextInput
-          style={styles.convInput}
-          value={convFactor}
-          onChangeText={onFactor}
-          keyboardType="decimal-pad"
-          editable={!busy}
-        />
-        <Text style={styles.convUnit}>{su}</Text>
-      </View>
-      {perUnit != null && totalCents != null ? (
-        <Text style={styles.convCost}>
-          {(totalCents / 100).toFixed(2)} $ / {convQty} {su} = {perUnit.toFixed(4)} $ / {su}
-        </Text>
-      ) : null}
-      <Button
-        label={t.rcptConvConfirm}
-        size="md"
-        disabled={busy || !valid}
-        onPress={onConfirm}
-      />
+      {clue ? <Text style={styles.convCost}>{clue}</Text> : null}
+
+      {!editing && hasSuggestion ? (
+        <>
+          <Text style={styles.convSuggest}>
+            {t.rcptConvReceiveAs} {line.suggested_quantity} {su}
+          </Text>
+          {explain ? <Text style={styles.convCost}>{explain}</Text> : null}
+          {costPreview ? <Text style={styles.convCost}>{costPreview}</Text> : null}
+          <View style={styles.convRow}>
+            <Button
+              label={t.rcptConvAccept}
+              size="md"
+              disabled={busy || !valid}
+              onPress={onConfirm}
+            />
+            <Pressable disabled={busy} onPress={() => setEditing(true)}>
+              <Text style={styles.actionText}>{t.rcptConvEdit}</Text>
+            </Pressable>
+          </View>
+        </>
+      ) : (
+        <>
+          <View style={styles.convRow}>
+            <Text style={styles.convLabel}>{t.rcptConvReceiveAs}</Text>
+            <TextInput
+              style={styles.convInput}
+              value={convQty}
+              onChangeText={onQty}
+              keyboardType="decimal-pad"
+              editable={!busy}
+            />
+            <Text style={styles.convUnit}>{su}</Text>
+          </View>
+          <View style={styles.convRow}>
+            <Text style={styles.convLabel}>1 {line.extracted_unit} =</Text>
+            <TextInput
+              style={styles.convInput}
+              value={convFactor}
+              onChangeText={onFactor}
+              keyboardType="decimal-pad"
+              editable={!busy}
+            />
+            <Text style={styles.convUnit}>{su}</Text>
+          </View>
+          {costPreview ? <Text style={styles.convCost}>{costPreview}</Text> : null}
+          <Button
+            label={t.rcptConvConfirm}
+            size="md"
+            disabled={busy || !valid}
+            onPress={onConfirm}
+          />
+        </>
+      )}
     </View>
   );
 }
@@ -326,6 +374,7 @@ const styles = StyleSheet.create({
   },
   convUnit: { ...TYPE.subhead, color: T.sec },
   convCost: { ...TYPE.footnote, color: T.ter },
+  convSuggest: { ...TYPE.headline, color: T.text },
   nameSkipped: { textDecorationLine: 'line-through', color: T.sec },
   fields: { flexDirection: 'row', gap: 12 },
   field: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },

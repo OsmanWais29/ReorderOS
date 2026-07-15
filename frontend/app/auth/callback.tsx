@@ -7,6 +7,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { exchangeCode } from '@/auth/api';
 import { loadVerifier } from '@/auth/storage';
 import { useAuth } from '@/auth/AuthContext';
+import { consumeReturnTo } from '@/auth/returnTo';
 import { T, TYPE } from '@/theme/tokens';
 
 export default function Callback() {
@@ -38,7 +39,12 @@ export default function Callback() {
         setStatus('Loading your account…');
         await signIn(token);
 
-        router.replace('/(app)/home');
+        const returnTo = consumeReturnTo();
+        if (returnTo) {
+          router.replace(returnTo as Parameters<typeof router.replace>[0]);
+        } else {
+          router.replace('/(app)/home');
+        }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'Unknown error';
         setStatus(`Error: ${msg}`);

@@ -113,8 +113,7 @@ export default function ReceiptReview() {
         await refresh();
       } catch (e: unknown) {
         if (e instanceof ReceiptApiError && e.status === 401) setSessionDead(true);
-        if (e instanceof ReceiptApiError && e.status === 401) setSessionDead(true);
-      setCommitError(e instanceof ReceiptApiError ? (e.status === 401 ? t.sessionExpired : e.detail) : t.rcptSaveError);
+        setCommitError(e instanceof ReceiptApiError ? (e.status === 401 ? t.sessionExpired : e.detail) : t.rcptSaveError);
       } finally {
         setBusyLineId(null);
       }
@@ -259,7 +258,7 @@ export default function ReceiptReview() {
         </View>
       ) : receipt === null ? null : (
         <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
-          <ReceiptPhotoPreview url={receipt.photo_url} />
+          <ReceiptPhotoPreview url={receipt.photo_url} mimeType={receipt.mime_type} />
           <ExtractionStatusBanner
             status={receipt.extraction_status}
             manualEntryRequired={receipt.manual_entry_required}

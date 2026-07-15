@@ -18,6 +18,7 @@ import {
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
 import { Button, Field, Pill } from '@/components/atoms';
 import { Icon } from '@/components/Icon';
 import { ReceiptSourceBadge } from '@/components/ReceiptBits';
@@ -138,6 +139,36 @@ export default function Stock() {
     },
     [token, receiving, router, t],
   );
+
+  // PDF invoices: same API-mediated upload path — the server's magic-byte
+  // allowlist and the extraction worker already handle application/pdf.
+  const receivePdf = useCallback(async () => {
+    if (!token || receiving) return;
+    const res = await DocumentPicker.getDocumentAsync({
+      type: 'application/pdf',
+      copyToCacheDirectory: true,
+      multiple: false,
+    });
+    if (res.canceled || !res.assets?.[0]) return;
+    const asset = res.assets[0];
+    setReceiving(true);
+    try {
+      const up = await uploadReceiptPhoto(token, {
+        uri: asset.uri,
+        fileName: asset.name,
+        mimeType: asset.mimeType ?? 'application/pdf',
+      });
+      await extractReceipt(token, up.receipt_id);
+      router.push(`/receipt/${up.receipt_id}`);
+    } catch (e: unknown) {
+      showError(
+        t.rcptUploadFailedTitle,
+        e instanceof ReceiptApiError ? (e.status === 401 ? t.sessionExpired : e.detail) : t.rcptUploadFailedBody,
+      );
+    } finally {
+      setReceiving(false);
+    }
+  }, [token, receiving, router, t]);
 
   const receiveManual = useCallback(async () => {
     if (!token || receiving) return;
@@ -281,6 +312,12 @@ export default function Stock() {
             onPress={() => void receivePhoto(false)}
           >
             <Text style={styles.receiveLabel}>{t.rcptPickPhoto}</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.receiveBtn, receiving && styles.receiveBtnDisabled]}
+            onPress={() => void receivePdf()}
+          >
+            <Text style={styles.receiveLabel}>{t.rcptPickPdf}</Text>
           </Pressable>
           <Pressable
             style={[styles.receiveBtn, receiving && styles.receiveBtnDisabled]}

@@ -110,6 +110,7 @@ export const STRINGS = {
     // ── Receipts (Sprint 6 FE Phase B) ──────────────────────────────────
     rcptTakePhoto: 'Take photo',
     rcptPickPhoto: 'Choose photo',
+    rcptPickPdf: 'Choose PDF',
     rcptManual: 'Manual',
     rcptDraftUntitled: 'Receipt',
     rcptDraftReady: 'Ready to review',
@@ -293,6 +294,7 @@ export const STRINGS = {
     // ── Receipts (Sprint 6 FE Phase B) ──────────────────────────────────
     rcptTakePhoto: 'Prendre une photo',
     rcptPickPhoto: 'Choisir une photo',
+    rcptPickPdf: 'Choisir un PDF',
     rcptManual: 'Manuel',
     rcptDraftUntitled: 'Reçu',
     rcptDraftReady: 'Prêt à réviser',

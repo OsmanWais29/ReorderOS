@@ -4,7 +4,7 @@
 // ReceiptPhotoPreview — the signed-GET photo, expandable.
 
 import React, { useState } from 'react';
-import { View, Text, Image, Pressable, ActivityIndicator, StyleSheet } from 'react-native';
+import { View, Text, Image, Pressable, ActivityIndicator, StyleSheet, Linking } from 'react-native';
 import { Pill } from '@/components/atoms';
 import { useLang } from '@/i18n/LangProvider';
 import { T, TYPE } from '@/theme/tokens';
@@ -91,9 +91,25 @@ function Banner({
 
 // ── photo preview ─────────────────────────────────────────────────────────────
 
-export function ReceiptPhotoPreview({ url }: { url: string | null }) {
+export function ReceiptPhotoPreview({
+  url,
+  mimeType,
+}: {
+  url: string | null;
+  mimeType?: string | null;
+}) {
   const [expanded, setExpanded] = useState(false);
   if (!url) return null;
+  if (mimeType === 'application/pdf') {
+    // A PDF can't render in <Image>; open the signed URL in the platform viewer.
+    return (
+      <Pressable onPress={() => void Linking.openURL(url)}>
+        <View style={styles.pdfCard}>
+          <Text style={styles.pdfLabel}>PDF</Text>
+        </View>
+      </Pressable>
+    );
+  }
   return (
     <Pressable onPress={() => setExpanded((e) => !e)}>
       <Image
@@ -106,6 +122,13 @@ export function ReceiptPhotoPreview({ url }: { url: string | null }) {
 }
 
 const styles = StyleSheet.create({
+  pdfCard: {
+    backgroundColor: T.elev1,
+    borderRadius: 12,
+    paddingVertical: 18,
+    alignItems: 'center',
+  },
+  pdfLabel: { ...TYPE.headline, color: T.ac },
   banner: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -22,6 +22,7 @@ from app.core.security import Principal, require_role
 from app.modules.inventory.depletion.conversions import ConversionError
 from app.modules.inventory.item_resolver import UnitTypeConflict
 from app.modules.inventory.services import (
+    ReceiptConversionRequired,
     ReceiptLinesUnmatched,
     ReceiptNothingToCommit,
     ReceiptReviewRequired,
@@ -177,11 +178,20 @@ async def update_receipt_line(
             receipt_id=receipt_id,
             line_id=line_id,
             patch=body,
+            confirmed_by=UUID(principal.user_id),
         )
     except services.ReceiptNotFound:
         raise HTTPException(status_code=404, detail="Receipt not found") from None
     except services.LineNotFound:
         raise HTTPException(status_code=404, detail="Line not found") from None
+    except services.LineNotLinked:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "RECEIPT_LINE_NOT_LINKED",
+                "message": "Link an inventory item before confirming its conversion.",
+            },
+        ) from None
     except services.ReceiptImmutable:
         raise HTTPException(
             status_code=409,
@@ -369,6 +379,15 @@ async def commit_receipt_endpoint(
                 "code": "RECEIPT_LINES_UNMATCHED",
                 "message": "Link or create an inventory item for every line "
                 "(or skip it) before committing.",
+            },
+        ) from None
+    except ReceiptConversionRequired:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "RECEIPT_CONVERSION_REQUIRED",
+                "message": "Confirm the pack conversion (e.g. 1 CS = 16 L) for every "
+                "case/pack line before committing.",
             },
         ) from None
     except ReceiptNothingToCommit:

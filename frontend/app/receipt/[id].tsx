@@ -28,6 +28,7 @@ import {
   cancelReceipt,
   dismissReceipt,
   resetExtraction,
+  lineNeedsConversion,
   ReceiptApiError,
   type LineUpdatePayload,
   type ReceiptDetail,
@@ -103,12 +104,12 @@ export default function ReceiptReview() {
         setAffirmed(false); // the server cleared reviewed_affirmation — re-affirm after edits
         await refresh();
       } catch (e: unknown) {
-        setCommitError(e instanceof ReceiptApiError ? e.detail : t.rcptSaveError);
+        setCommitError(e instanceof ReceiptApiError ? (e.status === 401 ? t.sessionExpired : e.detail) : t.rcptSaveError);
       } finally {
         setBusyLineId(null);
       }
     },
-    [token, id, refresh, t.rcptSaveError],
+    [token, id, refresh, t],
   );
 
   const onPick = useCallback(
@@ -144,9 +145,9 @@ export default function ReceiptReview() {
       setAffirmed(false);
       await refresh();
     } catch (e: unknown) {
-      setCommitError(e instanceof ReceiptApiError ? e.detail : t.rcptSaveError);
+      setCommitError(e instanceof ReceiptApiError ? (e.status === 401 ? t.sessionExpired : e.detail) : t.rcptSaveError);
     }
-  }, [token, id, addName, addQty, addUnit, refresh, t.rcptSaveError]);
+  }, [token, id, addName, addQty, addUnit, refresh, t]);
 
   const doCommit = useCallback(async () => {
     if (!token || !id) return;
@@ -157,8 +158,10 @@ export default function ReceiptReview() {
       showSuccess(t.rcptCommitDoneTitle, t.rcptCommitDoneBody, () => router.back());
     } catch (e: unknown) {
       if (e instanceof ReceiptApiError) {
-        if (e.code === 'RECEIPT_REVIEW_REQUIRED') setCommitError(t.rcptNeedReview);
+        if (e.status === 401) setCommitError(t.sessionExpired);
+        else if (e.code === 'RECEIPT_REVIEW_REQUIRED') setCommitError(t.rcptNeedReview);
         else if (e.code === 'RECEIPT_LINES_UNMATCHED') setCommitError(t.rcptLinesUnmatched);
+        else if (e.code === 'RECEIPT_CONVERSION_REQUIRED') setCommitError(t.rcptConvNeeded);
         else if (e.code === 'RECEIPT_NOTHING_TO_COMMIT') setCommitError(t.rcptNothingToCommit);
         else if (e.status === 403) setCommitError(t.rcptManagerOnly);
         else setCommitError(e.detail);
@@ -185,7 +188,7 @@ export default function ReceiptReview() {
             return refresh();
           })
           .catch((e: unknown) =>
-            setCommitError(e instanceof ReceiptApiError ? e.detail : t.rcptSaveError),
+            setCommitError(e instanceof ReceiptApiError ? (e.status === 401 ? t.sessionExpired : e.detail) : t.rcptSaveError),
           );
       },
     });
@@ -197,7 +200,7 @@ export default function ReceiptReview() {
       await dismissReceipt(token, id, dismissReason.trim());
       router.back();
     } catch (e: unknown) {
-      setCommitError(e instanceof ReceiptApiError ? e.detail : t.rcptSaveError);
+      setCommitError(e instanceof ReceiptApiError ? (e.status === 401 ? t.sessionExpired : e.detail) : t.rcptSaveError);
     }
   }, [token, id, dismissReason, router, t.rcptSaveError]);
 
@@ -211,7 +214,7 @@ export default function ReceiptReview() {
         void cancelReceipt(token, id)
           .then(() => router.back())
           .catch((e: unknown) =>
-            setCommitError(e instanceof ReceiptApiError ? e.detail : t.rcptSaveError),
+            setCommitError(e instanceof ReceiptApiError ? (e.status === 401 ? t.sessionExpired : e.detail) : t.rcptSaveError),
           );
       },
     });
@@ -332,13 +335,18 @@ export default function ReceiptReview() {
                 (l) => l.match_status !== 'skipped' && !l.inventory_item_id,
               ) ? (
                 <Text style={styles.err}>{t.rcptLinesUnmatched}</Text>
+              ) : receipt.lines.some(lineNeedsConversion) ? (
+                <Text style={styles.err}>{t.rcptConvNeeded}</Text>
               ) : null}
               <Button
                 label={t.rcptCommit}
                 loading={committing}
                 disabled={
                   extracting ||
-                  receipt.lines.some((l) => l.match_status !== 'skipped' && !l.inventory_item_id)
+                  receipt.lines.some(
+                    (l) => l.match_status !== 'skipped' && !l.inventory_item_id,
+                  ) ||
+                  receipt.lines.some(lineNeedsConversion)
                 }
                 onPress={() => void doCommit()}
               />

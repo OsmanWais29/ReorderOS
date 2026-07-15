@@ -18,6 +18,7 @@ import { Platform } from 'react-native';
 
 import { API_BASE } from '../auth/config';
 import { tenantHeader } from './activeTenant';
+import { CANONICAL_UNITS } from './units';
 
 // ── Error type: stable codes let the UI branch (RECEIPT_REVIEW_REQUIRED, ...) ──
 export class ReceiptApiError extends Error {
@@ -80,6 +81,20 @@ export type ReceiptLine = {
   inventory_item_id: string | null;
   /** Linked item's current name — proof of what matched/created actually linked. */
   item_name: string | null;
+  /** Linked item's canonical storage unit — the conversion target. */
+  item_storage_unit: string | null;
+  /** Invoice originals, stashed once a conversion is confirmed. */
+  purchase_quantity: number | null;
+  purchase_unit: string | null;
+  /** Confirmed conversion state (received_quantity is in received_unit when set). */
+  received_unit: string | null;
+  conversion_factor: number | null;
+  conversion_source: string | null;
+  conversion_confirmed_at: string | null;
+  /** Server prefill (pack hints / actual weight / remembered) — never auto-applied. */
+  suggested_quantity: number | null;
+  suggested_factor: number | null;
+  suggestion_source: string | null;
   received_quantity: number | null;
   extracted_unit: string | null;
   unit_cost_cents: number | null;
@@ -145,7 +160,25 @@ export type LineUpdatePayload = {
   unit_cost_cents?: number | null;
   extracted_name?: string;
   skipped?: boolean;
+  /** Conversion confirmation: send received_unit + received_quantity +
+   * conversion_factor together ("receive 48 L, 1 CS = 16 L"). */
+  received_unit?: string;
+  conversion_factor?: number;
+  remember_conversion?: boolean;
 };
+
+/** A linked case/pack line the operator hasn't confirmed a storage conversion
+ * for yet — commit is blocked (RECEIPT_CONVERSION_REQUIRED) until they do.
+ * Mirrors the backend gate: non-canonical purchase unit (CS/SAC/...) that isn't
+ * literally the storage unit. Canonical units (ml → L) convert automatically. */
+export const lineNeedsConversion = (l: ReceiptLine): boolean =>
+  l.match_status !== 'skipped' &&
+  l.inventory_item_id !== null &&
+  l.item_storage_unit !== null &&
+  l.conversion_confirmed_at === null &&
+  l.extracted_unit !== null &&
+  l.extracted_unit !== l.item_storage_unit &&
+  !(CANONICAL_UNITS as readonly string[]).includes(l.extracted_unit);
 
 export type LineCreatePayload = {
   extracted_name: string;

@@ -308,12 +308,14 @@ class ExtractionWorker:
                         (tenant_id, receipt_id, inventory_item_id, received_quantity,
                          unit_cost_cents, extracted_name, extracted_unit, confidence,
                          manually_corrected, match_status, extraction_job_id, job_attempt,
-                         line_ordinal)
+                         line_ordinal, pack_count, pack_size_qty, pack_size_unit,
+                         actual_weight_qty, actual_weight_unit)
                     VALUES
                         (:tid, :rid, NULL, :qty,
                          :cost, :name, :unit, :conf,
                          false, 'unmatched', :jid, :att,
-                         :ord)
+                         :ord, :pack_count, :pack_size_qty, :pack_size_unit,
+                         :aw_qty, :aw_unit)
                 """),
                 {
                     "tid": tenant_id,
@@ -328,6 +330,13 @@ class ExtractionWorker:
                     "jid": job["id"],
                     "att": job["job_attempt"],
                     "ord": ordinal,
+                    # Packaging hints (4x4L, ACTUAL WT ...) — prefill data for the
+                    # operator's conversion confirmation, never applied silently.
+                    "pack_count": _to_optional_decimal(raw_line.get("pack_count")),
+                    "pack_size_qty": _to_optional_decimal(raw_line.get("pack_size_qty")),
+                    "pack_size_unit": _str_or_none(raw_line.get("pack_size_unit")),
+                    "aw_qty": _to_optional_decimal(raw_line.get("actual_weight_qty")),
+                    "aw_unit": _str_or_none(raw_line.get("actual_weight_unit")),
                 },
             )
 
@@ -537,6 +546,17 @@ def _to_decimal(v: Any) -> Decimal:
         return d if d.is_finite() else Decimal(0)
     except (InvalidOperation, TypeError, ValueError):
         return Decimal(0)
+
+
+def _to_optional_decimal(v: Any) -> Decimal | None:
+    """Hint fields: absent/garbage → NULL (a hint must never invent a zero)."""
+    if v is None:
+        return None
+    try:
+        d = Decimal(str(v))
+        return d if d.is_finite() and d > 0 else None
+    except (InvalidOperation, TypeError, ValueError):
+        return None
 
 
 def _to_float(v: Any) -> float:

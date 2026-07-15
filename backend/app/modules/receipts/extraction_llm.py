@@ -99,6 +99,34 @@ def _line_schema() -> dict[str, Any]:
                     "credits/discounts)"
                 ),
             },
+            # Packaging hints — read from the description when printed, e.g.
+            # '4x4L' → pack_count 4, pack_size_qty 4, pack_size_unit 'L';
+            # '12x1L' → 12 / 1 / 'L'; '1000CT' → 1000 / 1 / 'ea'; '5KG' bag →
+            # 1 / 5 / 'kg'. These prefill the operator's conversion — omit
+            # whatever the document does not show.
+            "pack_count": {
+                "type": "number",
+                "description": "Units per case/pack if printed (the 4 in '4x4L')",
+            },
+            "pack_size_qty": {
+                "type": "number",
+                "description": "Size of one inner unit if printed (the second 4 in '4x4L')",
+            },
+            "pack_size_unit": {
+                "type": "string",
+                "description": "Unit of pack_size_qty as printed (L, ML, KG, G, CT, OZ)",
+            },
+            "actual_weight_qty": {
+                "type": "number",
+                "description": (
+                    "Actual/catch weight if the line prints one (e.g. 'ACTUAL WT "
+                    "10.18 KG') — the real received amount for weight-priced goods"
+                ),
+            },
+            "actual_weight_unit": {
+                "type": "string",
+                "description": "Unit of actual_weight_qty as printed (KG, LB, G)",
+            },
             "confidence": {
                 "type": "number",
                 "description": "0.0 to 1.0 confidence in this line",
@@ -181,7 +209,10 @@ class AnthropicExtractionClient:
             f"Extract this document. Copy the U/M column exactly as printed (CS, SAC, EA, "
             f"KG, ...) — do not convert or normalize units. Set line_type for every row; "
             f"discounts, credits, backorders and deposits are not items. Include "
-            f"line_total_cents as printed. Call the {_TOOL_NAME} tool."
+            f"line_total_cents as printed. When the description shows packaging "
+            f"(4x4L, 12x1L, 1000CT, 5KG) fill pack_count/pack_size_qty/pack_size_unit; "
+            f"when an actual/catch weight is printed fill actual_weight_qty/unit. "
+            f"Call the {_TOOL_NAME} tool."
         )
         if repair_feedback:
             instruction += (

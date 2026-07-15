@@ -7,10 +7,11 @@
 
 import React, { useEffect, useState } from 'react';
 import { View, Text, TextInput, Pressable, StyleSheet } from 'react-native';
-import { Pill } from '@/components/atoms';
+import { Button, Pill } from '@/components/atoms';
 import { useLang } from '@/i18n/LangProvider';
 import { T, TYPE } from '@/theme/tokens';
 import { CANONICAL_UNITS } from '@/api/units';
+import { lineNeedsConversion } from '@/api/receipts';
 import type { LineUpdatePayload, ReceiptLine } from '@/api/receipts';
 
 export function ReceiptLineRow({
@@ -30,12 +31,20 @@ export function ReceiptLineRow({
     line.unit_cost_cents != null ? (line.unit_cost_cents / 100).toFixed(2) : '',
   );
   const [unitOpen, setUnitOpen] = useState(false);
+  // Conversion panel state — prefilled from the server suggestion, editable,
+  // qty and factor stay mutually consistent (qty = purchase_qty x factor).
+  const [convQty, setConvQty] = useState('');
+  const [convFactor, setConvFactor] = useState('');
 
   // Server state is the draft owner — resync local fields when the line changes.
   useEffect(() => {
     setQty(line.received_quantity != null ? String(line.received_quantity) : '');
     setCost(line.unit_cost_cents != null ? (line.unit_cost_cents / 100).toFixed(2) : '');
   }, [line.received_quantity, line.unit_cost_cents]);
+  useEffect(() => {
+    setConvQty(line.suggested_quantity != null ? String(line.suggested_quantity) : '');
+    setConvFactor(line.suggested_factor != null ? String(line.suggested_factor) : '');
+  }, [line.id, line.suggested_quantity, line.suggested_factor, line.conversion_confirmed_at]);
 
   const skipped = line.match_status === 'skipped';
 
@@ -78,6 +87,56 @@ export function ReceiptLineRow({
         <Text style={styles.linkedItem} numberOfLines={1}>
           → {line.item_name}
         </Text>
+      ) : null}
+
+      {/* Confirmed conversion summary: 3 CS → 48 L (1 CS = 16 L) */}
+      {!skipped && line.conversion_confirmed_at && line.purchase_unit ? (
+        <Text style={styles.convDone}>
+          ✓ {line.purchase_quantity} {line.purchase_unit} → {line.received_quantity}{' '}
+          {line.received_unit} (1 {line.purchase_unit} = {line.conversion_factor}{' '}
+          {line.received_unit})
+        </Text>
+      ) : null}
+
+      {/* Conversion panel: invoice U/M (CS/SAC) → storage unit, operator-confirmed */}
+      {!skipped && lineNeedsConversion(line) ? (
+        <ConversionPanel
+          line={line}
+          busy={busy}
+          convQty={convQty}
+          convFactor={convFactor}
+          onQty={(v) => {
+            setConvQty(v);
+            const q = Number(v.replace(',', '.'));
+            const pq = line.received_quantity;
+            if (Number.isFinite(q) && q > 0 && pq && pq > 0) {
+              setConvFactor(String(Number((q / pq).toFixed(4))));
+            }
+          }}
+          onFactor={(v) => {
+            setConvFactor(v);
+            const f = Number(v.replace(',', '.'));
+            const pq = line.received_quantity;
+            if (Number.isFinite(f) && f > 0 && pq && pq > 0) {
+              setConvQty(String(Number((pq * f).toFixed(4))));
+            }
+          }}
+          onConfirm={() => {
+            const q = Number(convQty.replace(',', '.'));
+            const f = Number(convFactor.replace(',', '.'));
+            if (!Number.isFinite(q) || q <= 0 || !Number.isFinite(f) || f <= 0) return;
+            const pq = line.received_quantity;
+            const totalCents =
+              line.unit_cost_cents != null && pq ? line.unit_cost_cents * pq : null;
+            onPatch({
+              received_quantity: q,
+              received_unit: line.item_storage_unit as string,
+              conversion_factor: f,
+              ...(totalCents != null ? { unit_cost_cents: Math.round(totalCents / q) } : {}),
+              remember_conversion: true,
+            });
+          }}
+        />
       ) : null}
 
       {!skipped ? (
@@ -174,12 +233,99 @@ export function ReceiptLineRow({
   );
 }
 
+function ConversionPanel({
+  line,
+  busy,
+  convQty,
+  convFactor,
+  onQty,
+  onFactor,
+  onConfirm,
+}: {
+  line: ReceiptLine;
+  busy: boolean;
+  convQty: string;
+  convFactor: string;
+  onQty: (v: string) => void;
+  onFactor: (v: string) => void;
+  onConfirm: () => void;
+}) {
+  const { t } = useLang();
+  const su = line.item_storage_unit ?? '';
+  const pq = line.received_quantity; // pre-confirm, this IS the invoice qty
+  const q = Number(convQty.replace(',', '.'));
+  const totalCents = line.unit_cost_cents != null && pq ? line.unit_cost_cents * pq : null;
+  const perUnit =
+    totalCents != null && Number.isFinite(q) && q > 0 ? totalCents / q / 100 : null;
+  const valid =
+    Number.isFinite(q) && q > 0 && Number.isFinite(Number(convFactor.replace(',', '.')));
+
+  return (
+    <View style={styles.convBox}>
+      <Text style={styles.convTitle}>
+        {t.rcptConvInvoiceSays} {pq} {line.extracted_unit}
+      </Text>
+      <View style={styles.convRow}>
+        <Text style={styles.convLabel}>{t.rcptConvReceiveAs}</Text>
+        <TextInput
+          style={styles.convInput}
+          value={convQty}
+          onChangeText={onQty}
+          keyboardType="decimal-pad"
+          editable={!busy}
+        />
+        <Text style={styles.convUnit}>{su}</Text>
+      </View>
+      <View style={styles.convRow}>
+        <Text style={styles.convLabel}>
+          1 {line.extracted_unit} =
+        </Text>
+        <TextInput
+          style={styles.convInput}
+          value={convFactor}
+          onChangeText={onFactor}
+          keyboardType="decimal-pad"
+          editable={!busy}
+        />
+        <Text style={styles.convUnit}>{su}</Text>
+      </View>
+      {perUnit != null && totalCents != null ? (
+        <Text style={styles.convCost}>
+          {(totalCents / 100).toFixed(2)} $ / {convQty} {su} = {perUnit.toFixed(4)} $ / {su}
+        </Text>
+      ) : null}
+      <Button
+        label={t.rcptConvConfirm}
+        size="md"
+        disabled={busy || !valid}
+        onPress={onConfirm}
+      />
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   card: { backgroundColor: T.elev1, borderRadius: 14, padding: 14, gap: 10 },
   cardSkipped: { opacity: 0.55 },
   top: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10 },
   name: { ...TYPE.headline, color: T.text, flex: 1 },
   linkedItem: { ...TYPE.subhead, color: T.ac },
+  convDone: { ...TYPE.footnote, color: T.ac },
+  convBox: { backgroundColor: T.elev2, borderRadius: 12, padding: 12, gap: 8 },
+  convTitle: { ...TYPE.subhead, color: T.text },
+  convRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  convLabel: { ...TYPE.footnote, color: T.sec, minWidth: 82 },
+  convInput: {
+    ...TYPE.body,
+    color: T.text,
+    backgroundColor: T.elev1,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    minWidth: 84,
+  },
+  convUnit: { ...TYPE.subhead, color: T.sec },
+  convCost: { ...TYPE.footnote, color: T.ter },
   nameSkipped: { textDecorationLine: 'line-through', color: T.sec },
   fields: { flexDirection: 'row', gap: 12 },
   field: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },

@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.inventory.depletion.conversions import convert
+from app.modules.inventory.depletion.units import is_canonical as is_canonical_unit
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +39,12 @@ class ReceiptLinesUnmatched(Exception):
     ReceiptNothingToCommit: the receipt HAS receivable lines, the operator just
     hasn't linked/created items (or skipped them) yet. Committing anyway would
     silently drop those lines from inventory (→ RECEIPT_LINES_UNMATCHED)."""
+
+
+class ReceiptConversionRequired(Exception):
+    """A movable line is denominated in a purchase unit (CS, SAC, ...) with no
+    operator-confirmed conversion to the item's storage unit. Commit never
+    guesses a factor (→ RECEIPT_CONVERSION_REQUIRED)."""
 
 
 class ReceiptReviewRequired(Exception):
@@ -671,6 +678,7 @@ async def commit_receipt(
                 SELECT rl.id, rl.inventory_item_id, rl.received_quantity,
                        rl.purchase_unit_id, rl.unit_cost_cents, rl.idempotency_key,
                        rl.match_status, rl.manually_corrected, rl.extracted_unit,
+                       rl.received_unit,
                        pu.name AS purchase_unit_name, su.name AS storage_unit_name
                   FROM receipt_lines rl
                   LEFT JOIN units_of_measure pu ON pu.id = rl.purchase_unit_id
@@ -705,6 +713,21 @@ async def commit_receipt(
     if not movable:
         raise ReceiptNothingToCommit(f"receipt {receipt_id} has no inventory-moving line")
 
+    # Purchase-unit gate: a movable line whose effective unit is non-canonical
+    # (CS, SAC, BOX...) and not literally the item's storage unit cannot commit —
+    # the operator must confirm the pack conversion first (received_unit). We
+    # NEVER guess a factor; a wrong silent conversion corrupts stock and costing.
+    unconverted = []
+    for ln in movable:
+        eff = ln["received_unit"] or ln["purchase_unit_name"] or ln["extracted_unit"]
+        if eff and not is_canonical_unit(eff) and eff != ln["storage_unit_name"]:
+            unconverted.append(ln)
+    if unconverted:
+        raise ReceiptConversionRequired(
+            f"receipt {receipt_id} has {len(unconverted)} line(s) in a purchase unit "
+            f"with no confirmed storage conversion"
+        )
+
     if source in _INTAKE_SOURCES:
         if not confirm:
             raise ReceiptReviewRequired("confirm:true required for an intake-source commit")
@@ -722,7 +745,10 @@ async def commit_receipt(
         received_qty = Decimal(str(ln["received_quantity"]))
         key = ln["idempotency_key"] or f"receipt_line:{line_id}"
 
-        from_unit = ln["purchase_unit_name"] or ln["extracted_unit"]
+        # Precedence: operator-confirmed received_unit → resolved purchase uom →
+        # raw extracted unit. The gate above guarantees this is canonical or
+        # literally the storage unit by the time we get here.
+        from_unit = ln["received_unit"] or ln["purchase_unit_name"] or ln["extracted_unit"]
         to_unit = ln["storage_unit_name"]
         if from_unit and to_unit and from_unit != to_unit:
             storage_qty = await convert(

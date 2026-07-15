@@ -130,7 +130,7 @@ export default function Stock() {
       } catch (e: unknown) {
         showError(
           t.rcptUploadFailedTitle,
-          e instanceof ReceiptApiError ? e.detail : t.rcptUploadFailedBody,
+          e instanceof ReceiptApiError ? (e.status === 401 ? t.sessionExpired : e.detail) : t.rcptUploadFailedBody,
         );
       } finally {
         setReceiving(false);
@@ -148,7 +148,7 @@ export default function Stock() {
     } catch (e: unknown) {
       showError(
         t.rcptUploadFailedTitle,
-        e instanceof ReceiptApiError ? e.detail : t.rcptUploadFailedBody,
+        e instanceof ReceiptApiError ? (e.status === 401 ? t.sessionExpired : e.detail) : t.rcptUploadFailedBody,
       );
     } finally {
       setReceiving(false);

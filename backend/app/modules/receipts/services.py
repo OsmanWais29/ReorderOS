@@ -52,6 +52,11 @@ class UnknownInventoryItem(Exception):
     """inventory_item_id does not resolve to an active item for this tenant (→ 422)."""
 
 
+class LineNotLinked(Exception):
+    """Conversion confirmation on a line with no inventory item — a pack
+    conversion is item-relative (→ 422 RECEIPT_LINE_NOT_LINKED)."""
+
+
 class ResetNeedsConfirm(Exception):
     """reset-extraction called without discard_edits=true — destructive action
     requires the explicit flag (→ 409 RECEIPT_RESET_NEEDS_CONFIRM)."""
@@ -244,6 +249,7 @@ async def update_line(
     receipt_id: UUID,
     line_id: UUID,
     patch: LineUpdate,
+    confirmed_by: UUID | None = None,
 ) -> dict[str, Any]:
     """Edit one line per the D-606-25/26 lifecycle (schema-validated combinations):
 
@@ -262,7 +268,8 @@ async def update_line(
         (
             await db.execute(
                 text("""
-                    SELECT id, inventory_item_id, match_status
+                    SELECT id, inventory_item_id, match_status, received_quantity,
+                           extracted_unit, purchase_unit
                       FROM receipt_lines
                      WHERE tenant_id = :tid AND receipt_id = :rid AND id = :lid
                      FOR UPDATE
@@ -309,6 +316,52 @@ async def update_line(
         sets.append("manually_corrected = true")
         params["iid"] = item_id
 
+    confirming = "received_unit" in fields
+    if confirming:
+        # Conversion confirmation: the operator states "receive N x storage-unit"
+        # (schema guarantees received_quantity + conversion_factor came along).
+        # The line must end this call LINKED — a conversion is item-relative.
+        effective_item = params.get("iid") or line["inventory_item_id"]
+        if effective_item is None:
+            raise LineNotLinked
+        # Stash the invoice originals ONCE (SET expressions read the OLD row, so
+        # COALESCE keeps a prior stash and received_quantity is pre-overwrite).
+        sets.append("purchase_quantity = COALESCE(purchase_quantity, received_quantity)")
+        sets.append("purchase_unit = COALESCE(purchase_unit, extracted_unit)")
+        sets.append("received_unit = :received_unit")
+        sets.append("conversion_factor = :conversion_factor")
+        sets.append("conversion_source = 'operator_confirmed'")
+        sets.append("conversion_confirmed_at = now()")
+        sets.append("conversion_confirmed_by = :confirmed_by")
+        # manually_corrected comes from the field_edits block below — the schema
+        # guarantees received_quantity accompanies a confirm, so it always fires.
+        params["received_unit"] = patch.received_unit
+        params["conversion_factor"] = patch.conversion_factor
+        params["confirmed_by"] = confirmed_by
+
+        if patch.remember_conversion:
+            purchase_unit_str = line["purchase_unit"] or (line["extracted_unit"] or "").strip()
+            if purchase_unit_str:
+                await db.execute(
+                    text("""
+                        INSERT INTO tenant_item_purchase_conversions
+                            (tenant_id, inventory_item_id, purchase_unit,
+                             storage_unit, factor)
+                        VALUES (:tid, :iid2, :pu, :su, :factor)
+                        ON CONFLICT (tenant_id, inventory_item_id, purchase_unit)
+                        DO UPDATE SET factor = EXCLUDED.factor,
+                                      storage_unit = EXCLUDED.storage_unit,
+                                      updated_at = now()
+                    """),
+                    {
+                        "tid": tenant_id,
+                        "iid2": effective_item,
+                        "pu": purchase_unit_str,
+                        "su": patch.received_unit,
+                        "factor": patch.conversion_factor,
+                    },
+                )
+
     field_edits = fields & {
         "received_quantity",
         "extracted_unit",
@@ -337,9 +390,14 @@ async def update_line(
                     SELECT rl.id, rl.extracted_name, rl.inventory_item_id,
                            rl.received_quantity, rl.extracted_unit, rl.unit_cost_cents,
                            rl.confidence, rl.manually_corrected, rl.match_status,
-                           rl.line_ordinal, ii.name AS item_name
+                           rl.line_ordinal, ii.name AS item_name,
+                           su.name AS item_storage_unit,
+                           rl.purchase_quantity, rl.purchase_unit, rl.received_unit,
+                           rl.conversion_factor, rl.conversion_source,
+                           rl.conversion_confirmed_at
                       FROM receipt_lines rl
                       LEFT JOIN inventory_items ii ON ii.id = rl.inventory_item_id
+                      LEFT JOIN units_of_measure su ON su.id = ii.storage_unit_id
                      WHERE rl.tenant_id = :tid AND rl.receipt_id = :rid AND rl.id = :lid
                 """),
                 {"tid": tenant_id, "rid": receipt_id, "lid": line_id},

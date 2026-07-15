@@ -45,7 +45,14 @@
     "plugins": [
       "expo-router",
       "expo-font",
-      "expo-local-authentication"
+      "expo-local-authentication",
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "ReOrderOS uses the camera to photograph supplier receipts.",
+          "photosPermission": "ReOrderOS uses your photos to attach supplier receipts."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

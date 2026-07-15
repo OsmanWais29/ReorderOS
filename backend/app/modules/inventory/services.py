@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.inventory.depletion.conversions import convert
+from app.modules.inventory.depletion.units import is_canonical as is_canonical_unit
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +32,30 @@ _INTAKE_SOURCES = frozenset({"mobile_photo", "gmail", "email", "webhook", "manua
 class ReceiptNothingToCommit(Exception):
     """Every line is skipped / non-inventory — nothing to receive (D-606-06).
     The operator dismisses; this is not a commit error (→ RECEIPT_NOTHING_TO_COMMIT)."""
+
+
+class ReceiptLinesUnmatched(Exception):
+    """At least one non-skipped line has no inventory item. Distinct from
+    ReceiptNothingToCommit: the receipt HAS receivable lines, the operator just
+    hasn't linked/created items (or skipped them) yet. Committing anyway would
+    silently drop those lines from inventory (→ RECEIPT_LINES_UNMATCHED)."""
+
+
+class ReceiptConversionRequired(Exception):
+    """A movable line is denominated in a purchase unit (CS, SAC, ...) with no
+    operator-confirmed conversion to the item's storage unit. Commit never
+    guesses a factor (→ RECEIPT_CONVERSION_REQUIRED)."""
+
+
+class ItemHasMovements(Exception):
+    """Storage-unit change refused: the item already has ledger movements —
+    rewriting the unit would silently re-denominate history
+    (→ 409 ITEM_HAS_MOVEMENTS)."""
+
+
+class ItemInRecipes(Exception):
+    """Storage-unit change refused: recipes/modifiers reference the item —
+    depletion conversions would silently change meaning (→ 409 ITEM_IN_RECIPES)."""
 
 
 class ReceiptReviewRequired(Exception):
@@ -616,6 +641,69 @@ async def _idempotent_movement_insert(
         return UUID(str(existing.scalar_one()))
 
 
+async def change_item_storage_unit(
+    session: AsyncSession,
+    *,
+    tenant_id: UUID,
+    inventory_item_id: UUID,
+    storage_unit: str,
+) -> dict[str, Any]:
+    """Correct an item's storage unit — SAFE cases only (the goblet lesson:
+    a mis-picked oz_weight item for count goods).
+
+    Allowed only while the item's history is empty: zero inventory_movements
+    and zero recipe/modifier references. Anything else would silently
+    re-denominate the ledger or depletion math — those need an explicit
+    migration story, not an UPDATE. recipe_unit_id moves with storage_unit_id
+    (resolver invariant: items are created with both equal)."""
+    from app.modules.inventory.item_resolver import resolve_unit
+
+    row = (
+        await session.execute(
+            text("SELECT id FROM inventory_items WHERE tenant_id = :tid AND id = :iid FOR UPDATE"),
+            {"tid": tenant_id, "iid": inventory_item_id},
+        )
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"inventory_item {inventory_item_id} not found")
+
+    movements = (
+        await session.execute(
+            text(
+                "SELECT count(*) FROM inventory_movements "
+                "WHERE tenant_id = :tid AND inventory_item_id = :iid"
+            ),
+            {"tid": tenant_id, "iid": inventory_item_id},
+        )
+    ).scalar_one()
+    if movements:
+        raise ItemHasMovements(f"{movements} movement(s) exist")
+
+    refs = (
+        await session.execute(
+            text(
+                "SELECT (SELECT count(*) FROM recipe_ingredients "
+                "         WHERE tenant_id = :tid AND inventory_item_id = :iid) + "
+                "       (SELECT count(*) FROM modifier_ingredients "
+                "         WHERE tenant_id = :tid AND inventory_item_id = :iid)"
+            ),
+            {"tid": tenant_id, "iid": inventory_item_id},
+        )
+    ).scalar_one()
+    if refs:
+        raise ItemInRecipes(f"{refs} recipe/modifier reference(s) exist")
+
+    unit_id = await resolve_unit(session, tenant_id, storage_unit)
+    await session.execute(
+        text(
+            "UPDATE inventory_items SET storage_unit_id = :uid, recipe_unit_id = :uid "
+            "WHERE tenant_id = :tid AND id = :iid"
+        ),
+        {"uid": unit_id, "tid": tenant_id, "iid": inventory_item_id},
+    )
+    return {"id": inventory_item_id, "storage_unit": storage_unit}
+
+
 async def commit_receipt(
     session: AsyncSession,
     *,
@@ -664,6 +752,7 @@ async def commit_receipt(
                 SELECT rl.id, rl.inventory_item_id, rl.received_quantity,
                        rl.purchase_unit_id, rl.unit_cost_cents, rl.idempotency_key,
                        rl.match_status, rl.manually_corrected, rl.extracted_unit,
+                       rl.received_unit, rl.line_total_cents,
                        pu.name AS purchase_unit_name, su.name AS storage_unit_name
                   FROM receipt_lines rl
                   LEFT JOIN units_of_measure pu ON pu.id = rl.purchase_unit_id
@@ -685,8 +774,33 @@ async def commit_receipt(
         for ln in lines
         if ln["match_status"] != "skipped" and ln["inventory_item_id"] is not None
     ]
+    # Every non-skipped line must be RESOLVED (item linked/created) before any
+    # line commits — silently ignoring unmatched lines would receive a partial
+    # invoice with no operator signal. Skip is the only deliberate way out.
+    unresolved = [
+        ln for ln in lines if ln["match_status"] != "skipped" and ln["inventory_item_id"] is None
+    ]
+    if unresolved:
+        raise ReceiptLinesUnmatched(
+            f"receipt {receipt_id} has {len(unresolved)} line(s) without an inventory item"
+        )
     if not movable:
         raise ReceiptNothingToCommit(f"receipt {receipt_id} has no inventory-moving line")
+
+    # Purchase-unit gate: a movable line whose effective unit is non-canonical
+    # (CS, SAC, BOX...) and not literally the item's storage unit cannot commit —
+    # the operator must confirm the pack conversion first (received_unit). We
+    # NEVER guess a factor; a wrong silent conversion corrupts stock and costing.
+    unconverted = []
+    for ln in movable:
+        eff = ln["received_unit"] or ln["purchase_unit_name"] or ln["extracted_unit"]
+        if eff and not is_canonical_unit(eff) and eff != ln["storage_unit_name"]:
+            unconverted.append(ln)
+    if unconverted:
+        raise ReceiptConversionRequired(
+            f"receipt {receipt_id} has {len(unconverted)} line(s) in a purchase unit "
+            f"with no confirmed storage conversion"
+        )
 
     if source in _INTAKE_SOURCES:
         if not confirm:
@@ -705,7 +819,10 @@ async def commit_receipt(
         received_qty = Decimal(str(ln["received_quantity"]))
         key = ln["idempotency_key"] or f"receipt_line:{line_id}"
 
-        from_unit = ln["purchase_unit_name"] or ln["extracted_unit"]
+        # Precedence: operator-confirmed received_unit → resolved purchase uom →
+        # raw extracted unit. The gate above guarantees this is canonical or
+        # literally the storage unit by the time we get here.
+        from_unit = ln["received_unit"] or ln["purchase_unit_name"] or ln["extracted_unit"]
         to_unit = ln["storage_unit_name"]
         if from_unit and to_unit and from_unit != to_unit:
             storage_qty = await convert(
@@ -728,18 +845,30 @@ async def commit_receipt(
             key=key,
         )
 
-        if ln["unit_cost_cents"] is not None:
+        # Cost basis precedence: the invoice's printed line total over storage
+        # qty (exact, survives weight-priced lines and sub-cent unit costs) →
+        # else the line's unit_cost_cents (manual path; already per received
+        # unit). NUMERIC column is the truth; the legacy int column is a
+        # rounded convenience for existing readers.
+        exact_cost: Decimal | None = None
+        if ln["line_total_cents"] is not None and storage_qty > 0:
+            exact_cost = Decimal(ln["line_total_cents"]) / storage_qty
+        elif ln["unit_cost_cents"] is not None:
+            exact_cost = Decimal(ln["unit_cost_cents"])
+        if exact_cost is not None:
             await session.execute(
                 text("""
                     INSERT INTO ingredient_cost_snapshots
                         (id, tenant_id, inventory_item_id, unit_cost_cents,
-                         purchase_unit_id, source_receipt_line_id)
-                    VALUES (gen_random_uuid(), :tid, :iid, :cost, :puid, :lid)
+                         unit_cost_cents_exact, purchase_unit_id,
+                         source_receipt_line_id)
+                    VALUES (gen_random_uuid(), :tid, :iid, :cost, :exact, :puid, :lid)
                 """),
                 {
                     "tid": tenant_id,
                     "iid": item_id,
-                    "cost": ln["unit_cost_cents"],
+                    "cost": int(exact_cost.quantize(Decimal("1"), rounding=ROUND_HALF_UP)),
+                    "exact": exact_cost.quantize(Decimal("0.0001")),
                     "puid": ln["purchase_unit_id"],
                     "lid": line_id,
                 },

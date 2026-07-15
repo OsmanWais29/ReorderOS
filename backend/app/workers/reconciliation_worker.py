@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import signal
 
+from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.modules.pos.reconciliation import ReconciliationService
 from app.modules.pos.token_refresh import refresh_expiring_tokens
@@ -24,6 +25,11 @@ INTERVAL_SECONDS = 900  # 15 minutes
 
 async def _main() -> None:
     configure_logging()
+    # Clover-less deployments: reconciliation and token refresh only serve the
+    # Clover integration — exit cleanly (status 0) when it is off.
+    if not get_settings().clover_enabled:
+        log.info("reconciliation_worker.disabled", reason="CLOVER_ENABLED is not true")
+        return
     log.info("reconciliation_worker.starting", interval_s=INTERVAL_SECONDS)
 
     loop = asyncio.get_running_loop()

@@ -6,10 +6,17 @@ on:
     paths:
       - "backend/**"
       - ".github/workflows/backend-ci.yml"
+      # The backend suite carries the frontend guards (client<->server path sync
+      # parses frontend/src/api/*.ts; i18n parity parses strings.ts; the unit
+      # allowlist sync parses units.ts) — run them when those files change too.
+      - "frontend/src/api/**"
+      - "frontend/src/i18n/strings.ts"
   pull_request:
     paths:
       - "backend/**"
       - ".github/workflows/backend-ci.yml"
+      - "frontend/src/api/**"
+      - "frontend/src/i18n/strings.ts"
 
 defaults:
   run:

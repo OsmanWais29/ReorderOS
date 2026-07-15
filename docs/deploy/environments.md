@@ -39,9 +39,12 @@ first-time testing happens in **staging**.
 - **`APP_ENV=production` is required for the DB-SSL path.** `database.py`/`service_db.py` only attach the
   SSL context when `is_production`; DO managed Postgres requires SSL. (Staging uses `production` too, for
   faithfulness + SSL.)
-- **All 7 F1.3-required secrets must be reachable by EVERY `production` process** (api AND worker), or
+- **F1.3-required secrets must be reachable by EVERY `production` process** (api AND worker), or
   the component crashes at config validation: `TOKEN_ENCRYPTION_KEY`, `SERVICE_DATABASE_URL`,
-  `WORKOS_CLIENT_ID`, `WORKOS_JWKS_URL`, `CLOVER_APP_ID`, `CLOVER_APP_SECRET`, `CLOVER_WEBHOOK_AUTH_CODE`.
+  `WORKOS_CLIENT_ID`, `WORKOS_JWKS_URL` — plus, **only when `CLOVER_ENABLED=true`**: `CLOVER_APP_ID`,
+  `CLOVER_APP_SECRET`, `CLOVER_WEBHOOK_AUTH_CODE`. With `CLOVER_ENABLED` unset/false (the default),
+  Clover secrets are not required, Clover routes return 503 `CLOVER_DISABLED`, and the inbox +
+  reconciliation workers exit cleanly with a disabled log line.
 - **Clover webhook auth code is Clover-generated** — copy it from the Clover dashboard into
   `CLOVER_WEBHOOK_AUTH_CODE`; you don't invent it.
 - **Two DB roles by design:** both `DATABASE_URL` and `SERVICE_DATABASE_URL` are connection strings to

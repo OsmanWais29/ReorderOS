@@ -1,0 +1,42 @@
+name: frontend-ci
+
+on:
+  push:
+    branches: [main, "claude/**", "sprint-*"]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-ci.yml"
+  pull_request:
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-ci.yml"
+
+defaults:
+  run:
+    working-directory: frontend
+
+jobs:
+  static:
+    name: typecheck + lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install
+        # --ignore-scripts: react-native-screens@3.31.0's PUBLISHED tarball ships a
+        # broken `postinstall: bob build && husky install` (bob is its devDep, never
+        # present at install time) — and tsc/eslint need no lifecycle scripts anyway.
+        # Skipping scripts is also a supply-chain hardening default for lint jobs.
+        run: npm ci --ignore-scripts
+      - name: TypeScript
+        # Runs without the gitignored .expo/types codegen — the expo-router Href
+        # augmentation is simply absent, which is the same permissive baseline a
+        # fresh clone gets. Route-name typos still surface locally via `expo start`.
+        run: npx tsc --noEmit
+      - name: Expo lint
+        # Fails on errors; the 5 pre-existing warnings in untouched files don't fail the job.
+        run: npx expo lint

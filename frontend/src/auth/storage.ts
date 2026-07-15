@@ -44,3 +44,28 @@ export function loadVerifier(): string | null {
   }
   return null;
 }
+
+const REFRESH_KEY = 'auth_refresh_token';
+
+export async function saveRefreshToken(token: string): Promise<void> {
+  if (Platform.OS === 'web') {
+    localStorage.setItem(REFRESH_KEY, token);
+  } else {
+    await AsyncStorage.setItem(REFRESH_KEY, token);
+  }
+}
+
+export async function loadRefreshToken(): Promise<string | null> {
+  if (Platform.OS === 'web') {
+    return localStorage.getItem(REFRESH_KEY);
+  }
+  return AsyncStorage.getItem(REFRESH_KEY);
+}
+
+export async function clearRefreshToken(): Promise<void> {
+  if (Platform.OS === 'web') {
+    localStorage.removeItem(REFRESH_KEY);
+  } else {
+    await AsyncStorage.removeItem(REFRESH_KEY);
+  }
+}

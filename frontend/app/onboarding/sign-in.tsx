@@ -58,8 +58,8 @@ export default function SignIn() {
     setLoading(true);
     setError(null);
     try {
-      const token = await signInWithPassword(email.trim(), password);
-      await signIn(token);
+      const tokens = await signInWithPassword(email.trim(), password);
+      await signIn(tokens);
       router.replace('/(app)/home');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Sign in failed');

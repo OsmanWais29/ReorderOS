@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.database import engine, make_bound_session
 from app.modules.inventory.services import (
+    ReceiptLinesUnmatched,
     ReceiptNothingToCommit,
     ReceiptReviewRequired,
     commit_receipt,
@@ -210,6 +211,46 @@ async def test_all_skipped_nothing_to_commit(db: Any) -> None:
         await commit_receipt(
             db, tenant_id=tid, receipt_id=rid, confirm=True, reviewed_affirmation=True
         )
+
+
+async def test_all_lines_unmatched_raises_lines_unmatched_not_nothing(db: Any) -> None:
+    """Live smoke 2026-07-14: all-unmatched extraction lines hit
+    ReceiptNothingToCommit and the UI told the operator every line was
+    'skipped' — wrong state, wrong guidance. Unresolved lines are their own
+    error, distinct from an all-skipped receipt."""
+    tid, _item, rid = await _seed(db)
+    await _add_line(db, tid, rid, None)  # extracted, no item linked, NOT skipped
+    with pytest.raises(ReceiptLinesUnmatched):
+        await commit_receipt(
+            db, tenant_id=tid, receipt_id=rid, confirm=True, reviewed_affirmation=True
+        )
+
+
+async def test_single_unmatched_line_blocks_whole_commit(db: Any) -> None:
+    """Strict v1 rule: EVERY non-skipped line must be resolved. A partial
+    commit would silently drop the unmatched lines from inventory."""
+    tid, item, rid = await _seed(db)
+    await _add_line(db, tid, rid, item, match_status="matched")
+    await _add_line(db, tid, rid, None)  # one line still unresolved
+    with pytest.raises(ReceiptLinesUnmatched):
+        await commit_receipt(
+            db, tenant_id=tid, receipt_id=rid, confirm=True, reviewed_affirmation=True
+        )
+    committed = (
+        await db.execute(text("SELECT commit_state FROM receipts WHERE id=:r"), {"r": rid})
+    ).scalar_one()
+    assert committed == "draft"  # nothing partial happened
+
+
+async def test_itemless_line_explicitly_skipped_commits(db: Any) -> None:
+    """Skip is the deliberate way out for a line the operator won't receive."""
+    tid, item, rid = await _seed(db)
+    await _add_line(db, tid, rid, item, match_status="matched")
+    await _add_line(db, tid, rid, None, match_status="skipped")
+    result = await commit_receipt(
+        db, tenant_id=tid, receipt_id=rid, confirm=True, reviewed_affirmation=True
+    )
+    assert result["status"] == "committed"
 
 
 async def test_skipped_line_writes_no_movement(db: Any) -> None:

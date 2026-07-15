@@ -10,13 +10,16 @@ deprecated shim (D-606-10).
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.inventory.depletion.units import DIMENSION_OF
 from app.modules.inventory.item_resolver import suggest_inventory_items
+from app.modules.receipts.conversion import hint_dimension, suggest_conversion
 
 # commit_states a draft can still be dismissed/cancelled/deleted from.
 _MUTABLE_STATES = ("draft", "pending_review")
@@ -97,12 +100,21 @@ async def get_receipt(db: AsyncSession, tenant_id: UUID, receipt_id: UUID) -> di
         (
             await db.execute(
                 text("""
-                SELECT id, extracted_name, inventory_item_id, received_quantity,
-                       extracted_unit, unit_cost_cents, confidence, manually_corrected,
-                       match_status, line_ordinal
-                  FROM receipt_lines
-                 WHERE tenant_id = :tid AND receipt_id = :rid
-                 ORDER BY line_ordinal NULLS LAST, id
+                SELECT rl.id, rl.extracted_name, rl.inventory_item_id,
+                       rl.received_quantity, rl.extracted_unit, rl.unit_cost_cents,
+                       rl.confidence, rl.manually_corrected, rl.match_status,
+                       rl.line_ordinal, ii.name AS item_name,
+                       su.name AS item_storage_unit,
+                       rl.purchase_quantity, rl.purchase_unit, rl.received_unit,
+                       rl.conversion_factor, rl.conversion_source,
+                       rl.conversion_confirmed_at,
+                       rl.pack_count, rl.pack_size_qty, rl.pack_size_unit,
+                       rl.actual_weight_qty, rl.actual_weight_unit, rl.line_total_cents
+                  FROM receipt_lines rl
+                  LEFT JOIN inventory_items ii ON ii.id = rl.inventory_item_id
+                  LEFT JOIN units_of_measure su ON su.id = ii.storage_unit_id
+                 WHERE rl.tenant_id = :tid AND rl.receipt_id = :rid
+                 ORDER BY rl.line_ordinal NULLS LAST, rl.id
             """),
                 {"tid": tenant_id, "rid": receipt_id},
             )
@@ -110,6 +122,23 @@ async def get_receipt(db: AsyncSession, tenant_id: UUID, receipt_id: UUID) -> di
         .mappings()
         .all()
     )
+
+    # Remembered pack conversions for the linked items on this receipt — one
+    # query, keyed by (item_id, purchase_unit). Prefill only; operator confirms.
+    remembered: dict[tuple[str, str], Decimal] = {}
+    item_ids = [ln["inventory_item_id"] for ln in lines if ln["inventory_item_id"]]
+    if item_ids:
+        rows = (
+            await db.execute(
+                text("""
+                    SELECT inventory_item_id, purchase_unit, factor
+                      FROM tenant_item_purchase_conversions
+                     WHERE tenant_id = :tid AND inventory_item_id = ANY(:ids)
+                """),
+                {"tid": tenant_id, "ids": item_ids},
+            )
+        ).fetchall()
+        remembered = {(str(r[0]), r[1]): Decimal(str(r[2])) for r in rows}
 
     result = dict(header)
     result["lines"] = []
@@ -120,6 +149,47 @@ async def get_receipt(db: AsyncSession, tenant_id: UUID, receipt_id: UUID) -> di
             if row["match_status"] == "unmatched" and row["extracted_name"]
             else []
         )
+        row.update(
+            {
+                "suggested_quantity": None,
+                "suggested_factor": None,
+                "suggestion_source": None,
+                "unit_mismatch_warning": False,
+            }
+        )
+        # Conversion prefill: only for linked, not-yet-confirmed lines whose
+        # invoice U/M isn't already the storage unit.
+        if (
+            row["inventory_item_id"]
+            and row["item_storage_unit"]
+            and row["conversion_confirmed_at"] is None
+            and row["received_quantity"] is not None
+        ):
+            key = (str(row["inventory_item_id"]), (row["extracted_unit"] or "").strip())
+            s = suggest_conversion(
+                purchase_qty=Decimal(str(row["received_quantity"])),
+                purchase_unit=row["extracted_unit"],
+                storage_unit=row["item_storage_unit"],
+                pack_count=row["pack_count"],
+                pack_size_qty=row["pack_size_qty"],
+                pack_size_unit=row["pack_size_unit"],
+                actual_weight_qty=row["actual_weight_qty"],
+                actual_weight_unit=row["actual_weight_unit"],
+                remembered_factor=remembered.get(key),
+            )
+            if s is not None:
+                row["suggested_quantity"] = float(s.quantity)
+                row["suggested_factor"] = float(s.factor)
+                row["suggestion_source"] = s.source
+            # Cross-dimension smell: invoice evidence says count/volume/weight
+            # but the item stores in a different dimension → the OPERATOR is
+            # probably on the wrong item. Strong UI warning, not a block (v1).
+            hd = hint_dimension(
+                row["pack_size_unit"], row["actual_weight_unit"], row["extracted_unit"]
+            )
+            sd = DIMENSION_OF.get(row["item_storage_unit"] or "")
+            if hd is not None and sd is not None and hd != sd:
+                row["unit_mismatch_warning"] = True
         result["lines"].append(row)
     return result
 

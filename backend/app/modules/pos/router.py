@@ -27,7 +27,20 @@ from app.core.security import Principal, get_principal
 from app.modules.pos.catalog_sync import CatalogSyncService
 from app.modules.pos.state_manager import OAuthStateManager
 
-router = APIRouter(prefix="/pos/clover", tags=["pos"])
+
+async def _require_clover_enabled() -> None:
+    """503 every Clover route when the integration is switched off — the
+    receipts pipeline must run in Clover-less deployments (CLOVER_ENABLED)."""
+    if not get_settings().clover_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "CLOVER_DISABLED", "message": "Clover integration is disabled."},
+        )
+
+
+router = APIRouter(
+    prefix="/pos/clover", tags=["pos"], dependencies=[Depends(_require_clover_enabled)]
+)
 _state_mgr = OAuthStateManager()
 
 

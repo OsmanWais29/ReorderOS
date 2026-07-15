@@ -13,6 +13,8 @@
 // (same caveat as recipes.ts — the server's own validation is the enforcement backstop).
 
 import { API_BASE } from '../auth/config';
+import { tenantHeader } from './activeTenant';
+import { tryRefresh } from '../auth/session';
 
 export class ItemsApiError extends Error {
   status: number;
@@ -26,14 +28,21 @@ export class ItemsApiError extends Error {
 }
 
 async function req<T>(token: string, path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}/api/v1${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-      ...(init?.headers ?? {}),
-    },
-  });
+  const doFetch = (auth: string) =>
+    fetch(`${API_BASE}/api/v1${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${auth}`,
+        ...tenantHeader(), // X-Tenant-Id — required by resolve_principal (400 without)
+        ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(init?.headers ?? {}),
+      },
+    });
+  let res = await doFetch(token);
+  if (res.status === 401) {
+    const fresh = await tryRefresh();
+    if (fresh) res = await doFetch(fresh);
+  }
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { detail?: string };
     throw new ItemsApiError(res.status, body.detail ?? `Request failed (${res.status})`);
@@ -79,4 +88,13 @@ export const postOpeningBalance = (token: string, itemId: string, quantity: numb
   req<OpeningBalanceResult>(token, `/inventory/items/${itemId}/opening-balance`, {
     method: 'POST',
     body: JSON.stringify({ quantity }),
+  });
+
+/** Manager+. Fix a mis-picked storage unit — only while the item has zero
+ * movements and zero recipe references (409 ITEM_HAS_MOVEMENTS /
+ * ITEM_IN_RECIPES otherwise). */
+export const updateItemStorageUnit = (token: string, itemId: string, storageUnit: string) =>
+  req<{ id: string; storage_unit: string }>(token, `/inventory/items/${itemId}/storage-unit`, {
+    method: 'PUT',
+    body: JSON.stringify({ storage_unit: storageUnit }),
   });

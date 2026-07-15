@@ -79,6 +79,9 @@ class LineUpdate(BaseModel):
     received_unit: str | None = None
     conversion_factor: Decimal | None = Field(default=None, gt=0)
     remember_conversion: bool = False
+    # Explicit operator override for a dimension-mismatched item (count-based
+    # invoice into a weight-stored item). Without it the confirm is refused.
+    override_unit_mismatch: bool = False
 
     @field_validator("extracted_unit", "new_item_unit", "received_unit")
     @classmethod

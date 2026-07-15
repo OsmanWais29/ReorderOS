@@ -6,7 +6,7 @@
 // cleared) are always reflected.
 
 import React, { useEffect, useState } from 'react';
-import { View, Text, TextInput, Pressable, StyleSheet } from 'react-native';
+import { View, Text, TextInput, Pressable, StyleSheet, Switch } from 'react-native';
 import { Button, Pill } from '@/components/atoms';
 import { useLang } from '@/i18n/LangProvider';
 import { T, TYPE } from '@/theme/tokens';
@@ -121,19 +121,21 @@ export function ReceiptLineRow({
               setConvQty(String(Number((pq * f).toFixed(4))));
             }
           }}
-          onConfirm={() => {
+          onConfirm={(overrideMismatch) => {
             const q = Number(convQty.replace(',', '.'));
             const f = Number(convFactor.replace(',', '.'));
             if (!Number.isFinite(q) || q <= 0 || !Number.isFinite(f) || f <= 0) return;
             const pq = line.received_quantity;
             const totalCents =
-              line.unit_cost_cents != null && pq ? line.unit_cost_cents * pq : null;
+              line.line_total_cents ??
+              (line.unit_cost_cents != null && pq ? line.unit_cost_cents * pq : null);
             onPatch({
               received_quantity: q,
               received_unit: line.item_storage_unit as string,
               conversion_factor: f,
               ...(totalCents != null ? { unit_cost_cents: Math.round(totalCents / q) } : {}),
               remember_conversion: true,
+              ...(overrideMismatch ? { override_unit_mismatch: true } : {}),
             });
           }}
         />
@@ -248,14 +250,16 @@ function ConversionPanel({
   convFactor: string;
   onQty: (v: string) => void;
   onFactor: (v: string) => void;
-  onConfirm: () => void;
+  onConfirm: (overrideMismatch: boolean) => void;
 }) {
   const { t } = useLang();
   // Accept/Edit: with a server suggestion the operator just approves — no
   // mental arithmetic. Editing (or no suggestion) exposes the inputs.
   const hasSuggestion = line.suggested_quantity != null && line.suggested_factor != null;
   const [editing, setEditing] = useState(!hasSuggestion);
+  const [overrideMismatch, setOverrideMismatch] = useState(false);
   useEffect(() => setEditing(!hasSuggestion), [line.id, hasSuggestion]);
+  useEffect(() => setOverrideMismatch(false), [line.id, line.inventory_item_id]);
 
   const su = line.item_storage_unit ?? '';
   const pq = line.received_quantity; // pre-confirm, this IS the invoice qty
@@ -300,9 +304,17 @@ function ConversionPanel({
       </Text>
       {clue ? <Text style={styles.convCost}>{clue}</Text> : null}
       {line.unit_mismatch_warning ? (
-        <Text style={styles.convWarn}>
-          {t.rcptConvDimWarn.replace('{unit}', su)}
-        </Text>
+        <>
+          <Text style={styles.convWarn}>{t.rcptConvDimWarn.replace('{unit}', su)}</Text>
+          <View style={styles.convRow}>
+            <Text style={styles.convLabel}>{t.rcptConvOverride}</Text>
+            <Switch
+              value={overrideMismatch}
+              onValueChange={setOverrideMismatch}
+              trackColor={{ true: T.amber, false: T.elev1 }}
+            />
+          </View>
+        </>
       ) : null}
 
       {!editing && hasSuggestion ? (
@@ -316,8 +328,8 @@ function ConversionPanel({
             <Button
               label={t.rcptConvAccept}
               size="md"
-              disabled={busy || !valid}
-              onPress={onConfirm}
+              disabled={busy || !valid || (line.unit_mismatch_warning && !overrideMismatch)}
+              onPress={() => onConfirm(overrideMismatch)}
             />
             <Pressable disabled={busy} onPress={() => setEditing(true)}>
               <Text style={styles.actionText}>{t.rcptConvEdit}</Text>
@@ -352,8 +364,8 @@ function ConversionPanel({
           <Button
             label={t.rcptConvConfirm}
             size="md"
-            disabled={busy || !valid}
-            onPress={onConfirm}
+            disabled={busy || !valid || (line.unit_mismatch_warning && !overrideMismatch)}
+            onPress={() => onConfirm(overrideMismatch)}
           />
         </>
       )}

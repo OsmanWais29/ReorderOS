@@ -733,3 +733,71 @@ async def test_count_invoice_vs_weight_item_warns(
     assert lines[str(lid)]["unit_mismatch_warning"] is True  # CT clue vs oz_weight
     # milk (L clue, unlinked) carries no warning
     assert lines[str(s["line_id"])]["unit_mismatch_warning"] is False
+
+
+# ── dimension gate on the WRITE path (blocker 4, backend-enforced) ────────────
+
+
+async def test_mismatched_dimension_confirm_blocked_without_override(
+    app_instance: Any, conn: AsyncConnection, client: AsyncClient
+) -> None:
+    """A warning the UI can ignore is not a defense: confirming a count-based
+    invoice line into a weight-stored item must be REFUSED by the backend
+    unless the operator explicitly overrides."""
+    s = await _seed_milk(conn)
+    _as(app_instance, str(s["tenant_id"]), str(s["user_id"]))
+    unit_id, item_id, lid = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    await conn.execute(
+        text(
+            "INSERT INTO units_of_measure (id, tenant_id, name, abbreviation, unit_type) "
+            "VALUES (:id, :t, 'oz_weight', 'oz', 'weight')"
+        ),
+        {"id": unit_id, "t": s["tenant_id"]},
+    )
+    await conn.execute(
+        text(
+            "INSERT INTO inventory_items (id, tenant_id, name, inventory_mode, "
+            "storage_unit_id, recipe_unit_id) "
+            "VALUES (:id, :t, 'GOBELET OZ', 'recipe_deducted', :u, :u)"
+        ),
+        {"id": item_id, "t": s["tenant_id"], "u": unit_id},
+    )
+    await conn.execute(
+        text("""
+            INSERT INTO receipt_lines
+                (id, tenant_id, receipt_id, extracted_name, received_quantity,
+                 extracted_unit, match_status, line_ordinal, inventory_item_id,
+                 pack_count, pack_size_qty, pack_size_unit)
+            VALUES (:id, :t, :r, 'GOBELET 1000CT', 1, 'CS', 'matched', 6, :i,
+                    1000, 1, 'CT')
+        """),
+        {"id": lid, "t": s["tenant_id"], "r": s["receipt_id"], "i": item_id},
+    )
+    url = f"/api/v1/receipts/{s['receipt_id']}/lines/{lid}"
+
+    # No override → 422, nothing saved.
+    r = await client.put(
+        url,
+        json={"received_quantity": 1000, "received_unit": "oz_weight", "conversion_factor": 1000},
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "RECEIPT_UNIT_MISMATCH"
+    saved = (
+        await conn.execute(
+            text("SELECT received_unit FROM receipt_lines WHERE id=:id"), {"id": lid}
+        )
+    ).scalar()
+    assert saved is None
+
+    # Explicit override → accepted.
+    r = await client.put(
+        url,
+        json={
+            "received_quantity": 1000,
+            "received_unit": "oz_weight",
+            "conversion_factor": 1000,
+            "override_unit_mismatch": True,
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["conversion_source"] == "operator_confirmed"

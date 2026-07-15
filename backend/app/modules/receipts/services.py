@@ -19,8 +19,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import storage
+from app.modules.inventory.depletion.units import DIMENSION_OF
 from app.modules.inventory.item_resolver import resolve_inventory_item
 from app.modules.receipts import repo
+from app.modules.receipts.conversion import hint_dimension
 from app.modules.receipts.schemas import LineCreate, LineUpdate, NoteCreate
 from app.modules.receipts.validation import extension_for, validate_and_clean
 
@@ -61,6 +63,12 @@ class LineConversionInconsistent(Exception):
     """received_quantity, purchase_quantity and conversion_factor disagree —
     committing the mismatch would move the wrong stock quantity
     (→ 422 RECEIPT_CONVERSION_INCONSISTENT)."""
+
+
+class LineUnitMismatch(Exception):
+    """Invoice packaging evidence and the linked item's storage dimension
+    disagree (count vs weight etc.) and the operator did not explicitly
+    override (→ 422 RECEIPT_UNIT_MISMATCH)."""
 
 
 class ResetNeedsConfirm(Exception):
@@ -275,7 +283,8 @@ async def update_line(
             await db.execute(
                 text("""
                     SELECT id, inventory_item_id, match_status, received_quantity,
-                           extracted_unit, purchase_unit, purchase_quantity
+                           extracted_unit, purchase_unit, purchase_quantity,
+                           pack_size_unit, actual_weight_unit
                       FROM receipt_lines
                      WHERE tenant_id = :tid AND receipt_id = :rid AND id = :lid
                      FOR UPDATE
@@ -344,6 +353,31 @@ async def update_line(
                     f"received_quantity {got} != purchase_quantity {purchase_qty} "
                     f"x factor {patch.conversion_factor} (= {expected})"
                 )
+
+        # Dimension gate (live smoke: a 1000CT goblet case confirmed into an
+        # oz_weight item). If the invoice's packaging evidence and the item's
+        # storage dimension disagree, refuse the confirmation unless the
+        # operator EXPLICITLY overrides — a warning the UI can ignore is not
+        # a defense; this one lives on the write path.
+        storage_unit_name = (
+            await db.execute(
+                text("""
+                    SELECT uom.name FROM inventory_items ii
+                    JOIN units_of_measure uom ON uom.id = ii.storage_unit_id
+                   WHERE ii.tenant_id = :tid AND ii.id = :iid
+                """),
+                {"tid": tenant_id, "iid": effective_item},
+            )
+        ).scalar()
+        hd = hint_dimension(
+            line["pack_size_unit"], line["actual_weight_unit"], line["extracted_unit"]
+        )
+        sd = DIMENSION_OF.get(storage_unit_name or "")
+        if hd is not None and sd is not None and hd != sd and not patch.override_unit_mismatch:
+            raise LineUnitMismatch(
+                f"invoice evidence is {hd} but item stores as {sd} "
+                f"({storage_unit_name}) — override_unit_mismatch required"
+            )
         # Stash the invoice originals ONCE (SET expressions read the OLD row, so
         # COALESCE keeps a prior stash and received_quantity is pre-overwrite).
         sets.append("purchase_quantity = COALESCE(purchase_quantity, received_quantity)")

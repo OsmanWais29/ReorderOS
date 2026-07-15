@@ -201,6 +201,15 @@ async def update_receipt_line(
                 "conversion. Check the numbers and try again.",
             },
         ) from None
+    except services.LineUnitMismatch:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "RECEIPT_UNIT_MISMATCH",
+                "message": "The invoice packaging and this item's storage unit are "
+                "different types. Check the item, or confirm the override to proceed.",
+            },
+        ) from None
     except services.ReceiptImmutable:
         raise HTTPException(
             status_code=409,

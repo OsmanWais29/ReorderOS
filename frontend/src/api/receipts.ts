@@ -175,6 +175,9 @@ export type LineUpdatePayload = {
   received_unit?: string;
   conversion_factor?: number;
   remember_conversion?: boolean;
+  /** Explicit consent to confirm into a dimension-mismatched item —
+   * the server refuses without it (RECEIPT_UNIT_MISMATCH). */
+  override_unit_mismatch?: boolean;
 };
 
 /** A linked case/pack line the operator hasn't confirmed a storage conversion

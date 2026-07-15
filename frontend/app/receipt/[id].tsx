@@ -165,7 +165,13 @@ export default function ReceiptReview() {
     setCommitError(null);
     try {
       await commitReceipt(token, id, affirmed);
-      showSuccess(t.rcptCommitDoneTitle, t.rcptCommitDoneBody, () => router.back());
+      // Leave the committed receipt deterministically: back() is a silent no-op
+      // when this screen was reached via replace (e.g. the session-recovery
+      // redirect) — land on Stock, where the just-updated on-hand is visible.
+      showSuccess(t.rcptCommitDoneTitle, t.rcptCommitDoneBody, () => {
+        if (router.canGoBack()) router.back();
+        else router.replace('/(app)/stock');
+      });
     } catch (e: unknown) {
       if (e instanceof ReceiptApiError) {
         if (e.status === 401) {

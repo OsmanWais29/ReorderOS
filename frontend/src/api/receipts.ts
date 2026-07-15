@@ -19,6 +19,7 @@ import { Platform } from 'react-native';
 import { API_BASE } from '../auth/config';
 import { tenantHeader } from './activeTenant';
 import { CANONICAL_UNITS } from './units';
+import { tryRefresh } from '../auth/session';
 
 // ── Error type: stable codes let the UI branch (RECEIPT_REVIEW_REQUIRED, ...) ──
 export class ReceiptApiError extends Error {
@@ -35,17 +36,24 @@ export class ReceiptApiError extends Error {
 }
 
 async function req<T>(token: string, path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}/api/v1${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...tenantHeader(), // X-Tenant-Id — required by resolve_principal (400 without)
-      // JSON content-type ONLY for string bodies — a FormData body must keep the
-      // fetch-generated multipart boundary (uploadReceiptPhoto).
-      ...(typeof init?.body === 'string' ? { 'Content-Type': 'application/json' } : {}),
-      ...(init?.headers ?? {}),
-    },
-  });
+  const doFetch = (auth: string) =>
+    fetch(`${API_BASE}/api/v1${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${auth}`,
+        ...tenantHeader(), // X-Tenant-Id — required by resolve_principal (400 without)
+        // JSON content-type ONLY for string bodies — a FormData body must keep the
+        // fetch-generated multipart boundary (uploadReceiptPhoto).
+        ...(typeof init?.body === 'string' ? { 'Content-Type': 'application/json' } : {}),
+        ...(init?.headers ?? {}),
+      },
+    });
+  let res = await doFetch(token);
+  if (res.status === 401) {
+    // Access token expired mid-session: silent single-flight refresh, one retry.
+    const fresh = await tryRefresh();
+    if (fresh) res = await doFetch(fresh);
+  }
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as {
       detail?: string | { code?: string; message?: string };

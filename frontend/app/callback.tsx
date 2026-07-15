@@ -33,10 +33,10 @@ export default function Callback() {
         if (!verifier) throw new Error('Session expired — please try again');
 
         setStatus('Verifying with WorkOS…');
-        const token = await exchangeCode(code, verifier);
+        const tokens = await exchangeCode(code, verifier);
 
         setStatus('Loading your account…');
-        await signIn(token);
+        await signIn(tokens);
 
         router.replace('/(app)/home');
       } catch (err: unknown) {

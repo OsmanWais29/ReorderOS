@@ -1,6 +1,9 @@
 import { API_BASE, REDIRECT_URI } from './config';
 
-export async function signInWithPassword(email: string, password: string): Promise<string> {
+/** Access + rotated refresh pair — store BOTH (WorkOS refresh is single-use). */
+export type AuthTokens = { accessToken: string; refreshToken: string | null };
+
+export async function signInWithPassword(email: string, password: string): Promise<AuthTokens> {
   const res = await fetch(`${API_BASE}/api/v1/auth/sign-in`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -11,7 +14,7 @@ export async function signInWithPassword(email: string, password: string): Promi
     throw new Error(err.detail ?? 'Sign in failed');
   }
   const data = await res.json();
-  return data.access_token as string;
+  return { accessToken: data.access_token as string, refreshToken: data.refresh_token ?? null };
 }
 
 export type MeResponse = {
@@ -27,7 +30,7 @@ export type MeResponse = {
   active_tenant_id: string | null;
 };
 
-export async function exchangeCode(code: string, codeVerifier?: string): Promise<string> {
+export async function exchangeCode(code: string, codeVerifier?: string): Promise<AuthTokens> {
   const res = await fetch(`${API_BASE}/api/v1/auth/exchange`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -38,7 +41,7 @@ export async function exchangeCode(code: string, codeVerifier?: string): Promise
     throw new Error(err.detail ?? 'Token exchange failed');
   }
   const data = await res.json();
-  return data.access_token as string;
+  return { accessToken: data.access_token as string, refreshToken: data.refresh_token ?? null };
 }
 
 export async function fetchMe(token: string): Promise<MeResponse> {

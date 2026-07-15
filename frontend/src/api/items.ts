@@ -14,6 +14,7 @@
 
 import { API_BASE } from '../auth/config';
 import { tenantHeader } from './activeTenant';
+import { tryRefresh } from '../auth/session';
 
 export class ItemsApiError extends Error {
   status: number;
@@ -27,15 +28,21 @@ export class ItemsApiError extends Error {
 }
 
 async function req<T>(token: string, path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}/api/v1${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...tenantHeader(), // X-Tenant-Id — required by resolve_principal (400 without)
-      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-      ...(init?.headers ?? {}),
-    },
-  });
+  const doFetch = (auth: string) =>
+    fetch(`${API_BASE}/api/v1${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${auth}`,
+        ...tenantHeader(), // X-Tenant-Id — required by resolve_principal (400 without)
+        ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(init?.headers ?? {}),
+      },
+    });
+  let res = await doFetch(token);
+  if (res.status === 401) {
+    const fresh = await tryRefresh();
+    if (fresh) res = await doFetch(fresh);
+  }
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { detail?: string };
     throw new ItemsApiError(res.status, body.detail ?? `Request failed (${res.status})`);

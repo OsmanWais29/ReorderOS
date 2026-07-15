@@ -34,10 +34,10 @@ export default function Callback() {
         const verifier = loadVerifier() ?? undefined;
 
         setStatus('Verifying with WorkOS…');
-        const token = await exchangeCode(code, verifier);
+        const tokens = await exchangeCode(code, verifier);
 
         setStatus('Loading your account…');
-        await signIn(token);
+        await signIn(tokens);
 
         const returnTo = consumeReturnTo();
         if (returnTo) {

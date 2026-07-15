@@ -173,6 +173,10 @@ async def set_active_tenant(
 
 class ExchangeResponse(BaseModel):
     access_token: str
+    # WorkOS access tokens live ~5 minutes BY DESIGN; the refresh token carries
+    # the session (rotated single-use on every refresh). Discarding it — as this
+    # API did until the Lauzon smoke — forced a full re-login every 5 minutes.
+    refresh_token: str | None = None
 
 
 class SignInRequest(BaseModel):
@@ -203,7 +207,10 @@ async def sign_in(body: SignInRequest) -> ExchangeResponse:
         detail = r.json().get("message") or r.json().get("error", "Invalid credentials")
         raise HTTPException(status_code=401, detail=detail)
 
-    return ExchangeResponse(access_token=r.json()["access_token"])
+    data = r.json()
+    return ExchangeResponse(
+        access_token=data["access_token"], refresh_token=data.get("refresh_token")
+    )
 
 
 class ExchangeRequest(BaseModel):
@@ -243,4 +250,44 @@ async def exchange_code(body: ExchangeRequest) -> ExchangeResponse:
         detail = r.json().get("message") or r.json().get("error", "authentication failed")
         raise HTTPException(status_code=401, detail=detail)
 
-    return ExchangeResponse(access_token=r.json()["access_token"])
+    data = r.json()
+    return ExchangeResponse(
+        access_token=data["access_token"], refresh_token=data.get("refresh_token")
+    )
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+@router.post("/refresh", response_model=ExchangeResponse)
+async def refresh_session(body: RefreshRequest) -> ExchangeResponse:
+    """Mint a fresh access token from a WorkOS refresh token.
+
+    WorkOS ROTATES refresh tokens (single-use): every response carries a new
+    pair and the client must store both. The client_secret stays server-side,
+    same as /exchange. A failed refresh means the session is truly over
+    (expired/revoked) → 401, and the client falls back to a full sign-in.
+    """
+    s = get_settings()
+    if not s.workos_secret_key or not s.workos_client_id:
+        raise HTTPException(status_code=503, detail="Auth not configured")
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.post(
+            "https://api.workos.com/user_management/authenticate",
+            json={
+                "client_id": s.workos_client_id,
+                "client_secret": s.workos_secret_key,
+                "grant_type": "refresh_token",
+                "refresh_token": body.refresh_token,
+            },
+        )
+
+    if r.status_code != 200:
+        raise HTTPException(status_code=401, detail="Session expired")
+
+    data = r.json()
+    return ExchangeResponse(
+        access_token=data["access_token"], refresh_token=data.get("refresh_token")
+    )

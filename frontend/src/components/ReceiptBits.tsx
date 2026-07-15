@@ -91,6 +91,17 @@ function Banner({
 
 // ── photo preview ─────────────────────────────────────────────────────────────
 
+function PdfCard({ url }: { url: string }) {
+  const { t } = useLang();
+  return (
+    <Pressable onPress={() => void Linking.openURL(url)}>
+      <View style={styles.pdfCard}>
+        <Text style={styles.pdfLabel}>{t.rcptPdfDoc}</Text>
+      </View>
+    </Pressable>
+  );
+}
+
 export function ReceiptPhotoPreview({
   url,
   mimeType,
@@ -102,13 +113,7 @@ export function ReceiptPhotoPreview({
   if (!url) return null;
   if (mimeType === 'application/pdf') {
     // A PDF can't render in <Image>; open the signed URL in the platform viewer.
-    return (
-      <Pressable onPress={() => void Linking.openURL(url)}>
-        <View style={styles.pdfCard}>
-          <Text style={styles.pdfLabel}>PDF</Text>
-        </View>
-      </Pressable>
-    );
+    return <PdfCard url={url} />;
   }
   return (
     <Pressable onPress={() => setExpanded((e) => !e)}>

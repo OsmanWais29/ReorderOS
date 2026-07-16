@@ -213,6 +213,9 @@ class ReceiptLineOut(BaseModel):
     actual_weight_unit: str | None = None
     # Invoice's printed extended total — the costing ground truth at commit.
     line_total_cents: int | None = None
+    # Extractor's row classification. Non-item rows (discount/credit/backorder/
+    # fee_or_deposit) materialize as skipped lines — visible, never receivable.
+    line_type: str = "item"
     # Invoice evidence and item storage unit live in different dimensions
     # (count vs weight etc.) — the operator is probably on the wrong item.
     unit_mismatch_warning: bool = False

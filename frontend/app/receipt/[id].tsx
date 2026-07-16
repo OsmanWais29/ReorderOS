@@ -304,7 +304,16 @@ export default function ReceiptReview() {
   //    authoritative; these mirror them so the operator sees WHY, not just "no") ──
   const lines = receipt?.lines ?? [];
   const receivable = useMemo(() => lines.filter((l) => l.match_status !== 'skipped'), [lines]);
-  const skippedLines = useMemo(() => lines.filter((l) => l.match_status === 'skipped'), [lines]);
+  // Machine-classified non-stock rows (discount/credit/backorder/fee) — visible
+  // but inert; operator-skipped ITEM lines keep their editable card (restorable).
+  const nonStockLines = useMemo(
+    () => lines.filter((l) => l.match_status === 'skipped' && l.line_type !== 'item'),
+    [lines],
+  );
+  const skippedLines = useMemo(
+    () => lines.filter((l) => l.match_status === 'skipped' && l.line_type === 'item'),
+    [lines],
+  );
   const unmatchedLines = useMemo(
     () => receivable.filter((l) => !l.inventory_item_id),
     [receivable],
@@ -578,20 +587,49 @@ export default function ReceiptReview() {
             ))}
           </View>
 
-          {/* non-stock rows: skipped lines + invoice tax — never mixed with items */}
-          {skippedLines.length > 0 || receipt.tax_cents != null ? (
+          {/* non-stock rows: machine-classified rows + skipped lines + invoice tax —
+              never mixed with receivable items */}
+          {nonStockLines.length > 0 || skippedLines.length > 0 || receipt.tax_cents != null ? (
             <View>
               <Pressable onPress={() => setShowSkipped((s) => !s)} style={styles.skippedHead}>
                 <Text style={styles.skippedTitle}>
                   {t.rcptNotAdded.replace(
                     '{x}',
-                    String(skippedLines.length + (receipt.tax_cents != null ? 1 : 0)),
+                    String(
+                      nonStockLines.length +
+                        skippedLines.length +
+                        (receipt.tax_cents != null ? 1 : 0),
+                    ),
                   )}{' '}
                   {showSkipped ? '▾' : '▸'}
                 </Text>
               </Pressable>
               {showSkipped ? (
                 <View style={styles.lines}>
+                  {nonStockLines.map((l) => (
+                    <View key={l.id} style={styles.skippedRow}>
+                      <View style={styles.skippedRowText}>
+                        <Text style={styles.skippedType}>
+                          {l.line_type === 'discount'
+                            ? t.rcptTypeDiscount
+                            : l.line_type === 'credit'
+                              ? t.rcptTypeCredit
+                              : l.line_type === 'backorder'
+                                ? t.rcptTypeBackorder
+                                : t.rcptTypeFee}
+                        </Text>
+                        <Text style={styles.skippedName} numberOfLines={1}>
+                          {l.extracted_name ?? '—'}
+                        </Text>
+                      </View>
+                      {l.line_total_cents != null ? (
+                        <Text style={styles.skippedAmt}>
+                          {l.line_total_cents < 0 ? '−' : ''}$
+                          {Math.abs(l.line_total_cents / 100).toFixed(2)}
+                        </Text>
+                      ) : null}
+                    </View>
+                  ))}
                   {receipt.tax_cents != null ? (
                     <View style={styles.skippedRow}>
                       <Text style={styles.skippedName}>{t.rcptTaxRow}</Text>
@@ -825,6 +863,8 @@ const styles = StyleSheet.create({
   },
   skippedName: { ...TYPE.subhead, color: T.sec },
   skippedAmt: { ...TYPE.subhead, color: T.sec },
+  skippedRowText: { flex: 1, gap: 2 },
+  skippedType: { ...TYPE.caption1, color: T.ter, textTransform: 'uppercase' },
   successHead: { alignItems: 'center', gap: 8, marginVertical: 12 },
   successTitle: { ...TYPE.title2, color: T.text },
   successRow: {

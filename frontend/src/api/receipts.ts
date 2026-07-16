@@ -111,6 +111,8 @@ export type ReceiptLine = {
   actual_weight_unit: string | null;
   /** Invoice's printed extended total — costing ground truth. */
   line_total_cents: number | null;
+  /** Extractor row classification; non-item rows arrive as skipped lines. */
+  line_type: 'item' | 'discount' | 'credit' | 'backorder' | 'fee_or_deposit';
   /** Invoice evidence vs item storage unit dimension mismatch (wrong item?). */
   unit_mismatch_warning: boolean;
   received_quantity: number | null;

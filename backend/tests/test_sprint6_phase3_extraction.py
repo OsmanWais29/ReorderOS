@@ -568,14 +568,23 @@ async def test_live_invoice_semantics_um_preserved_specials_not_received(
             == "complete"
         )
 
-        rows = await admin_conn.fetch(
-            "SELECT extracted_name, extracted_unit, received_quantity, unit_cost_cents "
+        all_rows = await admin_conn.fetch(
+            "SELECT extracted_name, extracted_unit, received_quantity, unit_cost_cents, "
+            "line_type, match_status "
             "FROM receipt_lines WHERE receipt_id=$1 ORDER BY line_ordinal",
             rid,
         )
+        # All 12 rows materialize (0031): 9 receivable items + 3 non-stock rows
+        # (discount/backorder/credit) that are skipped — visible, never received.
+        assert len(all_rows) == 12
+        nonstock = [r for r in all_rows if r["line_type"] != "item"]
+        assert len(nonstock) == 3
+        assert all(r["match_status"] == "skipped" for r in nonstock)
+        assert all(r["received_quantity"] is None for r in nonstock)
+        rows = [r for r in all_rows if r["line_type"] == "item"]
         by_name = {r["extracted_name"]: r for r in rows}
 
-        # Only the 9 item rows became receive lines.
+        # Only the 9 item rows are receivable.
         assert len(rows) == 9
 
         # Supplier U/M preserved VERBATIM — never collapsed to canonical units.
@@ -592,23 +601,24 @@ async def test_live_invoice_semantics_um_preserved_specials_not_received(
         assert by_name["White Sugar 2kg"]["extracted_unit"] == "EA"
         assert by_name["White Sugar 2kg"]["received_quantity"] == 3
 
-        # Credit is NOT a normal positive receive; discount and backorder create
-        # no receive line either.
+        # Credit is NOT a normal positive receive; discount and backorder are
+        # non-stock rows — present but skipped, never receivable items.
         assert not any("Credit" in n for n in by_name)
         assert not any("Discount" in n for n in by_name)
         assert not any("Chai" in n for n in by_name)
+        nonstock_names = " ".join(str(r["extracted_name"]) for r in nonstock)
+        assert "Credit" in nonstock_names
+        assert "Discount" in nonstock_names
+        assert "Chai" in nonstock_names
         assert all(r["received_quantity"] > 0 for r in rows)
         assert all((r["unit_cost_cents"] or 0) >= 0 for r in rows)
 
-        # Skips surfaced explicitly per type + operator must review.
-        [skip_event] = [e for e in logs if e.get("stage") == "apply"]
-        assert skip_event["lines_applied"] == 9
-        assert skip_event["lines_skipped_discount"] == 1
-        assert skip_event["lines_skipped_credit"] == 1
-        assert skip_event["lines_skipped_backorder"] == 1
+        # 0031: specials MATERIALIZE instead of being dropped — nothing was lost,
+        # so there is no drop-telemetry warning and no forced manual review.
+        assert [e for e in logs if e.get("stage") == "apply"] == []
         assert (
             await admin_conn.fetchval("SELECT manual_entry_required FROM receipts WHERE id=$1", rid)
-        ) is True
+        ) is False
 
         # Full fidelity (incl. line_total_cents 8244 on the milk line) is retained
         # in the raw_extraction checkpoint for the operator/later phases.

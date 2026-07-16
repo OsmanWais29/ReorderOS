@@ -189,8 +189,12 @@ async def verify(message_id: str, database_url: str) -> tuple[list[str], list[tu
             out.append(f"total lines: {len(lines)} | skipped: {skipped}")
             for x in lines[:5]:
                 out.append(str(_subset(x, _SAFE_LINE_KEYS)))
-            bad = [x for x in lines if "line_type" in x and (x["line_type"] or "item") != "item"]
-            checks.append(("no unsupported rows became receivable lines", len(bad) == 0))
+            bad = [
+                x
+                for x in lines
+                if (x.get("line_type") or "item") != "item" and x.get("match_status") != "skipped"
+            ]
+            checks.append(("non-stock rows skipped (none receivable)", len(bad) == 0))
 
             out.append("=== inventory_movements (source = this receipt) ===")
             movs = [

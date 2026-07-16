@@ -282,15 +282,44 @@ class ExtractionWorker:
         confidences: list[float] = []
         skipped: dict[str, int] = {}
         for ordinal, raw_line in enumerate(lines):
-            # Only line_type='item' rows become receive lines. Discounts, credits/
-            # returns, backorders and deposits/fees must NEVER commit as normal
-            # receives (a credit is not a positive receive with negative cost);
-            # v1 keeps them out of receipt_lines entirely — they stay visible in
-            # raw_extraction and force manual review below. Counted content-free.
+            # Non-item rows (discounts, credits/returns, backorders, deposits/fees)
+            # must NEVER commit as receives (a credit is not a positive receive
+            # with negative cost) — they materialize as line_type-tagged,
+            # match_status='skipped' rows: visible in review ("Not added to
+            # stock"), inert to every commit gate via the existing skipped-line
+            # exemption, and cleaned up with machine lines (extraction_job_id set).
             line_type = str(raw_line.get("line_type") or "item")
             if line_type != "item":
-                key = line_type if line_type in _SPECIAL_LINE_TYPES else "unknown_type"
-                skipped[key] = skipped.get(key, 0) + 1
+                if line_type not in _SPECIAL_LINE_TYPES:
+                    # Unknown classification — genuinely dropped; force manual.
+                    skipped["unknown_type"] = skipped.get("unknown_type", 0) + 1
+                    continue
+                await s.execute(
+                    text("""
+                        INSERT INTO receipt_lines
+                            (tenant_id, receipt_id, inventory_item_id, received_quantity,
+                             unit_cost_cents, extracted_name, extracted_unit, confidence,
+                             manually_corrected, match_status, extraction_job_id,
+                             job_attempt, line_ordinal, line_total_cents, line_type)
+                        VALUES
+                            (:tid, :rid, NULL, NULL,
+                             NULL, :name, NULL, :conf,
+                             false, 'skipped', :jid,
+                             :att, :ord, :line_total, :ltype)
+                    """),
+                    {
+                        "tid": tenant_id,
+                        "rid": receipt_id,
+                        "name": str(raw_line.get("name", "")).strip() or None,
+                        "conf": _to_float(raw_line.get("confidence")),
+                        "jid": job["id"],
+                        "att": job["job_attempt"],
+                        "ord": ordinal,
+                        # Signed as printed — discounts/credits arrive negative.
+                        "line_total": _to_int(raw_line.get("line_total_cents")),
+                        "ltype": line_type,
+                    },
+                )
                 continue
             qty = _to_decimal(raw_line.get("qty"))
             # Untrusted LLM output: a qty <= 0 'item' would violate
@@ -351,11 +380,11 @@ class ExtractionWorker:
                 **{f"lines_skipped_{k}": v for k, v in sorted(skipped.items())},
             )
 
-        # D-606-08: aggregate = min(line confidences); NULL when zero lines, which
-        # always pairs with manual_entry_required. Low aggregate also flags manual.
-        # Any skipped row (special line_type or invalid qty) means the machine
-        # extraction is known-incomplete → manual: the operator must reconcile
-        # the raw document against the applied lines.
+        # D-606-08: aggregate = min(ITEM line confidences); NULL when zero item
+        # lines, which always pairs with manual_entry_required. Low aggregate also
+        # flags manual. Since non-item rows now MATERIALIZE (visible in review),
+        # only genuine drops (invalid_qty / unknown_type) mark the extraction
+        # known-incomplete and force manual reconciliation.
         agg = min(confidences) if confidences else None
         manual = agg is None or agg < _LOW_CONFIDENCE or bool(skipped)
         await s.execute(

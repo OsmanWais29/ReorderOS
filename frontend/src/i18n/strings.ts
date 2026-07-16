@@ -198,6 +198,7 @@ export const STRINGS = {
 
     // ── Email invoices (inbound observability) ──────────────────────────
     inbTitle: 'Email invoices',
+    inbSubtitle: 'Forward supplier invoices to ReorderOS',
     inbSub: 'Forward supplier invoices by email — they become receipt drafts.',
     inbAddress: 'Your forwarding address',
     inbAddressHint: 'Email supplier invoices (PDF works best) to this address.',
@@ -432,6 +433,7 @@ export const STRINGS = {
 
     // ── Factures par courriel (observabilité entrante) ──────────────────
     inbTitle: 'Factures par courriel',
+    inbSubtitle: 'Transférez les factures fournisseur vers ReorderOS',
     inbSub: 'Transférez les factures fournisseurs par courriel — elles deviennent des brouillons de reçus.',
     inbAddress: 'Votre adresse de transfert',
     inbAddressHint: 'Envoyez les factures fournisseurs (PDF de préférence) à cette adresse.',

@@ -6,6 +6,7 @@ import { useLang } from '@/i18n/LangProvider';
 import { useAuth } from '@/auth/AuthContext';
 import { API_BASE } from '@/auth/config';
 import { T, TYPE } from '@/theme/tokens';
+import { Icon } from '@/components/Icon';
 
 export default function More() {
   const { lang, toggle, t } = useLang();
@@ -85,9 +86,20 @@ export default function More() {
         </Pressable>
         {cloverError ? <Text style={styles.errorText}>{cloverError}</Text> : null}
 
-        <Pressable onPress={() => router.push('/inbound-emails')} style={styles.row}>
-          <Text style={styles.rowLabel}>{t.inbTitle}</Text>
-          <Text style={styles.rowValue}>›</Text>
+        <Pressable
+          onPress={() => router.push('/inbound-emails')}
+          style={styles.actionRow}
+          accessibilityRole="button"
+          accessibilityLabel={t.inbTitle}
+        >
+          <View style={styles.actionIcon}>
+            <Icon name="mail" size={20} color={T.ac} />
+          </View>
+          <View style={styles.actionTextWrap}>
+            <Text style={styles.rowLabel}>{t.inbTitle}</Text>
+            <Text style={styles.actionSub}>{t.inbSubtitle}</Text>
+          </View>
+          <Text style={styles.chevron}>›</Text>
         </Pressable>
 
         <View style={styles.row}><Text style={styles.rowLabel}>Team</Text><Text style={styles.rowValue}>—</Text></View>
@@ -110,5 +122,18 @@ const styles = StyleSheet.create({
   },
   rowLabel: { ...TYPE.body, color: T.text },
   rowValue: { ...TYPE.subhead, color: T.sec },
+  // A row that GOES somewhere — icon + subtitle so it never reads as inert.
+  actionRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: T.elev1, borderRadius: T.radius, paddingHorizontal: 16, paddingVertical: 14,
+    borderWidth: 1, borderColor: T.acBorder,
+  },
+  actionIcon: {
+    width: 36, height: 36, borderRadius: 18, backgroundColor: T.acSoft,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  actionTextWrap: { flex: 1 },
+  actionSub: { ...TYPE.footnote, color: T.sec, marginTop: 2 },
+  chevron: { ...TYPE.title3, color: T.sec },
   errorText: { ...TYPE.subhead, color: T.red, paddingHorizontal: 4 },
 });

@@ -1,14 +1,15 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, Pressable, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useLang } from '@/i18n/LangProvider';
 import { useAuth } from '@/auth/AuthContext';
 import { API_BASE } from '@/auth/config';
 import { T, TYPE } from '@/theme/tokens';
 
 export default function More() {
-  const { lang, toggle } = useLang();
+  const { lang, toggle, t } = useLang();
+  const router = useRouter();
   const { token, me, loading } = useAuth();
   const [cloverState, setCloverState] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
@@ -83,6 +84,11 @@ export default function More() {
           <Text style={styles.rowValue}>{cloverRowValue()}</Text>
         </Pressable>
         {cloverError ? <Text style={styles.errorText}>{cloverError}</Text> : null}
+
+        <Pressable onPress={() => router.push('/inbound-emails')} style={styles.row}>
+          <Text style={styles.rowLabel}>{t.inbTitle}</Text>
+          <Text style={styles.rowValue}>›</Text>
+        </Pressable>
 
         <View style={styles.row}><Text style={styles.rowLabel}>Team</Text><Text style={styles.rowValue}>—</Text></View>
         <View style={styles.row}><Text style={styles.rowLabel}>Suppliers</Text><Text style={styles.rowValue}>—</Text></View>

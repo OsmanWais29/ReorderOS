@@ -98,6 +98,11 @@ class Settings(BaseSettings):
     postmark_inbound_enabled: bool = Field(default=False, alias="POSTMARK_INBOUND_ENABLED")
     postmark_webhook_user: str | None = Field(default=None, alias="POSTMARK_WEBHOOK_USER")
     postmark_webhook_password: str | None = Field(default=None, alias="POSTMARK_WEBHOOK_PASSWORD")
+    # Base inbound address for the tenant forwarding-address endpoint, e.g.
+    # "a1b2c3@inbound.postmarkapp.com" (Postmark default) or
+    # "receipts@inbound.reorderos.com" (custom MX). Tenant addresses are
+    # local+<token>@domain. Optional — endpoint reports configured:false without it.
+    postmark_inbound_address: str | None = Field(default=None, alias="POSTMARK_INBOUND_ADDRESS")
 
     # ── CORS ─────────────────────────────────────────────────────────────────
     cors_origins: list[str] = Field(

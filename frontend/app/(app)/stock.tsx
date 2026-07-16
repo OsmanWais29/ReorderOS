@@ -12,7 +12,6 @@ import {
   FlatList,
   Pressable,
   RefreshControl,
-  ScrollView,
   StyleSheet,
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -21,7 +20,6 @@ import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import { Button, Field, Pill } from '@/components/atoms';
 import { Icon } from '@/components/Icon';
-import { ReceiptSourceBadge } from '@/components/ReceiptBits';
 import { showError } from '@/ui/dialogs';
 import { useAuth } from '@/auth/AuthContext';
 import { useLang } from '@/i18n/LangProvider';
@@ -72,6 +70,7 @@ export default function Stock() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<ReceiptListItem[]>([]);
+  const [receivedCount, setReceivedCount] = useState<number | null>(null);
   const [receiving, setReceiving] = useState(false);
   const canListDrafts = useRef(true); // GET /receipts is manager+ — staff gets 403 once, then hide
 
@@ -86,14 +85,30 @@ export default function Stock() {
     }
     if (canListDrafts.current) {
       try {
-        const pending = await listReceipts(token, { commit_state: 'draft' });
+        const [pending, committed] = await Promise.all([
+          listReceipts(token, { commit_state: 'draft' }),
+          listReceipts(token, { commit_state: 'committed' }),
+        ]);
         setDrafts(pending);
+        setReceivedCount(committed.length);
       } catch (e: unknown) {
         if (e instanceof ReceiptApiError && e.status === 403) canListDrafts.current = false;
-        // transient failures keep the last strip — the list refetches on next focus
+        // transient failures keep the last counts — the list refetches on next focus
       }
     }
   }, [token, t.stockError]);
+
+  // ── Supplier-invoices work queue (day-to-day counts; setup lives in More) ──
+  const queue = useMemo(() => {
+    const processing = drafts.filter(
+      (d) => d.extraction_status === 'pending' || d.extraction_status === 'processing',
+    ).length;
+    const issues = drafts.filter(
+      (d) => d.manual_entry_required || d.quota_blocked || d.extraction_status === 'failed',
+    ).length;
+    const needsReview = drafts.length - processing - issues;
+    return { needsReview, processing, issues };
+  }, [drafts]);
 
   // Refetch every time the tab regains focus — a commit on the review screen
   // must be visible in on_hand the moment the operator lands back here (FE-R4).
@@ -328,33 +343,55 @@ export default function Stock() {
           </Pressable>
         </View>
 
-        {/* pending-receipts strip — drafts from every source open the ONE review screen */}
-        {drafts.length > 0 ? (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.strip}
+        {/* Supplier-invoices work queue — the day-to-day counts; each count and the
+            View button open the invoice inbox. (Setup/forwarding address lives in
+            More → Email invoices.) */}
+        {canListDrafts.current && (drafts.length > 0 || (receivedCount ?? 0) > 0) ? (
+          <Pressable
+            style={({ pressed }) => [styles.queueCard, pressed && styles.rowPressed]}
+            onPress={() => router.push('/supplier-invoices')}
+            accessibilityRole="button"
+            accessibilityLabel={t.invQueueTitle}
           >
-            {drafts.map((d) => (
-              <Pressable
-                key={d.id}
-                style={({ pressed }) => [styles.draftCard, pressed && styles.rowPressed]}
-                onPress={() => router.push(`/receipt/${d.id}`)}
-              >
-                <ReceiptSourceBadge source={d.source} />
-                <Text style={styles.draftName} numberOfLines={1}>
-                  {d.supplier_name ?? t.rcptDraftUntitled}
-                </Text>
-                <Text style={styles.draftMeta}>
-                  {d.extraction_status === 'pending' || d.extraction_status === 'processing'
-                    ? t.rcptExtracting
-                    : d.manual_entry_required
-                      ? t.rcptManualNeeded
-                      : t.rcptDraftReady}
-                </Text>
-              </Pressable>
-            ))}
-          </ScrollView>
+            <View style={styles.queueHead}>
+              <Icon name="mail" size={18} color={T.ac} />
+              <Text style={styles.queueTitle}>{t.invQueueTitle}</Text>
+            </View>
+            <View style={styles.queueCounts}>
+              {queue.needsReview > 0 ? (
+                <View style={[styles.queueChip, { backgroundColor: T.amberSoft }]}>
+                  <Text style={[styles.queueChipText, { color: T.amber }]}>
+                    {queue.needsReview} {t.invQueueNeedsReview}
+                  </Text>
+                </View>
+              ) : null}
+              {queue.processing > 0 ? (
+                <View style={[styles.queueChip, { backgroundColor: T.blueSoft }]}>
+                  <Text style={[styles.queueChipText, { color: T.blue }]}>
+                    {queue.processing} {t.invQueueProcessing}
+                  </Text>
+                </View>
+              ) : null}
+              {queue.issues > 0 ? (
+                <View style={[styles.queueChip, { backgroundColor: T.redSoft }]}>
+                  <Text style={[styles.queueChipText, { color: T.red }]}>
+                    {queue.issues} {t.invQueueIssues}
+                  </Text>
+                </View>
+              ) : null}
+              {receivedCount != null && receivedCount > 0 ? (
+                <View style={[styles.queueChip, { backgroundColor: T.greenSoft }]}>
+                  <Text style={[styles.queueChipText, { color: T.green }]}>
+                    {receivedCount} {t.invQueueReceived}
+                  </Text>
+                </View>
+              ) : null}
+              {drafts.length === 0 ? (
+                <Text style={styles.queueEmpty}>{t.invQueueAllClear}</Text>
+              ) : null}
+            </View>
+            <Text style={styles.queueLink}>{t.invQueueView} ›</Text>
+          </Pressable>
         ) : null}
 
         <View style={styles.filters}>
@@ -413,8 +450,23 @@ const styles = StyleSheet.create({
   },
   receiveBtnDisabled: { opacity: 0.5 },
   receiveLabel: { ...TYPE.subhead, color: T.ac },
-  strip: { gap: 8, paddingVertical: 8 },
-  draftCard: {
+  queueCard: {
+    backgroundColor: T.elev1,
+    borderRadius: 14,
+    padding: 14,
+    gap: 8,
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: T.acBorder,
+  },
+  queueHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  queueTitle: { ...TYPE.headline, color: T.text },
+  queueCounts: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  queueChip: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4 },
+  queueChipText: { ...TYPE.caption1, fontWeight: '600' },
+  queueEmpty: { ...TYPE.footnote, color: T.sec },
+  queueLink: { ...TYPE.subhead, color: T.ac },
+  _legacyDraftCard: {
     backgroundColor: T.elev1,
     borderRadius: 12,
     padding: 12,

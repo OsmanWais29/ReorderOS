@@ -7,7 +7,15 @@
 // Re-scan (reset-extraction) is explicitly confirmed — it discards all edits.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, ScrollView, Pressable, Switch, TextInput, StyleSheet } from 'react-native';
+import {
+  View,
+  Text,
+  ScrollView,
+  Pressable,
+  Switch,
+  TextInput,
+  StyleSheet,
+} from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Field } from '@/components/atoms';
@@ -15,7 +23,7 @@ import { Icon } from '@/components/Icon';
 import { ReceiptSourceBadge, ExtractionStatusBanner, ReceiptPhotoPreview } from '@/components/ReceiptBits';
 import { ReceiptLineRow } from '@/components/ReceiptLineRow';
 import { InventoryItemPicker, type ItemChoice } from '@/components/InventoryItemPicker';
-import { confirmDestructive, showSuccess } from '@/ui/dialogs';
+import { confirmDestructive } from '@/ui/dialogs';
 import { useAuth } from '@/auth/AuthContext';
 import { saveReturnTo } from '@/auth/returnTo';
 import { useLang } from '@/i18n/LangProvider';
@@ -203,13 +211,10 @@ export default function ReceiptReview() {
     setCommitError(null);
     try {
       await commitReceipt(token, id, affirmed);
-      // Leave the committed receipt deterministically: back() is a silent no-op
-      // when this screen was reached via replace (e.g. the session-recovery
-      // redirect) — land on Stock, where the just-updated on-hand is visible.
-      showSuccess(t.rcptCommitDoneTitle, t.rcptCommitDoneBody, () => {
-        if (router.canGoBack()) router.back();
-        else router.replace('/(app)/stock');
-      });
+      // In-screen success summary (not a dialog): the operator sees exactly what
+      // moved into stock, then chooses where to go.
+      await refresh();
+      setJustReceived(true);
     } catch (e: unknown) {
       if (e instanceof ReceiptApiError) {
         if (e.status === 401) {
@@ -230,7 +235,7 @@ export default function ReceiptReview() {
     } finally {
       setCommitting(false);
     }
-  }, [token, id, affirmed, router, t]);
+  }, [token, id, affirmed, refresh, t]);
 
   const doRescan = useCallback(() => {
     confirmDestructive({
@@ -295,6 +300,94 @@ export default function ReceiptReview() {
     [receipt?.lines],
   );
 
+  // ── Guided-workflow derivations (presentation only — the server gates stay
+  //    authoritative; these mirror them so the operator sees WHY, not just "no") ──
+  const lines = receipt?.lines ?? [];
+  const receivable = useMemo(() => lines.filter((l) => l.match_status !== 'skipped'), [lines]);
+  const skippedLines = useMemo(() => lines.filter((l) => l.match_status === 'skipped'), [lines]);
+  const unmatchedLines = useMemo(
+    () => receivable.filter((l) => !l.inventory_item_id),
+    [receivable],
+  );
+  const convPending = useMemo(() => receivable.filter(lineNeedsConversion), [receivable]);
+  const convConfirmed = useMemo(
+    () => receivable.filter((l) => l.conversion_confirmed_at !== null).length,
+    [receivable],
+  );
+  const warningLines = useMemo(
+    () => convPending.filter((l) => l.unit_mismatch_warning),
+    [convPending],
+  );
+  // "Safe" = linked item + backend suggestion + no mismatch warning + unambiguous.
+  const safeLines = useMemo(
+    () =>
+      convPending.filter(
+        (l) =>
+          l.inventory_item_id !== null &&
+          !l.unit_mismatch_warning &&
+          l.suggested_quantity != null &&
+          l.suggested_quantity > 0 &&
+          l.suggested_factor != null &&
+          l.suggested_factor > 0 &&
+          l.item_storage_unit !== null,
+      ),
+    [convPending],
+  );
+
+  const step = committed
+    ? 4
+    : extracting || receipt === null
+      ? 1
+      : unmatchedLines.length > 0 || receivable.length === 0
+        ? 2
+        : convPending.length > 0
+          ? 3
+          : 4;
+
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const acceptAllSafe = useCallback(async () => {
+    if (!token || !id || bulkBusy) return;
+    setBulkBusy(true);
+    setCommitError(null);
+    // Sequential on purpose: each PUT re-locks the receipt server-side, and a
+    // failure stops the run instead of half-applying in parallel.
+    for (const l of safeLines) {
+      const pq = l.received_quantity;
+      const totalCents =
+        l.line_total_cents ?? (l.unit_cost_cents != null && pq ? l.unit_cost_cents * pq : null);
+      const q = l.suggested_quantity as number;
+      try {
+        await updateLine(token, id, l.id, {
+          received_quantity: q,
+          received_unit: l.item_storage_unit as string,
+          conversion_factor: l.suggested_factor as number,
+          ...(totalCents != null ? { unit_cost_cents: Math.round(totalCents / q) } : {}),
+          remember_conversion: true,
+        });
+      } catch (e: unknown) {
+        if (e instanceof ReceiptApiError && e.status === 401) setSessionDead(true);
+        setCommitError(e instanceof ReceiptApiError ? e.detail : t.rcptSaveError);
+        break;
+      }
+    }
+    setAffirmed(false);
+    await refresh();
+    setBulkBusy(false);
+  }, [token, id, bulkBusy, safeLines, refresh, t]);
+
+  // Blocker → first offending line: onLayout records each card's y, tapping a
+  // blocker scrolls there. Orientation, not enforcement.
+  const scrollRef = useRef<ScrollView | null>(null);
+  const lineYs = useRef<Record<string, number>>({});
+  const jumpToLine = useCallback((lineId: string | undefined) => {
+    if (!lineId) return;
+    const y = lineYs.current[lineId];
+    if (y != null) scrollRef.current?.scrollTo({ y: Math.max(0, y - 90), animated: true });
+  }, []);
+
+  const [showSkipped, setShowSkipped] = useState(false);
+  const [justReceived, setJustReceived] = useState(false);
+
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
       <View style={styles.header}>
@@ -310,8 +403,48 @@ export default function ReceiptReview() {
           <Text style={styles.err}>{error}</Text>
           <Button label={t.stockRetry} variant="secondary" onPress={() => void refresh()} />
         </View>
-      ) : receipt === null ? null : (
-        <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
+      ) : receipt === null ? null : justReceived ? (
+        /* ── success summary: exactly what moved into stock ── */
+        <ScrollView contentContainerStyle={styles.body}>
+          <View style={styles.successHead}>
+            <Icon name="check" size={28} color={T.green} />
+            <Text style={styles.successTitle}>{t.rcptDoneTitle}</Text>
+          </View>
+          <View style={styles.lines}>
+            {receivable.map((l) => (
+              <View key={l.id} style={styles.successRow}>
+                <Text style={styles.successQty}>
+                  +{l.received_quantity} {l.received_unit ?? l.extracted_unit ?? ''}
+                </Text>
+                <View style={styles.successRowText}>
+                  <Text style={styles.successItem} numberOfLines={1}>
+                    {l.item_name ?? l.extracted_name ?? ''}
+                  </Text>
+                  {l.line_total_cents != null &&
+                  l.received_quantity != null &&
+                  l.received_quantity > 0 ? (
+                    <Text style={styles.successCost}>
+                      ${(l.line_total_cents / 100 / l.received_quantity).toFixed(2)}/
+                      {l.received_unit ?? l.extracted_unit ?? ''}
+                    </Text>
+                  ) : null}
+                </View>
+              </View>
+            ))}
+          </View>
+          <Button label={t.rcptDoneViewStock} onPress={() => router.replace('/(app)/stock')} />
+          <Button
+            label={t.rcptDoneReceiveAnother}
+            variant="secondary"
+            onPress={() => router.replace('/(app)/stock')}
+          />
+        </ScrollView>
+      ) : (
+        <ScrollView
+          ref={scrollRef}
+          contentContainerStyle={styles.body}
+          keyboardShouldPersistTaps="handled"
+        >
           <ReceiptPhotoPreview url={receipt.photo_url} mimeType={receipt.mime_type} />
           <ExtractionStatusBanner
             status={receipt.extraction_status}
@@ -339,25 +472,150 @@ export default function ReceiptReview() {
             ) : null}
           </View>
 
-          {/* lines */}
+          {/* step progress — where am I, what's next */}
+          {editable ? (
+            <View style={styles.steps}>
+              {[t.rcptStep1, t.rcptStep2, t.rcptStep3, t.rcptStep4].map((label, i) => {
+                const n = i + 1;
+                const done = step > n;
+                const active = step === n;
+                return (
+                  <View key={label} style={styles.step}>
+                    <View
+                      style={[
+                        styles.stepDot,
+                        done && styles.stepDotDone,
+                        active && styles.stepDotActive,
+                      ]}
+                    >
+                      <Text style={[styles.stepNum, (done || active) && styles.stepNumOn]}>
+                        {done ? '✓' : n}
+                      </Text>
+                    </View>
+                    <Text style={[styles.stepLabel, active && styles.stepLabelActive]}>
+                      {label}
+                    </Text>
+                  </View>
+                );
+              })}
+            </View>
+          ) : null}
+
+          {/* progress counts */}
+          {editable && receivable.length > 0 ? (
+            <View style={styles.counts}>
+              <Text style={styles.countItem}>
+                {t.rcptCountMatched
+                  .replace('{x}', String(receivable.length - unmatchedLines.length))
+                  .replace('{y}', String(receivable.length))}
+              </Text>
+              {convConfirmed + convPending.length > 0 ? (
+                <Text style={styles.countItem}>
+                  {t.rcptCountConfirmed
+                    .replace('{x}', String(convConfirmed))
+                    .replace('{y}', String(convConfirmed + convPending.length))}
+                </Text>
+              ) : null}
+              {warningLines.length > 0 ? (
+                <Text style={[styles.countItem, { color: T.amber }]}>
+                  {t.rcptCountWarnings.replace('{x}', String(warningLines.length))}
+                </Text>
+              ) : null}
+              {skippedLines.length > 0 ? (
+                <Text style={styles.countItem}>
+                  {t.rcptCountSkipped.replace('{x}', String(skippedLines.length))}
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
+
+          {/* bulk-accept: only provably-safe suggestions; warnings never bulk */}
+          {editable && convPending.length > 0 ? (
+            <View style={styles.bulkBox}>
+              <Text style={styles.bulkText}>
+                {t.rcptBulkSafe.replace('{x}', String(safeLines.length))}
+                {convPending.length - safeLines.length > 0
+                  ? `   ·   ${t.rcptBulkUnsafe.replace(
+                      '{y}',
+                      String(convPending.length - safeLines.length),
+                    )}`
+                  : ''}
+              </Text>
+              {safeLines.length > 0 ? (
+                <Button
+                  label={t.rcptBulkAccept.replace('{x}', String(safeLines.length))}
+                  size="md"
+                  loading={bulkBusy}
+                  onPress={() => void acceptAllSafe()}
+                />
+              ) : null}
+            </View>
+          ) : null}
+
+          {/* receivable lines */}
           <Text style={styles.section}>{t.rcptLines}</Text>
           {receipt.lines.length === 0 && !extracting ? (
             <Text style={styles.emptyLines}>{t.rcptNoLines}</Text>
           ) : null}
           <View style={styles.lines}>
-            {receipt.lines.map((line) => (
-              <ReceiptLineRow
+            {receivable.map((line) => (
+              <View
                 key={line.id}
-                line={line}
-                busy={busyLineId === line.id || !editable}
-                onFixItemUnit={(itemId, unit) => void fixItemUnit(itemId, unit)}
-                onPatch={(patch) => void patchLine(line.id, patch)}
-                onOpenPicker={() =>
-                  setPickerForLine({ lineId: line.id, query: line.extracted_name ?? '' })
-                }
-              />
+                onLayout={(e) => {
+                  lineYs.current[line.id] = e.nativeEvent.layout.y;
+                }}
+              >
+                <ReceiptLineRow
+                  line={line}
+                  busy={busyLineId === line.id || !editable || bulkBusy}
+                  onFixItemUnit={(itemId, unit) => void fixItemUnit(itemId, unit)}
+                  onPatch={(patch) => void patchLine(line.id, patch)}
+                  onOpenPicker={() =>
+                    setPickerForLine({ lineId: line.id, query: line.extracted_name ?? '' })
+                  }
+                />
+              </View>
             ))}
           </View>
+
+          {/* non-stock rows: skipped lines + invoice tax — never mixed with items */}
+          {skippedLines.length > 0 || receipt.tax_cents != null ? (
+            <View>
+              <Pressable onPress={() => setShowSkipped((s) => !s)} style={styles.skippedHead}>
+                <Text style={styles.skippedTitle}>
+                  {t.rcptNotAdded.replace(
+                    '{x}',
+                    String(skippedLines.length + (receipt.tax_cents != null ? 1 : 0)),
+                  )}{' '}
+                  {showSkipped ? '▾' : '▸'}
+                </Text>
+              </Pressable>
+              {showSkipped ? (
+                <View style={styles.lines}>
+                  {receipt.tax_cents != null ? (
+                    <View style={styles.skippedRow}>
+                      <Text style={styles.skippedName}>{t.rcptTaxRow}</Text>
+                      <Text style={styles.skippedAmt}>
+                        ${(receipt.tax_cents / 100).toFixed(2)}
+                      </Text>
+                    </View>
+                  ) : null}
+                  {skippedLines.map((line) => (
+                    <ReceiptLineRow
+                      key={line.id}
+                      line={line}
+                      busy={busyLineId === line.id || !editable || bulkBusy}
+                      onFixItemUnit={(itemId, unit) => void fixItemUnit(itemId, unit)}
+                      onPatch={(patch) => void patchLine(line.id, patch)}
+                      onOpenPicker={() =>
+                        setPickerForLine({ lineId: line.id, query: line.extracted_name ?? '' })
+                      }
+                    />
+                  ))}
+                </View>
+              ) : null}
+            </View>
+          ) : null}
 
           {/* add line */}
           {editable ? (
@@ -436,24 +694,37 @@ export default function ReceiptReview() {
                   }}
                 />
               ) : null}
-              {receipt.lines.some(
-                (l) => l.match_status !== 'skipped' && !l.inventory_item_id,
-              ) ? (
-                <Text style={styles.err}>{t.rcptLinesUnmatched}</Text>
-              ) : receipt.lines.some(lineNeedsConversion) ? (
-                <Text style={styles.err}>{t.rcptConvNeeded}</Text>
+              {/* exact blockers, each a jump to the first offending line */}
+              {unmatchedLines.length > 0 ? (
+                <Pressable onPress={() => jumpToLine(unmatchedLines[0]?.id)}>
+                  <Text style={styles.blocker}>
+                    ▸ {t.rcptBlockUnmatched.replace('{x}', String(unmatchedLines.length))}
+                  </Text>
+                </Pressable>
+              ) : null}
+              {convPending.length > 0 ? (
+                <Pressable onPress={() => jumpToLine(convPending[0]?.id)}>
+                  <Text style={styles.blocker}>
+                    ▸ {t.rcptBlockConfirm.replace('{x}', String(convPending.length))}
+                  </Text>
+                </Pressable>
+              ) : null}
+              {warningLines.length > 0 ? (
+                <Pressable onPress={() => jumpToLine(warningLines[0]?.id)}>
+                  <Text style={styles.blocker}>
+                    ▸ {t.rcptBlockWarning.replace('{x}', String(warningLines.length))}
+                  </Text>
+                </Pressable>
               ) : null}
               <Button
-                label={t.rcptCommit}
+                label={t.rcptReceiveCta.replace('{x}', String(receivable.length))}
                 loading={committing}
                 disabled={
                   extracting ||
                   sessionDead ||
                   !affirmed ||
-                  receipt.lines.some(
-                    (l) => l.match_status !== 'skipped' && !l.inventory_item_id,
-                  ) ||
-                  receipt.lines.some(lineNeedsConversion)
+                  unmatchedLines.length > 0 ||
+                  convPending.length > 0
                 }
                 onPress={() => void doCommit()}
               />
@@ -522,6 +793,52 @@ const styles = StyleSheet.create({
   meta: { gap: 2 },
   metaMain: { ...TYPE.title3, color: T.text },
   metaSub: { ...TYPE.subhead, color: T.sec },
+  steps: { flexDirection: 'row', justifyContent: 'space-between', gap: 4 },
+  step: { alignItems: 'center', flex: 1, gap: 4 },
+  stepDot: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: T.elev2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepDotDone: { backgroundColor: T.greenSoft },
+  stepDotActive: { backgroundColor: T.acSoft, borderWidth: 1, borderColor: T.acBorder },
+  stepNum: { ...TYPE.caption1, color: T.sec, fontWeight: '600' },
+  stepNumOn: { color: T.ac },
+  stepLabel: { ...TYPE.caption2, color: T.sec, textAlign: 'center' },
+  stepLabelActive: { color: T.text, fontWeight: '600' },
+  counts: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  countItem: { ...TYPE.footnote, color: T.sec },
+  bulkBox: { backgroundColor: T.elev1, borderRadius: 12, padding: 12, gap: 8 },
+  bulkText: { ...TYPE.footnote, color: T.label },
+  blocker: { ...TYPE.subhead, color: T.amber },
+  skippedHead: { paddingVertical: 6 },
+  skippedTitle: { ...TYPE.headline, color: T.sec },
+  skippedRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    backgroundColor: T.elev1,
+    borderRadius: 12,
+    padding: 12,
+  },
+  skippedName: { ...TYPE.subhead, color: T.sec },
+  skippedAmt: { ...TYPE.subhead, color: T.sec },
+  successHead: { alignItems: 'center', gap: 8, marginVertical: 12 },
+  successTitle: { ...TYPE.title2, color: T.text },
+  successRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: T.elev1,
+    borderRadius: 12,
+    padding: 12,
+  },
+  successQty: { ...TYPE.headline, color: T.green, minWidth: 82 },
+  successRowText: { flex: 1 },
+  successItem: { ...TYPE.body, color: T.text },
+  successCost: { ...TYPE.footnote, color: T.sec },
   section: { ...TYPE.headline, color: T.text, marginTop: 4 },
   emptyLines: { ...TYPE.body, color: T.sec },
   lines: { gap: 10 },

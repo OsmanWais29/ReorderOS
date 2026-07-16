@@ -60,10 +60,17 @@ from app.modules.receipts.validation import (
 
 log = get_logger(__name__)
 
-# Layer 3 content heuristics (spec §6): email attachments outside these bounds are
-# filtered per-attachment (validation.py's 50 MB cap still applies inside).
+# Per-attachment bounds — derived from REAL provider limits, not the upload
+# path's 50 MB validator cap (which is unreachable on this channel):
+#   - Postmark caps the whole inbound message at 35 MB raw MIME; base64 overhead
+#     (~37%) makes ~25 MB the largest single attachment that can even arrive.
+#   - Anthropic PDF extraction caps requests at 32 MB (the PDF goes in base64,
+#     +37%) and 100 pages — anything past ~20 MB or 100 pages cannot extract.
+# So: 20 MB / 100 pages accepts every extractable invoice this channel can
+# physically deliver. The 10 KB floor filters signature/logo images (Layer 3).
 MIN_ATTACHMENT_BYTES = 10 * 1024
-MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+MAX_PDF_PAGES = 100
 MAX_SPAM_SCORE = 5.0
 
 # Webhook upload lease — a crashed upload becomes finishable by a Postmark retry
@@ -151,23 +158,54 @@ def _qualify_attachments(
         try:
             raw = base64.b64decode(content, validate=True)
         except (binascii.Error, ValueError):
-            skips.append(f"attachment_{idx}:decode_error")
+            skips.append(f"attachment_{idx}:INBOUND_ATTACHMENT_DECODE_ERROR")
             continue
         if len(raw) < MIN_ATTACHMENT_BYTES:
-            skips.append(f"attachment_{idx}:too_small")
+            skips.append(f"attachment_{idx}:INBOUND_ATTACHMENT_TOO_SMALL")
             continue
         if len(raw) > MAX_ATTACHMENT_BYTES:
-            skips.append(f"attachment_{idx}:too_large")
+            skips.append(f"attachment_{idx}:INBOUND_ATTACHMENT_TOO_LARGE")
             continue
         try:
             mime_type, cleaned = validate_and_clean(raw, filename=name)
         except ReceiptValidationError as exc:
             skips.append(f"attachment_{idx}:{exc.code}")
             continue
+        if mime_type == "application/pdf":
+            pages = _pdf_page_count(cleaned)
+            if pages == 0:
+                skips.append(f"attachment_{idx}:RECEIPT_PDF_UNREADABLE")
+                continue
+            if pages is not None and pages > MAX_PDF_PAGES:
+                skips.append(f"attachment_{idx}:RECEIPT_TOO_MANY_PAGES")
+                continue
         qualified.append(
             {"index": idx, "filename": name, "mime_type": mime_type, "cleaned": cleaned}
         )
     return qualified, skips
+
+
+def _pdf_page_count(data: bytes) -> int | None:
+    """Best-effort page count against the Anthropic 100-page extraction cap.
+
+    Deliberately LENIENT: None (unparseable here / encrypted) passes the
+    attachment through — pypdf strictness must never reject a real supplier
+    invoice the extraction provider could read. Only POSITIVE knowledge rejects:
+    a confirmed zero-page file or a confirmed over-cap count."""
+    from io import BytesIO
+
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(BytesIO(data))
+        if reader.is_encrypted:
+            try:
+                reader.decrypt("")
+            except Exception:
+                return None
+        return len(reader.pages)
+    except Exception:
+        return None
 
 
 def _object_key(tenant_id: UUID, inbox_id: UUID, index: int, mime_type: str) -> str:

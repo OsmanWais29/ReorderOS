@@ -38,9 +38,29 @@ _AUTH = {"Authorization": "Basic " + base64.b64encode(f"{_USER}:{_PASS}".encode(
 _URL = "/api/v1/webhooks/inbound/postmark"
 
 # ≥10 KB (Layer 3 lower bound), single PDF signature, no foreign signatures.
+# (Not pypdf-parseable — exercises the LENIENT pass-through of the page check.)
 _PDF_BYTES = b"%PDF-1.4\n" + b"A" * 11_000
 _DOCX_BYTES = b"PK\x03\x04" + b"B" * 11_000  # zip container → unsupported
 _CSV_BYTES = b"item,qty,price\nmilk,2,4.99\n" * 500  # text → unsupported
+
+
+def _real_pdf(pages: int = 1, pad_to: int = 11_000) -> bytes:
+    """A genuine parseable PDF with `pages` blank pages, space-padded past the
+    10 KB floor (or to an arbitrary size — padding carries no foreign container
+    signatures, so the polyglot scan stays clean)."""
+    from io import BytesIO
+
+    from pypdf import PdfWriter
+
+    w = PdfWriter()
+    for _ in range(pages):
+        w.add_blank_page(width=72, height=72)
+    buf = BytesIO()
+    w.write(buf)
+    data = buf.getvalue()
+    if len(data) < pad_to:
+        data += b" " * (pad_to - len(data))
+    return data
 
 
 @pytest.fixture(autouse=True)
@@ -263,6 +283,131 @@ async def test_multi_attachment_fan_out_deterministic_and_idempotent(
         assert n == 2
     finally:
         await _cleanup(admin_conn, tid)
+
+
+# ── multi-page / size policy (real supplier invoices) ────────────────────────
+
+
+async def test_multipage_pdf_is_exactly_one_receipt(
+    client: AsyncClient, admin_conn: Any, spaces: FakeSpaces
+) -> None:
+    """One 5-page PDF = one attachment row = ONE draft (never one per page):
+    the whole PDF travels as a single Anthropic document block downstream."""
+    token = f"tok-{uuid.uuid4().hex[:12]}"
+    tid = await _seed_tenant(admin_conn, token)
+    mid = f"pm-{uuid.uuid4()}"
+    try:
+        r = await client.post(
+            _URL,
+            json=_payload(mid, token, [("inv5p.pdf", _real_pdf(pages=5), "application/pdf")]),
+            headers=_AUTH,
+        )
+        assert r.json() == {"status": "pending", "attachments_qualified": 1}
+        assert await InboundEmailWorker().process_once() is True
+        n_receipts = await admin_conn.fetchval(
+            "SELECT count(*) FROM receipts WHERE tenant_id = $1", tid
+        )
+        n_jobs = await admin_conn.fetchval(
+            "SELECT count(*) FROM receipt_extraction_jobs WHERE tenant_id = $1", tid
+        )
+        assert (n_receipts, n_jobs) == (1, 1)
+    finally:
+        await _cleanup(admin_conn, tid)
+
+
+async def test_large_pdf_under_cap_accepted(
+    client: AsyncClient, admin_conn: Any, spaces: FakeSpaces
+) -> None:
+    """12 MB — over the old 10 MB Layer-3 ceiling, under the 20 MB provider-derived
+    cap — must qualify and upload intact."""
+    token = f"tok-{uuid.uuid4().hex[:12]}"
+    tid = await _seed_tenant(admin_conn, token)
+    mid = f"pm-{uuid.uuid4()}"
+    big = _real_pdf(pages=3, pad_to=12 * 1024 * 1024)
+    try:
+        r = await client.post(
+            _URL, json=_payload(mid, token, [("big.pdf", big, "application/pdf")]), headers=_AUTH
+        )
+        assert r.json() == {"status": "pending", "attachments_qualified": 1}
+        assert len(next(iter(spaces.objects.values()))) == len(big)
+    finally:
+        await _cleanup(admin_conn, tid)
+
+
+async def test_oversized_pdf_terminal_and_never_uploaded(
+    client: AsyncClient, admin_conn: Any, spaces: FakeSpaces
+) -> None:
+    token = f"tok-{uuid.uuid4().hex[:12]}"
+    tid = await _seed_tenant(admin_conn, token)
+    mid = f"pm-{uuid.uuid4()}"
+    oversized = _real_pdf(pages=1, pad_to=21 * 1024 * 1024)  # > 20 MB cap
+    try:
+        r = await client.post(
+            _URL,
+            json=_payload(mid, token, [("huge.pdf", oversized, "application/pdf")]),
+            headers=_AUTH,
+        )
+        assert r.json() == {"status": "filtered_out", "attachments_qualified": 0}
+        assert spaces.objects == {}  # never reached Spaces
+        row = await _inbox_row(admin_conn, mid)
+        assert "attachment_0:INBOUND_ATTACHMENT_TOO_LARGE" in json.loads(row["filter_flags"])
+        # Terminal: worker has nothing to claim; not resurrectable by retry.
+        assert await InboundEmailWorker().process_once() is False
+    finally:
+        await _cleanup(admin_conn, tid)
+
+
+async def test_pdf_over_page_cap_rejected_cleanly(
+    client: AsyncClient, admin_conn: Any, spaces: FakeSpaces
+) -> None:
+    """101 pages exceeds the Anthropic extraction cap — clean terminal reason
+    instead of three doomed extraction attempts downstream."""
+    token = f"tok-{uuid.uuid4().hex[:12]}"
+    tid = await _seed_tenant(admin_conn, token)
+    mid = f"pm-{uuid.uuid4()}"
+    try:
+        r = await client.post(
+            _URL,
+            json=_payload(mid, token, [("novel.pdf", _real_pdf(pages=101), "application/pdf")]),
+            headers=_AUTH,
+        )
+        assert r.json() == {"status": "filtered_out", "attachments_qualified": 0}
+        assert spaces.objects == {}
+        row = await _inbox_row(admin_conn, mid)
+        assert "attachment_0:RECEIPT_TOO_MANY_PAGES" in json.loads(row["filter_flags"])
+    finally:
+        await _cleanup(admin_conn, tid)
+
+
+async def test_two_pdfs_two_separate_drafts_multipage_never_splits(
+    client: AsyncClient, admin_conn: Any, spaces: FakeSpaces
+) -> None:
+    """Two attachments → two drafts (D-606-01); pages never multiply drafts."""
+    token = f"tok-{uuid.uuid4().hex[:12]}"
+    tid = await _seed_tenant(admin_conn, token)
+    mid = f"pm-{uuid.uuid4()}"
+    try:
+        atts = [
+            ("a.pdf", _real_pdf(pages=4), "application/pdf"),
+            ("b.pdf", _real_pdf(pages=2), "application/pdf"),
+        ]
+        r = await client.post(_URL, json=_payload(mid, token, atts), headers=_AUTH)
+        assert r.json() == {"status": "pending", "attachments_qualified": 2}
+        assert await InboundEmailWorker().process_once() is True
+        n = await admin_conn.fetchval("SELECT count(*) FROM receipts WHERE tenant_id = $1", tid)
+        assert n == 2  # one per ATTACHMENT — 6 total pages never became 6 drafts
+    finally:
+        await _cleanup(admin_conn, tid)
+
+
+def test_multipage_dedup_instruction_pinned() -> None:
+    """Repeated headers/footers must not become duplicate lines — behavioral
+    guidance lives in the extraction system prompt; this pins its presence
+    (live proof belongs to the staging certification)."""
+    from app.modules.receipts.extraction_llm import _SYSTEM
+
+    assert "multi-page document is ONE invoice" in _SYSTEM
+    assert "duplicate lines" in _SYSTEM
 
 
 # ── dedup / duplicate delivery ────────────────────────────────────────────────

@@ -170,6 +170,9 @@ _SYSTEM = (
     "(U/M) column exactly as printed — never convert CS/SAC/EA/BX into storage units, and "
     "never infer inventory units. Classify each row's line_type honestly: discounts, "
     "credits/returns, backordered rows, and deposits/fees are not items. "
+    "A multi-page document is ONE invoice: extract every distinct line item exactly once "
+    "across all pages — repeated page headers, footers, column headings, page subtotals, "
+    "and carried-forward totals must never become duplicate lines. "
     "Always answer by calling the provided tool."
 )
 

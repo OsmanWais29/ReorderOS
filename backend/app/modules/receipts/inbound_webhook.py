@@ -67,8 +67,12 @@ log = get_logger(__name__)
 #   - Anthropic PDF extraction caps requests at 32 MB (the PDF goes in base64,
 #     +37%) and 100 pages — anything past ~20 MB or 100 pages cannot extract.
 # So: 20 MB / 100 pages accepts every extractable invoice this channel can
-# physically deliver. The 10 KB floor filters signature/logo images (Layer 3).
-MIN_ATTACHMENT_BYTES = 10 * 1024
+# physically deliver. Minimum size is TYPE-SPLIT (live-test finding: a real 4.3 KB
+# digital invoice PDF was filtered): the 10 KB floor exists to drop signature/logo
+# GRAPHICS, so it applies to images only; PDFs are rarely decorative, so they get
+# a 1 KB sanity floor and rely on magic-byte + page validation instead.
+MIN_IMAGE_BYTES = 10 * 1024
+MIN_PDF_BYTES = 1024
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 MAX_PDF_PAGES = 100
 MAX_SPAM_SCORE = 5.0
@@ -160,7 +164,10 @@ def _qualify_attachments(
         except (binascii.Error, ValueError):
             skips.append(f"attachment_{idx}:INBOUND_ATTACHMENT_DECODE_ERROR")
             continue
-        if len(raw) < MIN_ATTACHMENT_BYTES:
+        # Size floor by leading bytes only (validate_and_clean still owns the
+        # authoritative type decision below).
+        min_bytes = MIN_PDF_BYTES if raw.startswith(b"%PDF-") else MIN_IMAGE_BYTES
+        if len(raw) < min_bytes:
             skips.append(f"attachment_{idx}:INBOUND_ATTACHMENT_TOO_SMALL")
             continue
         if len(raw) > MAX_ATTACHMENT_BYTES:

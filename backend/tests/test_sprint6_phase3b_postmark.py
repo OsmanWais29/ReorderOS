@@ -357,6 +357,100 @@ async def test_oversized_pdf_terminal_and_never_uploaded(
         await _cleanup(admin_conn, tid)
 
 
+async def test_small_real_pdf_qualifies_and_creates_draft(
+    client: AsyncClient, admin_conn: Any, spaces: FakeSpaces
+) -> None:
+    """Live-test finding: a real 4.3 KB digital invoice was filtered by the old
+    10 KB blanket floor. PDFs get a 1 KB sanity floor only."""
+    token = f"tok-{uuid.uuid4().hex[:12]}"
+    tid = await _seed_tenant(admin_conn, token)
+    mid = f"pm-{uuid.uuid4()}"
+    small_pdf = _real_pdf(pages=1, pad_to=4_400)  # ≈4.3 KB, under the old floor
+    try:
+        r = await client.post(
+            _URL,
+            json=_payload(mid, token, [("inv.pdf", small_pdf, "application/pdf")]),
+            headers=_AUTH,
+        )
+        assert r.json() == {"status": "pending", "attachments_qualified": 1}
+        assert await InboundEmailWorker().process_once() is True
+        n = await admin_conn.fetchval("SELECT count(*) FROM receipts WHERE tenant_id = $1", tid)
+        assert n == 1
+    finally:
+        await _cleanup(admin_conn, tid)
+
+
+async def test_tiny_image_still_filtered(
+    client: AsyncClient, admin_conn: Any, spaces: FakeSpaces
+) -> None:
+    """The 10 KB floor stays for JPEG/PNG — tiny images are logos/signatures."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    buf = BytesIO()
+    Image.new("RGB", (16, 16), (200, 10, 10)).save(buf, format="JPEG")
+    tiny_jpeg = buf.getvalue()
+    assert len(tiny_jpeg) < 10 * 1024
+    token = f"tok-{uuid.uuid4().hex[:12]}"
+    tid = await _seed_tenant(admin_conn, token)
+    mid = f"pm-{uuid.uuid4()}"
+    try:
+        r = await client.post(
+            _URL,
+            json=_payload(mid, token, [("logo.jpg", tiny_jpeg, "image/jpeg")]),
+            headers=_AUTH,
+        )
+        assert r.json() == {"status": "filtered_out", "attachments_qualified": 0}
+        assert spaces.objects == {}
+        row = await _inbox_row(admin_conn, mid)
+        assert "attachment_0:INBOUND_ATTACHMENT_TOO_SMALL" in json.loads(row["filter_flags"])
+    finally:
+        await _cleanup(admin_conn, tid)
+
+
+async def test_empty_pdf_rejected(client: AsyncClient, admin_conn: Any, spaces: FakeSpaces) -> None:
+    """Zero/near-zero bytes fail the 1 KB PDF sanity floor."""
+    token = f"tok-{uuid.uuid4().hex[:12]}"
+    tid = await _seed_tenant(admin_conn, token)
+    mid = f"pm-{uuid.uuid4()}"
+    try:
+        r = await client.post(
+            _URL,
+            json=_payload(mid, token, [("empty.pdf", b"%PDF-", "application/pdf")]),
+            headers=_AUTH,
+        )
+        assert r.json() == {"status": "filtered_out", "attachments_qualified": 0}
+        assert spaces.objects == {}
+        row = await _inbox_row(admin_conn, mid)
+        assert "attachment_0:INBOUND_ATTACHMENT_TOO_SMALL" in json.loads(row["filter_flags"])
+    finally:
+        await _cleanup(admin_conn, tid)
+
+
+async def test_zero_page_pdf_unreadable_terminal(
+    client: AsyncClient, admin_conn: Any, spaces: FakeSpaces
+) -> None:
+    """A structurally valid PDF that pypdf POSITIVELY reads as zero pages is
+    terminally RECEIPT_PDF_UNREADABLE (unparseable PDFs pass through instead)."""
+    token = f"tok-{uuid.uuid4().hex[:12]}"
+    tid = await _seed_tenant(admin_conn, token)
+    mid = f"pm-{uuid.uuid4()}"
+    zero_page = _real_pdf(pages=0, pad_to=2_048)
+    try:
+        r = await client.post(
+            _URL,
+            json=_payload(mid, token, [("hollow.pdf", zero_page, "application/pdf")]),
+            headers=_AUTH,
+        )
+        assert r.json() == {"status": "filtered_out", "attachments_qualified": 0}
+        assert spaces.objects == {}
+        row = await _inbox_row(admin_conn, mid)
+        assert "attachment_0:RECEIPT_PDF_UNREADABLE" in json.loads(row["filter_flags"])
+    finally:
+        await _cleanup(admin_conn, tid)
+
+
 async def test_pdf_over_page_cap_rejected_cleanly(
     client: AsyncClient, admin_conn: Any, spaces: FakeSpaces
 ) -> None:

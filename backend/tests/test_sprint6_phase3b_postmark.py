@@ -157,6 +157,30 @@ def _payload(
     return p
 
 
+def _with_recipients(
+    p: dict[str, Any],
+    *,
+    to: list[str | None] | None = None,
+    cc: list[str | None] | None = None,
+    top_level: str | None = None,
+) -> dict[str, Any]:
+    """Attach ToFull/CcFull recipient entries (MailboxHash per entry; None =
+    unrelated recipient with no hash) and optionally override the top-level
+    MailboxHash — Postmark's top-level field reflects only one recipient."""
+    out = dict(p)
+    if top_level is not None:
+        out["MailboxHash"] = top_level
+    if to is not None:
+        out["ToFull"] = [
+            {"Email": f"r{i}@x.example", "MailboxHash": h or ""} for i, h in enumerate(to)
+        ]
+    if cc is not None:
+        out["CcFull"] = [
+            {"Email": f"c{i}@x.example", "MailboxHash": h or ""} for i, h in enumerate(cc)
+        ]
+    return out
+
+
 async def _inbox_row(admin_conn: Any, message_id: str) -> Any:
     return await admin_conn.fetchrow(
         "SELECT * FROM inbound_email_inbox WHERE postmark_message_id = $1", message_id
@@ -843,5 +867,118 @@ async def test_no_body_or_attachment_content_in_logs(
         # And the receipt was still created (the cycle actually ran).
         n = await admin_conn.fetchval("SELECT count(*) FROM receipts WHERE tenant_id = $1", tid)
         assert n == 1
+    finally:
+        await _cleanup(admin_conn, tid)
+
+
+# ── multi-tenant routing: recipient collections, ambiguity, revocation ────────
+
+
+async def test_same_token_across_recipient_fields_routes_once(
+    client: AsyncClient, admin_conn: Any, spaces: FakeSpaces
+) -> None:
+    token = f"tok-{uuid.uuid4().hex[:12]}"
+    tid = await _seed_tenant(admin_conn, token)
+    mid = f"pm-{uuid.uuid4()}"
+    try:
+        payload = _with_recipients(
+            _payload(mid, token, [("inv.pdf", _PDF_BYTES, "application/pdf")]),
+            to=[token, None],  # token repeated + an unrelated hash-less recipient
+            cc=[token],
+        )
+        r = await client.post(_URL, json=payload, headers=_AUTH)
+        assert r.json()["status"] == "pending"
+        rows = await admin_conn.fetch(
+            "SELECT tenant_id FROM inbound_email_inbox WHERE postmark_message_id = $1", mid
+        )
+        assert len(rows) == 1 and rows[0]["tenant_id"] == tid  # ONE resolution
+    finally:
+        await _cleanup(admin_conn, tid)
+
+
+async def test_token_only_in_cc_still_routes(
+    client: AsyncClient, admin_conn: Any, spaces: FakeSpaces
+) -> None:
+    """Top-level MailboxHash empty (the matched recipient was in Cc)."""
+    token = f"tok-{uuid.uuid4().hex[:12]}"
+    tid = await _seed_tenant(admin_conn, token)
+    mid = f"pm-{uuid.uuid4()}"
+    try:
+        payload = _with_recipients(
+            _payload(mid, "", [("inv.pdf", _PDF_BYTES, "application/pdf")]),
+            top_level="",
+            cc=[token],
+        )
+        r = await client.post(_URL, json=payload, headers=_AUTH)
+        assert r.json()["status"] == "pending"
+        row = await _inbox_row(admin_conn, mid)
+        assert row["tenant_id"] == tid
+    finally:
+        await _cleanup(admin_conn, tid)
+
+
+async def test_two_distinct_tenant_tokens_fail_closed_ambiguous(
+    client: AsyncClient, admin_conn: Any, spaces: FakeSpaces
+) -> None:
+    tok_a, tok_b = f"tok-a-{uuid.uuid4().hex[:8]}", f"tok-b-{uuid.uuid4().hex[:8]}"
+    tid_a = await _seed_tenant(admin_conn, tok_a)
+    tid_b = await _seed_tenant(admin_conn, tok_b)
+    mid = f"pm-{uuid.uuid4()}"
+    try:
+        payload = _with_recipients(
+            _payload(mid, tok_a, [("inv.pdf", _PDF_BYTES, "application/pdf")]),
+            to=[tok_a],
+            cc=[tok_b],
+        )
+        r = await client.post(_URL, json=payload, headers=_AUTH)
+        assert r.json() == {"status": "filtered_out", "reason": "AMBIGUOUS_TENANT_RECIPIENT"}
+        assert spaces.objects == {}  # zero bytes stored
+        row = await _inbox_row(admin_conn, mid)
+        assert row["tenant_id"] is None  # NO fallback tenant
+        assert row["skip_reason"] == "ambiguous_tenant_recipient"
+        for tid in (tid_a, tid_b):
+            n = await admin_conn.fetchval("SELECT count(*) FROM receipts WHERE tenant_id = $1", tid)
+            assert n == 0  # zero drafts either side
+        assert await InboundEmailWorker().process_once() is False  # nothing claimable
+    finally:
+        await _cleanup(admin_conn, tid_a, tid_b)
+
+
+async def test_revoked_token_is_unknown_and_new_token_routes(
+    client: AsyncClient, admin_conn: Any, spaces: FakeSpaces
+) -> None:
+    """Rotation semantics at the webhook: revoked token → metadata-only row,
+    no drafts; the replacement token routes normally."""
+    old_token = f"tok-{uuid.uuid4().hex[:12]}"
+    tid = await _seed_tenant(admin_conn, old_token)
+    new_token = f"tok-{uuid.uuid4().hex[:12]}"
+    await admin_conn.execute(
+        "UPDATE tenant_inbound_email_tokens SET revoked_at = now() WHERE tenant_id = $1", tid
+    )
+    await admin_conn.execute(
+        "INSERT INTO tenant_inbound_email_tokens (tenant_id, token) VALUES ($1, $2)",
+        tid,
+        new_token,
+    )
+    mid_old, mid_new = f"pm-{uuid.uuid4()}", f"pm-{uuid.uuid4()}"
+    try:
+        r = await client.post(
+            _URL,
+            json=_payload(mid_old, old_token, [("inv.pdf", _PDF_BYTES, "application/pdf")]),
+            headers=_AUTH,
+        )
+        assert r.json() == {"status": "filtered_out", "reason": "unknown_token"}
+        assert spaces.objects == {}
+        n = await admin_conn.fetchval("SELECT count(*) FROM receipts WHERE tenant_id = $1", tid)
+        assert n == 0
+
+        r = await client.post(
+            _URL,
+            json=_payload(mid_new, new_token, [("inv.pdf", _PDF_BYTES, "application/pdf")]),
+            headers=_AUTH,
+        )
+        assert r.json()["status"] == "pending"
+        row = await _inbox_row(admin_conn, mid_new)
+        assert row["tenant_id"] == tid
     finally:
         await _cleanup(admin_conn, tid)

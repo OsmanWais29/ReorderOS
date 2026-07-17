@@ -185,3 +185,43 @@ async def get_inbound_address(
         await db.commit()  # durability rule: no mutating endpoint without commit
     local, domain = base.split("@", 1)
     return {"configured": True, "address": f"{local}+{token}@{domain}"}
+
+
+@router.post("/inbound-address/rotate")
+async def rotate_inbound_address(
+    db: AsyncSession = Depends(get_rls_session),
+    principal: Principal = require_role("manager"),
+) -> dict[str, Any]:
+    """Rotate the tenant's forwarding address: revoke every active routing token
+    and issue a fresh one, in ONE transaction serialized on the tenants row
+    (D-606-18 pattern) so concurrent rotations can't double-issue. Email to the
+    old address becomes unknown-token (metadata-only, no drafts) immediately."""
+    settings = get_settings()
+    base = settings.postmark_inbound_address
+    if not (settings.postmark_inbound_enabled and base and "@" in base):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "INBOUND_ADDRESS_NOT_CONFIGURED",
+                "message": "Email invoice intake is not enabled for this environment.",
+            },
+        )
+    await db.execute(
+        text("SELECT id FROM tenants WHERE id = :tid FOR UPDATE"),
+        {"tid": principal.tenant_id},
+    )
+    await db.execute(
+        text(
+            "UPDATE tenant_inbound_email_tokens SET revoked_at = now() "
+            "WHERE tenant_id = :tid AND revoked_at IS NULL"
+        ),
+        {"tid": principal.tenant_id},
+    )
+    token = secrets.token_hex(12)
+    await db.execute(
+        text("INSERT INTO tenant_inbound_email_tokens (tenant_id, token) VALUES (:tid, :tok)"),
+        {"tid": principal.tenant_id, "tok": token},
+    )
+    await db.commit()  # durability rule: no mutating endpoint without commit
+    local, domain = base.split("@", 1)
+    return {"configured": True, "address": f"{local}+{token}@{domain}", "rotated": True}

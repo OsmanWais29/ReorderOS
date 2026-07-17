@@ -341,3 +341,62 @@ async def test_ops_verifier_receipt_id_mode(admin_conn: Any) -> None:
     finally:
         await admin_conn.execute("DELETE FROM receipts WHERE tenant_id = $1", tid)
         await admin_conn.execute("DELETE FROM tenants WHERE id = $1", tid)
+
+
+async def test_inbound_address_rotation(
+    app_instance: Any, conn: AsyncConnection, client: AsyncClient, monkeypatch: Any
+) -> None:
+    """Rotate: new opaque address issued, old token revoked in the same
+    transaction, repeated GETs return the new address, staff cannot rotate,
+    unconfigured environments 409."""
+    tid, uid = str(uuid7()), str(uuid7())
+    await conn.execute(
+        text("INSERT INTO tenants (id, name, slug) VALUES (:id, 'RT', :slug)"),
+        {"id": tid, "slug": f"rt-{uuid.uuid4().hex[:8]}"},
+    )
+    _as(app_instance, tid, uid, "manager")
+    monkeypatch.setenv("POSTMARK_INBOUND_ENABLED", "true")
+    monkeypatch.setenv("POSTMARK_WEBHOOK_USER", "u")
+    monkeypatch.setenv("POSTMARK_WEBHOOK_PASSWORD", "p")
+    monkeypatch.setenv("POSTMARK_INBOUND_ADDRESS", "abc123@inbound.postmarkapp.com")
+    get_settings.cache_clear()
+
+    addr_1 = (await client.get("/api/v1/receipts/inbound-address")).json()["address"]
+    r = await client.post("/api/v1/receipts/inbound-address/rotate")
+    assert r.status_code == 200
+    addr_2 = r.json()["address"]
+    assert addr_2 != addr_1 and addr_2.startswith("abc123+")
+
+    # Old token revoked; exactly one active remains; GET is stable on the new one.
+    active = (
+        await conn.execute(
+            text(
+                "SELECT count(*) FROM tenant_inbound_email_tokens "
+                "WHERE tenant_id = :tid AND revoked_at IS NULL"
+            ),
+            {"tid": tid},
+        )
+    ).scalar_one()
+    assert active == 1
+    assert (await client.get("/api/v1/receipts/inbound-address")).json()["address"] == addr_2
+    old_token = addr_1.split("+", 1)[1].split("@", 1)[0]
+    revoked = (
+        await conn.execute(
+            text("SELECT revoked_at FROM tenant_inbound_email_tokens WHERE token = :tok"),
+            {"tok": old_token},
+        )
+    ).scalar_one()
+    assert revoked is not None
+
+    # Staff cannot rotate.
+    _as(app_instance, tid, uid, "staff")
+    assert (await client.post("/api/v1/receipts/inbound-address/rotate")).status_code == 403
+
+    # Unconfigured environment → 409, no silent token churn.
+    _as(app_instance, tid, uid, "manager")
+    monkeypatch.delenv("POSTMARK_INBOUND_ADDRESS", raising=False)
+    get_settings.cache_clear()
+    r = await client.post("/api/v1/receipts/inbound-address/rotate")
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "INBOUND_ADDRESS_NOT_CONFIGURED"
+    get_settings.cache_clear()

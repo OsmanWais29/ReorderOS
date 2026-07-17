@@ -221,6 +221,26 @@ def _object_key(tenant_id: UUID, inbox_id: UUID, index: int, mime_type: str) -> 
     return f"receipts/{tenant_id}/inbound/postmark/{inbox_id}/{index}.{extension_for(mime_type)}"
 
 
+def _mailbox_hash_candidates(payload: dict[str, Any]) -> list[str]:
+    """Every routing-token candidate on the message: the top-level MailboxHash
+    PLUS each recipient entry's MailboxHash across ToFull/CcFull/BccFull —
+    the top-level field alone reflects only one matched recipient and cannot be
+    trusted when a message carries several plus-addresses. Deduped, order kept."""
+    seen: set[str] = set()
+    out: list[str] = []
+    candidates: list[Any] = [payload.get("MailboxHash")]
+    for field in ("ToFull", "CcFull", "BccFull"):
+        for recipient in payload.get(field) or []:
+            if isinstance(recipient, dict):
+                candidates.append(recipient.get("MailboxHash"))
+    for raw in candidates:
+        token = str(raw or "").strip()
+        if token and token not in seen:
+            seen.add(token)
+            out.append(token)
+    return out
+
+
 async def _resolve_tenant(s: AsyncSession, token: str) -> UUID | None:
     if not token:
         return None
@@ -236,7 +256,34 @@ async def _resolve_tenant(s: AsyncSession, token: str) -> UUID | None:
     return row[0] if row else None
 
 
-async def _record_unknown_token(s: AsyncSession, payload: dict[str, Any], message_id: str) -> None:
+async def _resolve_recipients(
+    s: AsyncSession, payload: dict[str, Any]
+) -> tuple[UUID | None, str | None, bool]:
+    """Resolve every candidate token → (tenant_id, matched_token, ambiguous).
+
+    Exactly ONE distinct tenant may resolve (the same tenant's token repeated
+    across recipient fields dedupes to one). Two DISTINCT tenants on one email
+    fail closed as ambiguous — routing a shared email to either tenant would
+    leak the other's invoice. No fallback tenant exists anywhere."""
+    resolved: dict[UUID, str] = {}
+    for token in _mailbox_hash_candidates(payload):
+        tenant = await _resolve_tenant(s, token)
+        if tenant is not None and tenant not in resolved:
+            resolved[tenant] = token
+    if len(resolved) > 1:
+        return None, None, True
+    if len(resolved) == 1:
+        tenant, token = next(iter(resolved.items()))
+        return tenant, token, False
+    return None, None, False
+
+
+async def _record_unknown_token(
+    s: AsyncSession,
+    payload: dict[str, Any],
+    message_id: str,
+    skip_reason: str = "unknown_token",
+) -> None:
     """Metadata-only row + alert (#6). No byte work happens for unknown tokens.
     The partial unique on (postmark_message_id) WHERE tenant_id IS NULL dedups
     replays — the alert fires only when the row is genuinely new.
@@ -256,7 +303,7 @@ async def _record_unknown_token(s: AsyncSession, payload: dict[str, Any], messag
                 VALUES
                     (NULL, :mid, 'postmark', :hash, :sender,
                      NULL, :rcvd, :att_count, :has_html,
-                     'filtered_out', 'pre_draft', 'unknown_token')
+                     'filtered_out', 'pre_draft', :skip)
                 ON CONFLICT (postmark_message_id)
                     WHERE tenant_id IS NULL AND postmark_message_id IS NOT NULL
                     DO NOTHING
@@ -269,6 +316,7 @@ async def _record_unknown_token(s: AsyncSession, payload: dict[str, Any], messag
                 "rcvd": _received_at(payload),
                 "att_count": len(payload.get("Attachments") or []),
                 "has_html": bool(payload.get("HtmlBody")),
+                "skip": skip_reason,
             },
         )
     ).fetchone()
@@ -282,7 +330,11 @@ async def _record_unknown_token(s: AsyncSession, payload: dict[str, Any], messag
             {"mid": message_id},
         )
     await s.commit()
-    log.info("postmark_inbound.unknown_token", postmark_message_id=message_id)
+    log.info(
+        "postmark_inbound.unknown_token",
+        postmark_message_id=message_id,
+        skip_reason=skip_reason,
+    )
 
 
 async def _sender_flags(s: AsyncSession, tenant_id: UUID, from_email: str | None) -> list[str]:
@@ -505,10 +557,21 @@ async def handle_postmark_inbound(request: Request) -> JSONResponse:
     sm = get_service_sessionmaker()
 
     async with sm() as s:
-        tenant_id = await _resolve_tenant(s, str(payload.get("MailboxHash") or ""))
+        tenant_id, matched_token, ambiguous = await _resolve_recipients(s, payload)
+        if ambiguous:
+            # Two DISTINCT tenants' tokens on one email: fail closed — no drafts,
+            # no jobs, no bytes, no fallback. Metadata-only row (tenant NULL,
+            # deduped by the unknown partial unique) + alert.
+            await _record_unknown_token(
+                s, payload, message_id, skip_reason="ambiguous_tenant_recipient"
+            )
+            return JSONResponse({"status": "filtered_out", "reason": "AMBIGUOUS_TENANT_RECIPIENT"})
         if tenant_id is None:
             await _record_unknown_token(s, payload, message_id)
             return JSONResponse({"status": "filtered_out", "reason": "unknown_token"})
+        # The row records the token that actually MATCHED, not the raw top-level
+        # field (which may belong to a different, unresolvable recipient).
+        payload = {**payload, "MailboxHash": matched_token}
 
         spam = _spam_score(payload)
         reservation = await _reserve(s, tenant_id, message_id, payload)

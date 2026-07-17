@@ -48,6 +48,11 @@ import {
 const POLL_MS = 2000;
 const POLL_MAX_MS = 30_000;
 
+// Grammatical pluralization: pick the One/Many variant by count and fill the
+// count placeholder. Never display "(s)"-style placeholder grammar.
+const plural = (n: number, one: string, many: string): string =>
+  (n === 1 ? one : many).replace('{x}', String(n)).replace('{n}', String(n));
+
 export default function ReceiptReview() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { token } = useAuth();
@@ -631,12 +636,12 @@ export default function ReceiptReview() {
               ) : null}
               {warningLines.length > 0 ? (
                 <Text style={[styles.countItem, { color: T.amber }]}>
-                  {t.rcptCountWarnings.replace('{x}', String(warningLines.length))}
+                  {plural(warningLines.length, t.rcptCountWarningsOne, t.rcptCountWarningsMany)}
                 </Text>
               ) : null}
               {skippedLines.length > 0 ? (
                 <Text style={styles.countItem}>
-                  {t.rcptCountSkipped.replace('{x}', String(skippedLines.length))}
+                  {plural(skippedLines.length, t.rcptCountSkippedOne, t.rcptCountSkippedMany)}
                 </Text>
               ) : null}
             </View>
@@ -934,7 +939,7 @@ export default function ReceiptReview() {
                   a known cost must still be committable. */}
               {missingCostCount > 0 ? (
                 <Text style={styles.costWarn}>
-                  {t.rcptCostWarn.replace('{n}', String(missingCostCount))}
+                  {plural(missingCostCount, t.rcptCostWarnOne, t.rcptCostWarnMany)}
                 </Text>
               ) : null}
               <View style={styles.affirmRow}>
@@ -978,28 +983,28 @@ export default function ReceiptReview() {
               {unmatchedLines.length > 0 ? (
                 <Pressable onPress={() => jumpToLine(unmatchedLines[0]?.id)}>
                   <Text style={styles.blocker}>
-                    ▸ {t.rcptBlockUnmatched.replace('{x}', String(unmatchedLines.length))}
+                    ▸ {plural(unmatchedLines.length, t.rcptBlockUnmatchedOne, t.rcptBlockUnmatchedMany)}
                   </Text>
                 </Pressable>
               ) : null}
               {convPending.length > 0 ? (
                 <Pressable onPress={() => jumpToLine(convPending[0]?.id)}>
                   <Text style={styles.blocker}>
-                    ▸ {t.rcptBlockConfirm.replace('{x}', String(convPending.length))}
+                    ▸ {plural(convPending.length, t.rcptBlockConfirmOne, t.rcptBlockConfirmMany)}
                   </Text>
                 </Pressable>
               ) : null}
               {warningLines.length > 0 ? (
                 <Pressable onPress={() => jumpToLine(warningLines[0]?.id)}>
                   <Text style={styles.blocker}>
-                    ▸ {t.rcptBlockWarning.replace('{x}', String(warningLines.length))}
+                    ▸ {plural(warningLines.length, t.rcptBlockWarningOne, t.rcptBlockWarningMany)}
                   </Text>
                 </Pressable>
               ) : null}
               {pendingAdjustments.length > 0 ? (
                 <Pressable onPress={jumpToAdjustments}>
                   <Text style={styles.blocker}>
-                    ▸ {t.rcptBlockAdjust.replace('{x}', String(pendingAdjustments.length))}
+                    ▸ {plural(pendingAdjustments.length, t.rcptBlockAdjustOne, t.rcptBlockAdjustMany)}
                   </Text>
                 </Pressable>
               ) : null}
@@ -1008,18 +1013,23 @@ export default function ReceiptReview() {
                   Ready:   "Receive Y items into stock". */}
               {receivable.length > 0 ? (
                 <Text style={styles.readyLine}>
-                  {t.rcptReadyCount
-                    .replace('{x}', String(readyCount))
-                    .replace('{y}', String(receivable.length))}
+                  {/* the plural form follows the TOTAL ({y}); {x} is the ready count */}
+                  {(receivable.length === 1 ? t.rcptReadyCountOne : t.rcptReadyCountMany)
+                    .replace('{y}', String(receivable.length))
+                    .replace('{x}', String(readyCount))}
                 </Text>
               ) : null}
               <Button
                 label={
                   issueCount > 0
-                    ? t.rcptResolveCta
-                        .replace('{n}', String(issueCount))
-                        .replace('{x}', String(receivable.length))
-                    : t.rcptReceiveCta.replace('{x}', String(receivable.length))
+                    ? plural(issueCount, t.rcptResolveCtaOne, t.rcptResolveCtaMany).replace(
+                        '{items}',
+                        plural(receivable.length, t.rcptItemsOne, t.rcptItemsMany),
+                      )
+                    : t.rcptReceiveCta.replace(
+                        '{items}',
+                        plural(receivable.length, t.rcptItemsOne, t.rcptItemsMany),
+                      )
                 }
                 loading={committing}
                 disabled={

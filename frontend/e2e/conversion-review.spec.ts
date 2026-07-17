@@ -64,11 +64,11 @@ test('blocked ea→L line: named, marked, disabled CTA; accept+re-affirm enables
   // ── Atomic-truth CTA: 1 of 2 ready; TWO issues block (conversion + the
   //    promo discount's undecided disposition) ──
   await expect(page.getByText('1 of 2 items ready')).toBeVisible();
-  const blockedCta = page.getByText('Resolve 2 issue(s) to receive 2 items');
+  const blockedCta = page.getByText('Resolve 2 issues to receive 2 items');
   await expect(blockedCta).toBeVisible();
 
   // ── Clicking the blocker row scrolls the syrup line into view ──
-  await page.getByText('1 quantity(ies) need confirmation').click();
+  await page.getByText('1 quantity needs confirmation').click();
   await expect(page.getByText('SIROP VANILLE 750ML')).toBeInViewport();
 
   // ── The evidence-backed suggestion is shown (750 ml → 0.75 → 4.5 L) ──
@@ -89,8 +89,8 @@ test('blocked ea→L line: named, marked, disabled CTA; accept+re-affirm enables
 
   // ── Decision gate: the conversion is fixed but the discount still needs a
   //    decision — CTA stays blocked, and the blocker OPENS the section ──
-  await expect(page.getByText('Resolve 1 issue(s) to receive 2 items')).toBeVisible();
-  await page.getByText('1 adjustment(s) need a decision').click();
+  await expect(page.getByText('Resolve 1 issue to receive 2 items')).toBeVisible();
+  await page.getByText('1 adjustment needs a decision').click();
   await expect(page.getByText('PROMO SIROP -10%')).toBeVisible();
   await expect(page.getByText('Needs decision')).toBeVisible();
 
@@ -128,7 +128,7 @@ test('adjustment decisions are truthful: failed link never shows Applied; keep-s
   receiptId = seeded.receipt_id;
   promoLineId = seeded.promo_line_id;
   await openReview(page);
-  await page.getByText('1 adjustment(s) need a decision').click();
+  await page.getByText('1 adjustment needs a decision').click();
   await expect(page.getByText('Needs decision')).toBeVisible();
 
   // ── Truthful failure (the Gate-1 lesson): if the link PUT never lands, the
@@ -139,7 +139,7 @@ test('adjustment decisions are truthful: failed link never shows Applied; keep-s
   await expect(page.getByText('Couldn’t save — try again.')).toBeVisible();
   await expect(page.getByText('Applied to SIROP VANILLE')).toHaveCount(0);
   await expect(page.getByText('Needs decision')).toBeVisible();
-  await expect(page.getByText('1 adjustment(s) need a decision')).toBeVisible();
+  await expect(page.getByText('1 adjustment needs a decision')).toBeVisible();
   await page.unroute(`**/lines/${promoLineId}`);
 
   // ── Keep separate: explicit confirmation states the money consequence ──
@@ -149,7 +149,7 @@ test('adjustment decisions are truthful: failed link never shows Applied; keep-s
   ).toBeVisible();
   await page.getByText('Keep separate', { exact: true }).click(); // confirm
   await expect(page.getByText('Kept separate from inventory cost')).toBeVisible();
-  await expect(page.getByText('1 adjustment(s) need a decision')).toHaveCount(0);
+  await expect(page.getByText('1 adjustment needs a decision')).toHaveCount(0);
 
   // ── Persistence: a full reload renders the SERVER state, not memory ──
   await page.reload();

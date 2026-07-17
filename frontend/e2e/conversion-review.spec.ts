@@ -9,7 +9,9 @@ const API = 'http://localhost:8123';
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/;
 
 let token: string;
+let tenantId: string;
 let receiptId: string;
+let promoLineId: string;
 
 test.beforeAll(async ({ request }) => {
   // Dev sign-in (double-gated backend path; local only) → token + tenant.
@@ -21,16 +23,22 @@ test.beforeAll(async ({ request }) => {
   const me = await request.get(`${API}/api/v1/auth/me`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  const tenantId = (await me.json()).tenants[0].id;
+  tenantId = (await me.json()).tenants[0].id;
 
   // Seed the scenario straight into the local test DB (python, asyncpg).
+  const seeded = seed(tenantId);
+  receiptId = seeded.receipt_id;
+  promoLineId = seeded.promo_line_id;
+});
+
+function seed(tid: string): { receipt_id: string; promo_line_id: string } {
   const out = execFileSync(
     path.join(__dirname, '..', '..', 'backend', '.venv', 'bin', 'python'),
-    [path.join(__dirname, 'seed_conversion_draft.py'), tenantId],
+    [path.join(__dirname, 'seed_conversion_draft.py'), tid],
     { encoding: 'utf-8' },
   );
-  receiptId = JSON.parse(out.trim()).receipt_id;
-});
+  return JSON.parse(out.trim());
+}
 
 async function openReview(page: Page): Promise<void> {
   await page.addInitScript((t) => window.localStorage.setItem('auth_token', t), token);
@@ -53,9 +61,10 @@ test('blocked ea→L line: named, marked, disabled CTA; accept+re-affirm enables
   const bodyText = (await page.locator('body').innerText()).replace(receiptId, '');
   expect(bodyText).not.toMatch(UUID_RE);
 
-  // ── Atomic-truth CTA: 1 of 2 ready, disabled "Resolve 1 issue…" ──
+  // ── Atomic-truth CTA: 1 of 2 ready; TWO issues block (conversion + the
+  //    promo discount's undecided disposition) ──
   await expect(page.getByText('1 of 2 items ready')).toBeVisible();
-  const blockedCta = page.getByText('Resolve 1 issue(s) to receive 2 items');
+  const blockedCta = page.getByText('Resolve 2 issue(s) to receive 2 items');
   await expect(blockedCta).toBeVisible();
 
   // ── Clicking the blocker row scrolls the syrup line into view ──
@@ -78,9 +87,14 @@ test('blocked ea→L line: named, marked, disabled CTA; accept+re-affirm enables
   await expect(page.getByText('How: 6 ea × 0.75 L = 4.5 L')).toBeVisible();
   await expect(page.getByRole('switch').first()).not.toBeChecked();
 
-  // ── Part C: link the promo discount → net-cost breakdown before approval ──
-  await page.getByText(/^Not added to stock/).click();
+  // ── Decision gate: the conversion is fixed but the discount still needs a
+  //    decision — CTA stays blocked, and the blocker OPENS the section ──
+  await expect(page.getByText('Resolve 1 issue(s) to receive 2 items')).toBeVisible();
+  await page.getByText('1 adjustment(s) need a decision').click();
   await expect(page.getByText('PROMO SIROP -10%')).toBeVisible();
+  await expect(page.getByText('Needs decision')).toBeVisible();
+
+  // ── Part C: link the promo discount → net-cost breakdown before approval ──
   await page.getByText('Apply to item…').click();
   await page.getByText('SIROP VANILLE', { exact: true }).click(); // picker chip
   await expect(page.getByText('Applied to SIROP VANILLE')).toBeVisible();
@@ -104,4 +118,53 @@ test('blocked ea→L line: named, marked, disabled CTA; accept+re-affirm enables
   await expect(page.getByText('Inventory received')).toBeVisible();
   await expect(page.getByText('+4.5 L')).toBeVisible(); // 6 ea became 4.5 L, received
   await expect(page.getByText('$10.74/L')).toBeVisible(); // NET unit cost, not gross
+});
+
+test('adjustment decisions are truthful: failed link never shows Applied; keep-separate confirms and persists', async ({
+  page,
+}) => {
+  // Fresh receipt — the first test received the shared one.
+  const seeded = seed(tenantId);
+  receiptId = seeded.receipt_id;
+  promoLineId = seeded.promo_line_id;
+  await openReview(page);
+  await page.getByText('1 adjustment(s) need a decision').click();
+  await expect(page.getByText('Needs decision')).toBeVisible();
+
+  // ── Truthful failure (the Gate-1 lesson): if the link PUT never lands, the
+  //    UI must keep saying "Needs decision" — no optimistic "Applied to" ──
+  await page.route(`**/lines/${promoLineId}`, (route) => route.abort());
+  await page.getByText('Apply to item…').click();
+  await page.getByText('SIROP VANILLE', { exact: true }).click();
+  await expect(page.getByText('Couldn’t save — try again.')).toBeVisible();
+  await expect(page.getByText('Applied to SIROP VANILLE')).toHaveCount(0);
+  await expect(page.getByText('Needs decision')).toBeVisible();
+  await expect(page.getByText('1 adjustment(s) need a decision')).toBeVisible();
+  await page.unroute(`**/lines/${promoLineId}`);
+
+  // ── Keep separate: explicit confirmation states the money consequence ──
+  await page.getByText('Keep separate', { exact: true }).click();
+  await expect(
+    page.getByText('−$5.37 discount will not be included in inventory cost.'),
+  ).toBeVisible();
+  await page.getByText('Keep separate', { exact: true }).click(); // confirm
+  await expect(page.getByText('Kept separate from inventory cost')).toBeVisible();
+  await expect(page.getByText('1 adjustment(s) need a decision')).toHaveCount(0);
+
+  // ── Persistence: a full reload renders the SERVER state, not memory ──
+  await page.reload();
+  await expect(page.getByText('SIROP VANILLE 750ML')).toBeVisible();
+  await page.getByText(/^Not added to stock/).click();
+  await expect(page.getByText('Kept separate from inventory cost')).toBeVisible();
+
+  // ── Change decision → reopens; then a REAL link persists across reload ──
+  await page.getByText('Change decision').click();
+  await expect(page.getByText('Needs decision')).toBeVisible();
+  await page.getByText('Apply to item…').click();
+  await page.getByText('SIROP VANILLE', { exact: true }).click();
+  await expect(page.getByText('Applied to SIROP VANILLE')).toBeVisible();
+  await page.reload();
+  await expect(page.getByText('SIROP VANILLE 750ML')).toBeVisible();
+  await page.getByText(/^Not added to stock/).click();
+  await expect(page.getByText('Applied to SIROP VANILLE')).toBeVisible();
 });

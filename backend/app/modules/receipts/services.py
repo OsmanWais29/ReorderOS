@@ -312,7 +312,8 @@ async def update_line(
         # Cost-adjustment link (Part C). Source must be a skipped DISCOUNT/CREDIT
         # row; target must be a receivable ITEM line on the same tenant+receipt.
         # Explicit operator action — an invoice-level charge is never allocated
-        # silently.
+        # silently. Disposition moves ATOMICALLY with the link: linked on set,
+        # back to pending on clear (never silently excluded).
         if line["line_type"] not in ("discount", "credit") or line["match_status"] != "skipped":
             raise AdjustmentLinkInvalid(
                 "only a discount or credit row can be applied to an item's cost"
@@ -331,8 +332,41 @@ async def update_line(
                 raise AdjustmentLinkInvalid(
                     "the adjustment must apply to a receivable item line on this invoice"
                 )
-        sets.append("adjusts_line_id = :adj")
-        params["adj"] = patch.adjusts_line_id
+            sets.append("adjusts_line_id = :adj")
+            sets.append("adjustment_disposition = 'linked'")
+            sets.append("disposition_reason = NULL")
+            sets.append("disposition_reviewed_at = now()")
+            sets.append("disposition_reviewed_by = :reviewer")
+            params["adj"] = patch.adjusts_line_id
+            params["reviewer"] = confirmed_by
+        else:
+            sets.append("adjusts_line_id = NULL")
+            sets.append("adjustment_disposition = 'pending'")
+            sets.append("disposition_reason = NULL")
+            sets.append("disposition_reviewed_at = NULL")
+            sets.append("disposition_reviewed_by = NULL")
+    elif "adjustment_disposition" in fields:
+        # Explicit decision on a linkable adjustment row: 'excluded' keeps it
+        # out of inventory cost (clears any link atomically — "change decision"
+        # in one action); 'pending' reopens the decision.
+        if line["line_type"] not in ("discount", "credit") or line["match_status"] != "skipped":
+            raise AdjustmentLinkInvalid(
+                "only a discount or credit row carries an adjustment decision"
+            )
+        if patch.adjustment_disposition == "excluded":
+            sets.append("adjusts_line_id = NULL")
+            sets.append("adjustment_disposition = 'excluded'")
+            sets.append("disposition_reason = :dreason")
+            sets.append("disposition_reviewed_at = now()")
+            sets.append("disposition_reviewed_by = :reviewer")
+            params["dreason"] = patch.exclusion_reason or "operator_choice"
+            params["reviewer"] = confirmed_by
+        else:  # 'pending' — reopen
+            sets.append("adjusts_line_id = NULL")
+            sets.append("adjustment_disposition = 'pending'")
+            sets.append("disposition_reason = NULL")
+            sets.append("disposition_reviewed_at = NULL")
+            sets.append("disposition_reviewed_by = NULL")
     elif "skipped" in fields:
         if patch.skipped:
             sets.append("match_status = 'skipped'")
@@ -479,7 +513,8 @@ async def update_line(
                            su.name AS item_storage_unit,
                            rl.purchase_quantity, rl.purchase_unit, rl.received_unit,
                            rl.conversion_factor, rl.conversion_source,
-                           rl.conversion_confirmed_at
+                           rl.conversion_confirmed_at, rl.line_type, rl.adjusts_line_id,
+                           rl.adjustment_disposition, rl.disposition_reason
                       FROM receipt_lines rl
                       LEFT JOIN inventory_items ii ON ii.id = rl.inventory_item_id
                       LEFT JOIN units_of_measure su ON su.id = ii.storage_unit_id

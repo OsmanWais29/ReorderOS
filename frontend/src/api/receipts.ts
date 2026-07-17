@@ -133,6 +133,12 @@ export type ReceiptLine = {
   line_type: 'item' | 'discount' | 'credit' | 'backorder' | 'fee_or_deposit';
   /** Cost-adjustment link: a discount/credit row's target item line (Part C). */
   adjusts_line_id: string | null;
+  /** Persisted adjustment decision (discount/credit rows only, else null):
+   * 'pending' needs a decision (commit blocker), 'linked' applied to an item,
+   * 'excluded' deliberately kept out of inventory cost. SERVER state — the UI
+   * renders exactly this, never an optimistic guess. */
+  adjustment_disposition: 'pending' | 'linked' | 'excluded' | null;
+  disposition_reason: string | null;
   /** Invoice evidence vs item storage unit dimension mismatch (wrong item?). */
   unit_mismatch_warning: boolean;
   received_quantity: number | null;
@@ -209,8 +215,13 @@ export type LineUpdatePayload = {
    * the server refuses without it (RECEIPT_UNIT_MISMATCH). */
   override_unit_mismatch?: boolean;
   /** Cost-adjustment link (travels ALONE): UUID links a discount/credit row to
-   * an item line; explicit null unlinks. */
+   * an item line; explicit null unlinks (disposition returns to 'pending'). */
   adjusts_line_id?: string | null;
+  /** Explicit adjustment decision (travels alone; exclusion_reason may
+   * accompany 'excluded'): 'excluded' keeps the row out of inventory cost,
+   * 'pending' reopens the decision. 'linked' is server-derived from the link. */
+  adjustment_disposition?: 'excluded' | 'pending';
+  exclusion_reason?: string;
 };
 
 /** A linked line the operator hasn't confirmed a storage conversion for yet —

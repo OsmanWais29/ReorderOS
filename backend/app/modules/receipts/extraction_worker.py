@@ -300,12 +300,15 @@ class ExtractionWorker:
                             (tenant_id, receipt_id, inventory_item_id, received_quantity,
                              unit_cost_cents, extracted_name, extracted_unit, confidence,
                              manually_corrected, match_status, extraction_job_id,
-                             job_attempt, line_ordinal, line_total_cents, line_type)
+                             job_attempt, line_ordinal, line_total_cents, line_type,
+                             adjustment_disposition)
                         VALUES
                             (:tid, :rid, NULL, NULL,
                              NULL, :name, NULL, :conf,
                              false, 'skipped', :jid,
-                             :att, :ord, :line_total, :ltype)
+                             :att, :ord, :line_total, :ltype,
+                             CASE WHEN :ltype IN ('discount', 'credit')
+                                  THEN 'pending' ELSE NULL END)
                     """),
                     {
                         "tid": tenant_id,

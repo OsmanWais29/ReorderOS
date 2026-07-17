@@ -23,6 +23,7 @@ from app.core.security import Principal, require_role
 from app.modules.inventory.depletion.conversions import ConversionError
 from app.modules.inventory.item_resolver import UnitTypeConflict
 from app.modules.inventory.services import (
+    ReceiptAdjustmentsUnreviewed,
     ReceiptConversionRequired,
     ReceiptLinesUnmatched,
     ReceiptNetCostInvalid,
@@ -417,6 +418,17 @@ async def commit_receipt_endpoint(
                 # Structured per-line blockers: machine-readable ids + tenant-safe
                 # names + package evidence + safe suggestion. ALL failing lines in
                 # one response — the client marks each and jumps to the first.
+                "errors": exc.errors,
+            },
+        ) from None
+    except ReceiptAdjustmentsUnreviewed as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "RECEIPT_ADJUSTMENTS_UNREVIEWED",
+                "message": str(exc),
+                # Per-adjustment blockers: id + invoice text + signed amount +
+                # a suggested target only when unambiguous. Zero writes happened.
                 "errors": exc.errors,
             },
         ) from None

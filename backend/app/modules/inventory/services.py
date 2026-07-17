@@ -73,6 +73,21 @@ class ReceiptReviewRequired(Exception):
     manually-corrected line OR a review affirmation (D-606-22) (→ RECEIPT_REVIEW_REQUIRED)."""
 
 
+class ReceiptAdjustmentsUnreviewed(Exception):
+    """A discount/credit row still carries disposition 'pending' — nobody
+    decided whether it reduces an item's inventory cost. Committing anyway
+    would silently receive at gross (the Gate-1 live failure). Fail closed
+    BEFORE any write (→ RECEIPT_ADJUSTMENTS_UNREVIEWED).
+
+    `errors` is the structured per-adjustment payload (ids + invoice text +
+    signed amount + a suggested target when unambiguous). The MESSAGE stays
+    free of ids/internal terms — it may reach a UI verbatim."""
+
+    def __init__(self, message: str, errors: list[dict[str, Any]] | None = None) -> None:
+        super().__init__(message)
+        self.errors = errors or []
+
+
 class ReceiptNetCostInvalid(Exception):
     """Linked adjustments drive a line's NET cost to zero or below — a credit
     larger than the product's gross total cannot silently produce free or
@@ -805,7 +820,7 @@ async def commit_receipt(
                        rl.received_unit, rl.line_total_cents, rl.extracted_name,
                        rl.pack_count, rl.pack_size_qty, rl.pack_size_unit,
                        rl.actual_weight_qty, rl.actual_weight_unit,
-                       rl.line_type, rl.adjusts_line_id,
+                       rl.line_type, rl.adjusts_line_id, rl.adjustment_disposition,
                        pu.name AS purchase_unit_name, su.name AS storage_unit_name,
                        ii.name AS item_name
                   FROM receipt_lines rl
@@ -929,6 +944,44 @@ async def commit_receipt(
             raise ReceiptReviewRequired(
                 "requires >=1 manually-corrected line or a review affirmation"
             )
+
+    # ── 3.5 adjustment-decision gate (Gate-1 lesson): every discount/credit row
+    #    needs an EXPLICIT persisted decision — linked to an item or excluded
+    #    from inventory cost. 'pending' (or a legacy NULL on a linkable row)
+    #    blocks the whole commit BEFORE any write; nothing is ever silently
+    #    received at gross.
+    undecided = [
+        ln
+        for ln in lines
+        if ln["line_type"] in ("discount", "credit")
+        and ln["match_status"] == "skipped"
+        and ln["adjustment_disposition"] in (None, "pending")
+    ]
+    if undecided:
+        # Suggested target: only when it is unambiguous (exactly one receivable
+        # item line) — a guess across several items is exactly the silent
+        # allocation this gate exists to prevent.
+        suggested = movable[0] if len(movable) == 1 else None
+        raise ReceiptAdjustmentsUnreviewed(
+            f"{len(undecided)} adjustment(s) on this invoice need a decision before receiving.",
+            errors=[
+                {
+                    "adjustment_line_id": str(ln["id"]),
+                    "line_type": ln["line_type"],
+                    "invoice_name": ln["extracted_name"],
+                    "amount_cents": (
+                        int(ln["line_total_cents"]) if ln["line_total_cents"] is not None else None
+                    ),
+                    "suggested_target_line_id": (str(suggested["id"]) if suggested else None),
+                    "suggested_target_name": (
+                        (suggested["item_name"] or suggested["extracted_name"])
+                        if suggested
+                        else None
+                    ),
+                }
+                for ln in undecided
+            ],
+        )
 
     # ── 3.6 net cost basis (Part C): operator-linked DISCOUNT/CREDIT rows reduce
     #    their target item line's cost. Taxes are header-level (never here);

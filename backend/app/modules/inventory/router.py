@@ -34,6 +34,7 @@ from app.modules.inventory.schemas import (
 from app.modules.inventory.services import (
     ItemHasMovements,
     ItemInRecipes,
+    ReceiptAdjustmentsUnreviewed,
     ReceiptConversionRequired,
     ReceiptLinesUnmatched,
     ReceiptNetCostInvalid,
@@ -336,6 +337,15 @@ async def commit_receipt_endpoint(
             detail={
                 "code": "RECEIPT_UNIT_CONVERSION_REQUIRED",
                 "message": "One or more items need a package conversion.",
+                "errors": exc.errors,
+            },
+        ) from None
+    except ReceiptAdjustmentsUnreviewed as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "RECEIPT_ADJUSTMENTS_UNREVIEWED",
+                "message": str(exc),
                 "errors": exc.errors,
             },
         ) from None

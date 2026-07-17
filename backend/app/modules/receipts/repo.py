@@ -123,7 +123,8 @@ async def get_receipt(db: AsyncSession, tenant_id: UUID, receipt_id: UUID) -> di
                        rl.conversion_confirmed_at,
                        rl.pack_count, rl.pack_size_qty, rl.pack_size_unit,
                        rl.actual_weight_qty, rl.actual_weight_unit, rl.line_total_cents,
-                       rl.line_type, rl.adjusts_line_id
+                       rl.line_type, rl.adjusts_line_id, rl.adjustment_disposition,
+                       rl.disposition_reason
                   FROM receipt_lines rl
                   LEFT JOIN inventory_items ii ON ii.id = rl.inventory_item_id
                   LEFT JOIN units_of_measure su ON su.id = ii.storage_unit_id

@@ -98,8 +98,13 @@ async def _seed(db: Any) -> dict[str, Any]:
                 text("""
                     INSERT INTO receipt_lines
                         (tenant_id, receipt_id, line_type, match_status, extracted_name,
-                         line_total_cents)
-                    VALUES (:t, :r, :lt, 'skipped', :n, :c)
+                         line_total_cents, adjustment_disposition, disposition_reason)
+                    -- seeds default to a DECIDED state ('excluded') so commit-path
+                    -- tests exercise their own concern; the pending gate has its
+                    -- own tests. update_line link/unlink moves disposition itself.
+                    VALUES (:t, :r, :lt, 'skipped', :n, :c,
+                            CASE WHEN :lt IN ('discount', 'credit') THEN 'excluded' END,
+                            CASE WHEN :lt IN ('discount', 'credit') THEN 'test_seed' END)
                     RETURNING id
                 """),
                 {"t": tid, "r": rid, "lt": ltype, "n": name, "c": cents},

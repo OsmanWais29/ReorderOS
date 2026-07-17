@@ -67,8 +67,12 @@ async def _seed(admin_conn: Any) -> dict[str, Any]:
     )
     disc = await admin_conn.fetchval(
         "INSERT INTO receipt_lines (tenant_id, receipt_id, line_type, match_status, "
-        "extracted_name, line_total_cents) "
-        "VALUES ($1, $2, 'discount', 'skipped', 'PROMO', -1000) RETURNING id",
+        "extracted_name, line_total_cents, adjustment_disposition, disposition_reason) "
+        # DECIDED seed ('excluded'): the commit-first interleaving must reach the
+        # lock contention under test, not the adjustment-decision gate. The
+        # link-first interleaving flips it to 'linked' via update_line anyway.
+        "VALUES ($1, $2, 'discount', 'skipped', 'PROMO', -1000, 'excluded', 'test_seed') "
+        "RETURNING id",
         tid,
         rid,
     )

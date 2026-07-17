@@ -151,8 +151,14 @@ async def _nonstock(
             text("""
                 INSERT INTO receipt_lines
                     (tenant_id, receipt_id, line_type, match_status, extracted_name,
-                     line_total_cents)
-                VALUES (:t, :r, :lt, 'skipped', :n, :c) RETURNING id
+                     line_total_cents, adjustment_disposition, disposition_reason)
+                -- seeded DECIDED ('excluded') so commit tests isolate their own
+                -- concern; the pending gate has dedicated tests. update_line
+                -- link/unlink moves disposition itself.
+                VALUES (:t, :r, :lt, 'skipped', :n, :c,
+                        CASE WHEN :lt IN ('discount', 'credit') THEN 'excluded' END,
+                        CASE WHEN :lt IN ('discount', 'credit') THEN 'test_seed' END)
+                RETURNING id
             """),
             {"t": s["tid"], "r": s["rid"], "lt": ltype, "n": name, "c": cents},
         )

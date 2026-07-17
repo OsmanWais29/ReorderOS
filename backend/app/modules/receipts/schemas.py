@@ -84,8 +84,15 @@ class LineUpdate(BaseModel):
     override_unit_mismatch: bool = False
     # Cost-adjustment link (Part C): set on a DISCOUNT/CREDIT non-stock row to
     # apply its signed amount to one item line's cost basis. Tri-state: absent =
-    # unchanged, UUID = link, explicit null = unlink. Travels ALONE.
+    # unchanged, UUID = link (disposition becomes 'linked'), explicit null =
+    # unlink (disposition returns to 'pending'). Travels ALONE.
     adjusts_line_id: UUID | None = None
+    # Explicit adjustment DECISION (Gate-1 lesson: a discount can never be
+    # silently ignored): 'excluded' keeps the row out of inventory cost —
+    # requires deliberate operator action; 'pending' reopens the decision.
+    # Travels alone (exclusion_reason may accompany 'excluded').
+    adjustment_disposition: Literal["excluded", "pending"] | None = None
+    exclusion_reason: str | None = Field(default=None, min_length=1, max_length=100)
 
     @field_validator("extracted_unit", "new_item_unit", "received_unit")
     @classmethod
@@ -142,6 +149,19 @@ class LineUpdate(BaseModel):
             raise ValueError("confirm conversion on an active, linked line only")
         if "adjusts_line_id" in self.model_fields_set and len(self.model_fields_set) > 1:
             raise ValueError("adjusts_line_id is its own action — no other edits in the same call")
+        if "adjustment_disposition" in self.model_fields_set:
+            extras = self.model_fields_set - {"adjustment_disposition", "exclusion_reason"}
+            if extras:
+                raise ValueError(
+                    "adjustment_disposition is its own action "
+                    "(only exclusion_reason may accompany it)"
+                )
+            if self.adjustment_disposition is None:
+                raise ValueError("adjustment_disposition must be 'excluded' or 'pending'")
+            if self.exclusion_reason is not None and self.adjustment_disposition != "excluded":
+                raise ValueError("exclusion_reason is only valid with 'excluded'")
+        elif self.exclusion_reason is not None:
+            raise ValueError("exclusion_reason requires adjustment_disposition='excluded'")
         return self
 
 
@@ -224,6 +244,11 @@ class ReceiptLineOut(BaseModel):
     line_type: str = "item"
     # Cost-adjustment link (Part C): a discount/credit row's target item line.
     adjusts_line_id: UUID | None = None
+    # Persisted adjustment decision (discount/credit rows only, else null):
+    # 'pending' = needs a decision (commit blocker), 'linked' = applied to an
+    # item's cost, 'excluded' = deliberately kept out of inventory cost.
+    adjustment_disposition: str | None = None
+    disposition_reason: str | None = None
     # Invoice evidence and item storage unit live in different dimensions
     # (count vs weight etc.) — the operator is probably on the wrong item.
     unit_mismatch_warning: bool = False

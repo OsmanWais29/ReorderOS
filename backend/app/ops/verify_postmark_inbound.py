@@ -26,6 +26,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 _SAFE_LINE_KEYS = (
     "id",
     "adjusts_line_id",
+    "adjustment_disposition",
+    "disposition_reason",
     "line_total_cents",
     "extracted_name",
     "item_name",
@@ -127,6 +129,19 @@ async def _verify_receipt_chain(
         and (x.get("line_type") or "item") not in ("discount", "credit")
     ]
     checks.append(("only discount/credit rows carry adjustment links", len(bad_links) == 0))
+    # Disposition summary — every discount/credit row's persisted decision is
+    # part of the evidence. On a COMMITTED receipt none may be pending/NULL
+    # (the Gate-1 silent-gross failure mode).
+    adj_rows = [x for x in lines if (x.get("line_type") or "item") in ("discount", "credit")]
+    for x in adj_rows:
+        out.append(
+            f"adjustment {x.get('id')}: disposition={x.get('adjustment_disposition')} "
+            f"adjusts_line_id={x.get('adjusts_line_id')} "
+            f"reason={x.get('disposition_reason')} amount={x.get('line_total_cents')}"
+        )
+    if rec["commit_state"] not in ("draft", "pending_review"):
+        undecided = [x for x in adj_rows if x.get("adjustment_disposition") in (None, "pending")]
+        checks.append(("committed receipt has no undecided adjustments", len(undecided) == 0))
 
     out.append("=== inventory_movements (via this receipt's lines) ===")
     # Movements record source_type='receipt_line', source_id=<LINE id> — join

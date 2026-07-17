@@ -154,7 +154,8 @@ async def test_extraction_materializes_nonstock_rows(admin_conn: Any, monkeypatc
         rows = await admin_conn.fetch(
             "SELECT extracted_name, line_type, match_status, received_quantity, "
             "extracted_unit, inventory_item_id, line_total_cents, extraction_job_id, "
-            "line_ordinal FROM receipt_lines WHERE receipt_id = $1 ORDER BY line_ordinal",
+            "line_ordinal, adjustment_disposition "
+            "FROM receipt_lines WHERE receipt_id = $1 ORDER BY line_ordinal",
             rid,
         )
         assert [r["line_type"] for r in rows] == [
@@ -174,6 +175,15 @@ async def test_extraction_materializes_nonstock_rows(admin_conn: Any, monkeypatc
             assert r["extraction_job_id"] == jid  # machine row — reset cleans it
         # Signed as printed: discount/credit negative, fee positive, backorder none.
         assert [r["line_total_cents"] for r in nonstock] == [-500, -1200, None, 350]
+        # Linkable rows are born NEEDING a decision (0033 commit blocker);
+        # backorder/fee rows carry no disposition at all.
+        assert [r["adjustment_disposition"] for r in nonstock] == [
+            "pending",
+            "pending",
+            None,
+            None,
+        ]
+        assert all(r["adjustment_disposition"] is None for r in rows if r["line_type"] == "item")
         # Visible non-stock rows do NOT force manual entry any more.
         manual = await admin_conn.fetchval(
             "SELECT manual_entry_required FROM receipts WHERE id = $1", rid
@@ -335,8 +345,12 @@ async def _add_nonstock(db: Any, tid: uuid.UUID, rid: uuid.UUID, *, machine: boo
             text("""
                 INSERT INTO receipt_lines
                     (tenant_id, receipt_id, line_type, match_status, extracted_name,
-                     line_total_cents, extraction_job_id)
-                VALUES (:t, :r, 'credit', 'skipped', 'Returned cases', -1200, :j)
+                     line_total_cents, extraction_job_id, adjustment_disposition,
+                     disposition_reason)
+                -- DECIDED seed: this file tests non-stock visibility/inertness,
+                -- not the adjustment-decision gate (which has its own tests).
+                VALUES (:t, :r, 'credit', 'skipped', 'Returned cases', -1200, :j,
+                        'excluded', 'test_seed')
                 RETURNING id
             """),
             {"t": tid, "r": rid, "j": jid},

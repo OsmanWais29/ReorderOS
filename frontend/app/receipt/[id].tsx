@@ -251,6 +251,14 @@ export default function ReceiptReview() {
           const first = e.errors[0]?.receipt_line_id;
           if (first) setTimeout(() => jumpToLine(first), 50);
         }
+        else if (e.code === 'RECEIPT_ADJUSTMENTS_UNREVIEWED') {
+          // Defense-in-depth: the local pendingAdjustments gate should prevent
+          // this submit. Refresh so the cards show the persisted 'pending'
+          // states, then open the section the decision lives in.
+          setCommitError(e.detail);
+          await refresh();
+          setShowSkipped(true);
+        }
         else if (e.code === 'RECEIPT_CONVERSION_INCONSISTENT')
           setCommitError(t.rcptConvInconsistent);
         else if (e.code === 'RECEIPT_NOTHING_TO_COMMIT') setCommitError(t.rcptNothingToCommit);
@@ -453,6 +461,31 @@ export default function ReceiptReview() {
   const [justReceived, setJustReceived] = useState(false);
   // Which discount/credit row is currently picking its target item line.
   const [linkingRowId, setLinkingRowId] = useState<string | null>(null);
+  // Which discount/credit row is showing the keep-separate confirmation.
+  const [excludingRowId, setExcludingRowId] = useState<string | null>(null);
+
+  // Adjustments still NEEDING a decision (server disposition 'pending'; a
+  // legacy null on a linkable row blocks server-side too, so mirror it).
+  // These block the receive exactly like the backend gate.
+  const pendingAdjustments = useMemo(
+    () =>
+      nonStockLines.filter(
+        (l) =>
+          (l.line_type === 'discount' || l.line_type === 'credit') &&
+          (l.adjustment_disposition === 'pending' || l.adjustment_disposition == null),
+      ),
+    [nonStockLines],
+  );
+  // The non-stock section is collapsible — a decision blocker must open it.
+  const nonStockY = useRef<number | null>(null);
+  const jumpToAdjustments = useCallback(() => {
+    setShowSkipped(true);
+    setTimeout(() => {
+      if (nonStockY.current != null) {
+        scrollRef.current?.scrollTo({ y: Math.max(0, nonStockY.current - 90), animated: true });
+      }
+    }, 50);
+  }, []);
 
   // Ready = would actually receive (mirrors the backend gate line-for-line).
   const readyCount = useMemo(
@@ -460,6 +493,8 @@ export default function ReceiptReview() {
       receivable.filter((l) => l.inventory_item_id !== null && !lineNeedsConversion(l)).length,
     [receivable],
   );
+  // Everything standing between the operator and an atomic receive.
+  const issueCount = receivable.length - readyCount + pendingAdjustments.length;
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
@@ -661,7 +696,11 @@ export default function ReceiptReview() {
           {/* non-stock rows: machine-classified rows + skipped lines + invoice tax —
               never mixed with receivable items */}
           {nonStockLines.length > 0 || skippedLines.length > 0 || receipt.tax_cents != null ? (
-            <View>
+            <View
+              onLayout={(e) => {
+                nonStockY.current = e.nativeEvent.layout.y;
+              }}
+            >
               <Pressable onPress={() => setShowSkipped((s) => !s)} style={styles.skippedHead}>
                 <Text style={styles.skippedTitle}>
                   {t.rcptNotAdded.replace(
@@ -707,9 +746,13 @@ export default function ReceiptReview() {
                             </Text>
                           ) : null}
                         </View>
-                        {/* Explicit cost-adjustment link — never allocated silently */}
+                        {/* Explicit adjustment decision — rendered ONLY from the
+                            persisted server disposition, never optimistically.
+                            linked → Applied to <item> (+Remove / Keep separate)
+                            excluded → Kept separate (+Change decision)
+                            pending → Needs decision (+Apply to item / Keep separate) */}
                         {linkable ? (
-                          target ? (
+                          l.adjustment_disposition === 'linked' && target ? (
                             <View style={styles.adjLinkRow}>
                               <Text style={styles.adjLinkedText} numberOfLines={1}>
                                 {t.rcptAdjAppliedTo}{' '}
@@ -720,6 +763,52 @@ export default function ReceiptReview() {
                               >
                                 <Text style={styles.adjAction}>{t.rcptAdjRemove}</Text>
                               </Pressable>
+                            </View>
+                          ) : l.adjustment_disposition === 'excluded' ? (
+                            <View style={styles.adjLinkRow}>
+                              <Text style={styles.adjExcludedText} numberOfLines={1}>
+                                {t.rcptAdjKeptSeparate}
+                              </Text>
+                              <Pressable
+                                onPress={() =>
+                                  void patchLine(l.id, { adjustment_disposition: 'pending' })
+                                }
+                              >
+                                <Text style={styles.adjAction}>{t.rcptAdjChangeDecision}</Text>
+                              </Pressable>
+                            </View>
+                          ) : excludingRowId === l.id ? (
+                            <View style={styles.adjConfirmBox}>
+                              <Text style={styles.adjConfirmText}>
+                                {t.rcptAdjExcludeConfirm
+                                  .replace(
+                                    '{amt}',
+                                    l.line_total_cents != null
+                                      ? `${l.line_total_cents < 0 ? '−' : ''}$${Math.abs(l.line_total_cents / 100).toFixed(2)}`
+                                      : '—',
+                                  )
+                                  .replace(
+                                    '{type}',
+                                    l.line_type === 'credit'
+                                      ? t.rcptAdjWordCredit
+                                      : t.rcptAdjWordDiscount,
+                                  )}
+                              </Text>
+                              <View style={styles.adjConfirmRow}>
+                                <Pressable
+                                  onPress={() => {
+                                    setExcludingRowId(null);
+                                    void patchLine(l.id, { adjustment_disposition: 'excluded' });
+                                  }}
+                                >
+                                  <Text style={styles.adjAction}>{t.rcptAdjKeepSeparate}</Text>
+                                </Pressable>
+                                <Pressable onPress={() => setExcludingRowId(null)}>
+                                  <Text style={styles.adjActionMuted}>
+                                    {t.rcptAdjExcludeGoBack}
+                                  </Text>
+                                </Pressable>
+                              </View>
                             </View>
                           ) : linkingRowId === l.id ? (
                             <View style={styles.adjPickWrap}>
@@ -739,10 +828,28 @@ export default function ReceiptReview() {
                               ))}
                             </View>
                           ) : (
-                            <Pressable onPress={() => setLinkingRowId(l.id)}>
-                              <Text style={styles.adjAction}>{t.rcptApplyToItem}</Text>
-                            </Pressable>
+                            <View style={styles.adjDecideRow}>
+                              <Text style={styles.adjPendingBadge}>
+                                {t.rcptAdjNeedsDecision}
+                              </Text>
+                              <Pressable onPress={() => setLinkingRowId(l.id)}>
+                                <Text style={styles.adjAction}>{t.rcptApplyToItem}</Text>
+                              </Pressable>
+                              <Pressable onPress={() => setExcludingRowId(l.id)}>
+                                <Text style={styles.adjAction}>{t.rcptAdjKeepSeparate}</Text>
+                              </Pressable>
+                            </View>
                           )
+                        ) : (l.line_type === 'discount' || l.line_type === 'credit') &&
+                          l.adjustment_disposition ? (
+                          // Read-only state on a committed receipt — history stays visible.
+                          <Text style={styles.adjLinkedText} numberOfLines={1}>
+                            {l.adjustment_disposition === 'linked' && target
+                              ? `${t.rcptAdjAppliedTo} ${target.item_name ?? target.extracted_name ?? '?'}`
+                              : l.adjustment_disposition === 'excluded'
+                                ? t.rcptAdjKeptSeparate
+                                : t.rcptAdjNeedsDecision}
+                          </Text>
                         ) : null}
                       </View>
                     );
@@ -889,6 +996,13 @@ export default function ReceiptReview() {
                   </Text>
                 </Pressable>
               ) : null}
+              {pendingAdjustments.length > 0 ? (
+                <Pressable onPress={jumpToAdjustments}>
+                  <Text style={styles.blocker}>
+                    ▸ {t.rcptBlockAdjust.replace('{x}', String(pendingAdjustments.length))}
+                  </Text>
+                </Pressable>
+              ) : null}
               {/* Commit is ATOMIC — the CTA never advertises a partial receive.
                   Blocked: "Resolve N issues to receive Y items" (disabled).
                   Ready:   "Receive Y items into stock". */}
@@ -901,9 +1015,9 @@ export default function ReceiptReview() {
               ) : null}
               <Button
                 label={
-                  readyCount < receivable.length
+                  issueCount > 0
                     ? t.rcptResolveCta
-                        .replace('{n}', String(receivable.length - readyCount))
+                        .replace('{n}', String(issueCount))
                         .replace('{x}', String(receivable.length))
                     : t.rcptReceiveCta.replace('{x}', String(receivable.length))
                 }
@@ -913,7 +1027,7 @@ export default function ReceiptReview() {
                   sessionDead ||
                   !affirmed ||
                   receivable.length === 0 ||
-                  readyCount < receivable.length
+                  issueCount > 0
                 }
                 onPress={() => void doCommit()}
               />
@@ -1044,6 +1158,21 @@ const styles = StyleSheet.create({
     maxWidth: 220,
   },
   adjPickLabel: { ...TYPE.footnote, color: T.label },
+  adjExcludedText: { ...TYPE.footnote, color: T.sec, flexShrink: 1 },
+  adjDecideRow: { flexDirection: 'row', alignItems: 'center', gap: 12, flexWrap: 'wrap' },
+  adjPendingBadge: {
+    ...TYPE.caption1,
+    color: T.amber,
+    backgroundColor: T.amberSoft,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    overflow: 'hidden',
+  },
+  adjConfirmBox: { gap: 8 },
+  adjConfirmText: { ...TYPE.footnote, color: T.text },
+  adjConfirmRow: { flexDirection: 'row', gap: 16 },
+  adjActionMuted: { ...TYPE.subhead, color: T.sec },
   skippedType: { ...TYPE.caption1, color: T.ter, textTransform: 'uppercase' },
   successHead: { alignItems: 'center', gap: 8, marginVertical: 12 },
   successTitle: { ...TYPE.title2, color: T.text },

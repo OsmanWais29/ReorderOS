@@ -79,10 +79,13 @@ async def main(tenant_id: str) -> None:
         "750, 'ml', 1) RETURNING id",
         tid, rid, syrup,
     )
+    # Born 'pending' exactly like the extraction worker writes it — the spec
+    # must clear this decision blocker before the receive unlocks.
     promo = await c.fetchval(
         "INSERT INTO receipt_lines (tenant_id, receipt_id, line_type, match_status, "
-        "extracted_name, line_total_cents, line_ordinal) "
-        "VALUES ($1, $2, 'discount', 'skipped', 'PROMO SIROP -10%', -537, 2) RETURNING id",
+        "extracted_name, line_total_cents, line_ordinal, adjustment_disposition) "
+        "VALUES ($1, $2, 'discount', 'skipped', 'PROMO SIROP -10%', -537, 2, 'pending') "
+        "RETURNING id",
         tid, rid,
     )
     await c.close()
@@ -90,6 +93,7 @@ async def main(tenant_id: str) -> None:
         "receipt_id": str(rid),
         "syrup_line_id": str(blocker),
         "ready_line_id": str(ready),
+        "promo_line_id": str(promo),
     }))
 
 

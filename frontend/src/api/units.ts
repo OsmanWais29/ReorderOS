@@ -35,3 +35,18 @@ export function dimensionOf(unit: string): Dimension | null {
   }
   return null;
 }
+
+// Free-form invoice hint units ("ML", "Kg", "CT") — case-insensitive dimension
+// lookup, mirroring the backend's normalize_hint_unit vocabulary.
+const HINT_DIMENSION: Record<string, Dimension> = {
+  g: 'weight', kg: 'weight', lb: 'weight', lbs: 'weight', oz: 'weight', oz_weight: 'weight',
+  ml: 'volume', l: 'volume', litre: 'volume', liter: 'volume', fl_oz: 'volume', floz: 'volume',
+  cup: 'volume', tsp: 'volume', tbsp: 'volume',
+  ea: 'count', un: 'count', unit: 'count', ct: 'count', count: 'count', dozen: 'count',
+};
+
+/** Dimension the invoice's package/weight hint points at; null when unknown. */
+export function hintDimension(unit: string | null | undefined): Dimension | null {
+  if (!unit) return null;
+  return HINT_DIMENSION[unit.trim().toLowerCase()] ?? null;
+}

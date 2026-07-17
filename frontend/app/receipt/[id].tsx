@@ -28,7 +28,7 @@ import { useAuth } from '@/auth/AuthContext';
 import { saveReturnTo } from '@/auth/returnTo';
 import { useLang } from '@/i18n/LangProvider';
 import { T, TYPE } from '@/theme/tokens';
-import { CANONICAL_UNITS } from '@/api/units';
+import { CANONICAL_UNITS, dimensionOf, hintDimension } from '@/api/units';
 import { updateItemStorageUnit, ItemsApiError } from '@/api/items';
 import {
   getReceipt,
@@ -355,18 +355,38 @@ export default function ReceiptReview() {
     [convPending],
   );
   // "Safe" = linked item + backend suggestion + no mismatch warning + unambiguous.
+  // AUDITED RULE for cross-dimension lines (ea → L): bulk-accept ONLY on explicit,
+  // line-specific invoice evidence whose unit lives in the STORAGE dimension
+  // ("750 ml" for an L-tracked item). Remembered factors and weak inference are
+  // NOT evidence — those lines stay in per-line review. Dimension-mismatch
+  // overrides never bulk (already excluded via unit_mismatch_warning).
   const safeLines = useMemo(
     () =>
-      convPending.filter(
-        (l) =>
-          l.inventory_item_id !== null &&
-          !l.unit_mismatch_warning &&
-          l.suggested_quantity != null &&
-          l.suggested_quantity > 0 &&
-          l.suggested_factor != null &&
-          l.suggested_factor > 0 &&
-          l.item_storage_unit !== null,
-      ),
+      convPending.filter((l) => {
+        if (
+          l.inventory_item_id === null ||
+          l.unit_mismatch_warning ||
+          l.suggested_quantity == null ||
+          l.suggested_quantity <= 0 ||
+          l.suggested_factor == null ||
+          l.suggested_factor <= 0 ||
+          l.item_storage_unit === null ||
+          l.extracted_unit === null
+        ) {
+          return false;
+        }
+        const from = dimensionOf(l.extracted_unit);
+        const to = dimensionOf(l.item_storage_unit);
+        const crossDimension = from !== null && to !== null && from !== to;
+        if (!crossDimension) return true;
+        if (l.suggestion_source === 'remembered') return false;
+        const evidenceUnit = l.actual_weight_qty
+          ? l.actual_weight_unit
+          : l.pack_size_qty
+            ? l.pack_size_unit
+            : null;
+        return evidenceUnit !== null && hintDimension(evidenceUnit) === to;
+      }),
     [convPending],
   );
 
@@ -797,8 +817,24 @@ export default function ReceiptReview() {
                   </Text>
                 </Pressable>
               ) : null}
+              {/* Commit is ATOMIC — the CTA never advertises a partial receive.
+                  Blocked: "Resolve N issues to receive Y items" (disabled).
+                  Ready:   "Receive Y items into stock". */}
+              {receivable.length > 0 ? (
+                <Text style={styles.readyLine}>
+                  {t.rcptReadyCount
+                    .replace('{x}', String(readyCount))
+                    .replace('{y}', String(receivable.length))}
+                </Text>
+              ) : null}
               <Button
-                label={t.rcptReceiveCta.replace('{x}', String(readyCount))}
+                label={
+                  readyCount < receivable.length
+                    ? t.rcptResolveCta
+                        .replace('{n}', String(receivable.length - readyCount))
+                        .replace('{x}', String(receivable.length))
+                    : t.rcptReceiveCta.replace('{x}', String(receivable.length))
+                }
                 loading={committing}
                 disabled={
                   extracting ||
@@ -904,6 +940,7 @@ const styles = StyleSheet.create({
     borderColor: T.red,
   },
   blockerTitle: { ...TYPE.headline, color: T.red },
+  readyLine: { ...TYPE.subhead, color: T.sec, textAlign: 'center' },
   skippedHead: { paddingVertical: 6 },
   skippedTitle: { ...TYPE.headline, color: T.sec },
   skippedRow: {

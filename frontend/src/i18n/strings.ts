@@ -227,6 +227,10 @@ export const STRINGS = {
     rcptSuggestedMatch: 'Suggested match:',
     rcptUnitHint: 'The invoice sells this in {unit}.',
     rcptCreateItem: 'Create new item',
+    rcptNeedsAttention: 'Needs attention',
+    rcptConvBlockTitle: 'These items can’t be received yet',
+    rcptConvBlockLine: 'The invoice uses {unit}, but {item} is tracked in {su}. Confirm the package size.',
+    rcptConvCrossDim: 'The invoice uses {unit}, but {item} is tracked in {su}.',
 
     // ── Supplier-invoices work queue + inbox ────────────────────────────
     invQueueTitle: 'Supplier invoices',
@@ -523,6 +527,10 @@ export const STRINGS = {
     rcptSuggestedMatch: 'Correspondance suggérée :',
     rcptUnitHint: 'La facture vend ceci en {unit}.',
     rcptCreateItem: 'Créer un nouvel article',
+    rcptNeedsAttention: 'À corriger',
+    rcptConvBlockTitle: 'Ces articles ne peuvent pas encore être reçus',
+    rcptConvBlockLine: 'La facture utilise {unit}, mais {item} est suivi en {su}. Confirmez le format d’emballage.',
+    rcptConvCrossDim: 'La facture utilise {unit}, mais {item} est suivi en {su}.',
 
     // ── File d’attente + boîte factures fournisseurs ────────────────────
     invQueueTitle: 'Factures fournisseurs',

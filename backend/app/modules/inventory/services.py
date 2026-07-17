@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.inventory.depletion.conversions import convert
+from app.modules.inventory.depletion.units import DIMENSION_OF
 from app.modules.inventory.depletion.units import is_canonical as is_canonical_unit
 
 log = logging.getLogger(__name__)
@@ -42,9 +43,18 @@ class ReceiptLinesUnmatched(Exception):
 
 
 class ReceiptConversionRequired(Exception):
-    """A movable line is denominated in a purchase unit (CS, SAC, ...) with no
-    operator-confirmed conversion to the item's storage unit. Commit never
-    guesses a factor (→ RECEIPT_CONVERSION_REQUIRED)."""
+    """One or more movable lines cannot convert to their item's storage unit —
+    a purchase unit (CS, SAC, ...) with no operator-confirmed conversion, OR a
+    canonical unit in a DIFFERENT dimension (ea → L). Commit never guesses a
+    factor (→ RECEIPT_UNIT_CONVERSION_REQUIRED).
+
+    `errors` is the structured per-line payload (machine-readable ids + names +
+    package evidence + safe suggestion). The exception MESSAGE stays free of
+    ids/internal terms — it may reach a UI verbatim."""
+
+    def __init__(self, message: str, errors: list[dict[str, Any]] | None = None) -> None:
+        super().__init__(message)
+        self.errors = errors or []
 
 
 class ItemHasMovements(Exception):
@@ -752,11 +762,17 @@ async def commit_receipt(
                 SELECT rl.id, rl.inventory_item_id, rl.received_quantity,
                        rl.purchase_unit_id, rl.unit_cost_cents, rl.idempotency_key,
                        rl.match_status, rl.manually_corrected, rl.extracted_unit,
-                       rl.received_unit, rl.line_total_cents,
-                       pu.name AS purchase_unit_name, su.name AS storage_unit_name
+                       rl.received_unit, rl.line_total_cents, rl.extracted_name,
+                       rl.pack_count, rl.pack_size_qty, rl.pack_size_unit,
+                       rl.actual_weight_qty, rl.actual_weight_unit,
+                       pu.name AS purchase_unit_name, su.name AS storage_unit_name,
+                       ii.name AS item_name
                   FROM receipt_lines rl
                   LEFT JOIN units_of_measure pu ON pu.id = rl.purchase_unit_id
-                  LEFT JOIN inventory_items   ii ON ii.id = rl.inventory_item_id
+                  -- tenant predicate on the item join: a (hypothetical) cross-tenant
+                  -- item id yields NULL name — another tenant's data never leaves here
+                  LEFT JOIN inventory_items   ii
+                         ON ii.id = rl.inventory_item_id AND ii.tenant_id = rl.tenant_id
                   LEFT JOIN units_of_measure  su ON su.id = ii.storage_unit_id
                  WHERE rl.tenant_id = :tid AND rl.receipt_id = :rid
                  FOR UPDATE OF rl
@@ -787,19 +803,81 @@ async def commit_receipt(
     if not movable:
         raise ReceiptNothingToCommit(f"receipt {receipt_id} has no inventory-moving line")
 
-    # Purchase-unit gate: a movable line whose effective unit is non-canonical
-    # (CS, SAC, BOX...) and not literally the item's storage unit cannot commit —
-    # the operator must confirm the pack conversion first (received_unit). We
-    # NEVER guess a factor; a wrong silent conversion corrupts stock and costing.
-    unconverted = []
+    # Unit-conversion gate — validate EVERY movable line BEFORE any write and
+    # return all blockers together. Two ways a line can't convert:
+    #   (a) non-canonical purchase unit (CS, SAC, BOX...) with no operator-
+    #       confirmed conversion;
+    #   (b) a CANONICAL unit in a DIFFERENT dimension than the storage unit
+    #       (ea → L) — convert() has no path across dimensions, and the old
+    #       canonical exemption let exactly this reach the movement loop (live
+    #       cert: SIROP VANILLE, 'ea' invoice unit, litre-tracked item).
+    # We NEVER guess a factor; a wrong silent conversion corrupts stock+costing.
+    from app.modules.receipts.conversion import suggest_conversion
+
+    conversion_errors: list[dict[str, Any]] = []
     for ln in movable:
         eff = ln["received_unit"] or ln["purchase_unit_name"] or ln["extracted_unit"]
-        if eff and not is_canonical_unit(eff) and eff != ln["storage_unit_name"]:
-            unconverted.append(ln)
-    if unconverted:
+        storage = ln["storage_unit_name"]
+        if not eff or eff == storage:
+            continue
+        if storage is not None:
+            cross_dimension = (
+                is_canonical_unit(eff)
+                and DIMENSION_OF.get(eff) is not None
+                and DIMENSION_OF.get(storage) is not None
+                and DIMENSION_OF[eff] != DIMENSION_OF[storage]
+            )
+            if is_canonical_unit(eff) and not cross_dimension:
+                continue  # same-dimension canonical (ml → L) converts deterministically
+        # storage None (tenant-scoped item join yielded nothing — e.g. a foreign
+        # item id) can never validate → block; names stay None, nothing leaks.
+        qty = Decimal(str(ln["received_quantity"])) if ln["received_quantity"] else None
+        suggestion = (
+            suggest_conversion(
+                purchase_qty=qty,
+                purchase_unit=eff,
+                storage_unit=storage,
+                pack_count=ln["pack_count"],
+                pack_size_qty=ln["pack_size_qty"],
+                pack_size_unit=ln["pack_size_unit"],
+                actual_weight_qty=ln["actual_weight_qty"],
+                actual_weight_unit=ln["actual_weight_unit"],
+            )
+            if qty and qty > 0 and storage is not None
+            else None
+        )
+        package_hint = (
+            f"{ln['actual_weight_qty']} {ln['actual_weight_unit'] or ''}".strip()
+            if ln["actual_weight_qty"]
+            else (
+                f"{ln['pack_count']} x {ln['pack_size_qty']} {ln['pack_size_unit'] or ''}".strip()
+                if ln["pack_count"] and ln["pack_size_qty"]
+                else (
+                    f"{ln['pack_size_qty']} {ln['pack_size_unit'] or ''}".strip()
+                    if ln["pack_size_qty"]
+                    else None
+                )
+            )
+        )
+        conversion_errors.append(
+            {
+                "receipt_line_id": str(ln["id"]),
+                "inventory_item_id": str(ln["inventory_item_id"]),
+                "inventory_item_name": ln["item_name"],  # tenant-safe join above
+                "invoice_name": ln["extracted_name"],
+                "purchase_quantity": str(qty) if qty is not None else None,
+                "purchase_unit": eff,
+                "storage_unit": storage,
+                "package_hint": package_hint,
+                "suggested_factor": str(suggestion.factor) if suggestion else None,
+                "suggested_received_quantity": str(suggestion.quantity) if suggestion else None,
+            }
+        )
+    if conversion_errors:
+        # Message is user-safe by contract: counts only — ids/units live in `errors`.
         raise ReceiptConversionRequired(
-            f"receipt {receipt_id} has {len(unconverted)} line(s) in a purchase unit "
-            f"with no confirmed storage conversion"
+            f"{len(conversion_errors)} item(s) need a package conversion before receiving.",
+            errors=conversion_errors,
         )
 
     if source in _INTAKE_SOURCES:

@@ -40,6 +40,7 @@ import {
   resetExtraction,
   lineNeedsConversion,
   ReceiptApiError,
+  type ConversionBlocker,
   type LineUpdatePayload,
   type ReceiptDetail,
 } from '@/api/receipts';
@@ -112,6 +113,20 @@ export default function ReceiptReview() {
     return () => clearTimeout(timer);
   }, [extracting, withinWindow, refresh, pollTick]);
 
+  // Blocker → line scrolling: onLayout records each card's y; declared BEFORE
+  // doCommit so the callbacks can list it as a dependency.
+  const scrollRef = useRef<ScrollView | null>(null);
+  const lineYs = useRef<Record<string, number>>({});
+  const jumpToLine = useCallback((lineId: string | undefined) => {
+    if (!lineId) return;
+    const y = lineYs.current[lineId];
+    if (y != null) scrollRef.current?.scrollTo({ y: Math.max(0, y - 90), animated: true });
+  }, []);
+  // Server-confirmed blockers from a rejected receive (defense-in-depth: the
+  // local gates should prevent the submit; if the server still refuses, we mark
+  // the EXACT lines, summarize above the button, and jump to the first).
+  const [serverBlockers, setServerBlockers] = useState<Record<string, ConversionBlocker>>({});
+
   const patchLine = useCallback(
     async (lineId: string, patch: LineUpdatePayload) => {
       if (!token || !id) return;
@@ -120,6 +135,7 @@ export default function ReceiptReview() {
       try {
         await updateLine(token, id, lineId, patch);
         setAffirmed(false); // the server cleared reviewed_affirmation — re-affirm after edits
+        setServerBlockers({}); // the line set changed — stale blockers re-derive on retry
         await refresh();
       } catch (e: unknown) {
         if (e instanceof ReceiptApiError && e.status === 401) setSessionDead(true);
@@ -223,7 +239,18 @@ export default function ReceiptReview() {
         }
         else if (e.code === 'RECEIPT_REVIEW_REQUIRED') setCommitError(t.rcptNeedReview);
         else if (e.code === 'RECEIPT_LINES_UNMATCHED') setCommitError(t.rcptLinesUnmatched);
-        else if (e.code === 'RECEIPT_CONVERSION_REQUIRED') setCommitError(t.rcptConvNeeded);
+        else if (
+          e.code === 'RECEIPT_UNIT_CONVERSION_REQUIRED' ||
+          e.code === 'RECEIPT_CONVERSION_REQUIRED'
+        ) {
+          // Structured blockers: mark each offending line, jump to the first.
+          const byLine: Record<string, ConversionBlocker> = {};
+          for (const b of e.errors) byLine[b.receipt_line_id] = b;
+          setServerBlockers(byLine);
+          setCommitError(t.rcptConvNeeded);
+          const first = e.errors[0]?.receipt_line_id;
+          if (first) setTimeout(() => jumpToLine(first), 50);
+        }
         else if (e.code === 'RECEIPT_CONVERSION_INCONSISTENT')
           setCommitError(t.rcptConvInconsistent);
         else if (e.code === 'RECEIPT_NOTHING_TO_COMMIT') setCommitError(t.rcptNothingToCommit);
@@ -235,7 +262,7 @@ export default function ReceiptReview() {
     } finally {
       setCommitting(false);
     }
-  }, [token, id, affirmed, refresh, t]);
+  }, [token, id, affirmed, refresh, jumpToLine, t]);
 
   const doRescan = useCallback(() => {
     confirmDestructive({
@@ -384,18 +411,15 @@ export default function ReceiptReview() {
     setBulkBusy(false);
   }, [token, id, bulkBusy, safeLines, refresh, t]);
 
-  // Blocker → first offending line: onLayout records each card's y, tapping a
-  // blocker scrolls there. Orientation, not enforcement.
-  const scrollRef = useRef<ScrollView | null>(null);
-  const lineYs = useRef<Record<string, number>>({});
-  const jumpToLine = useCallback((lineId: string | undefined) => {
-    if (!lineId) return;
-    const y = lineYs.current[lineId];
-    if (y != null) scrollRef.current?.scrollTo({ y: Math.max(0, y - 90), animated: true });
-  }, []);
-
   const [showSkipped, setShowSkipped] = useState(false);
   const [justReceived, setJustReceived] = useState(false);
+
+  // Ready = would actually receive (mirrors the backend gate line-for-line).
+  const readyCount = useMemo(
+    () =>
+      receivable.filter((l) => l.inventory_item_id !== null && !lineNeedsConversion(l)).length,
+    [receivable],
+  );
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
@@ -577,6 +601,7 @@ export default function ReceiptReview() {
                 <ReceiptLineRow
                   line={line}
                   busy={busyLineId === line.id || !editable || bulkBusy}
+                  attention={!!serverBlockers[line.id] || lineNeedsConversion(line)}
                   onFixItemUnit={(itemId, unit) => void fixItemUnit(itemId, unit)}
                   onPatch={(patch) => void patchLine(line.id, patch)}
                   onOpenPicker={() =>
@@ -732,6 +757,24 @@ export default function ReceiptReview() {
                   }}
                 />
               ) : null}
+              {/* server-confirmed blockers (structured 422): item names, plain
+                  explanation, each row jumps to its line */}
+              {Object.keys(serverBlockers).length > 0 ? (
+                <View style={styles.blockerBox}>
+                  <Text style={styles.blockerTitle}>{t.rcptConvBlockTitle}</Text>
+                  {Object.values(serverBlockers).map((b) => (
+                    <Pressable key={b.receipt_line_id} onPress={() => jumpToLine(b.receipt_line_id)}>
+                      <Text style={styles.blocker}>
+                        ▸{' '}
+                        {t.rcptConvBlockLine
+                          .replace('{unit}', b.purchase_unit ?? '?')
+                          .replace('{item}', b.inventory_item_name ?? b.invoice_name ?? '?')
+                          .replace('{su}', b.storage_unit ?? '?')}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              ) : null}
               {/* exact blockers, each a jump to the first offending line */}
               {unmatchedLines.length > 0 ? (
                 <Pressable onPress={() => jumpToLine(unmatchedLines[0]?.id)}>
@@ -755,14 +798,14 @@ export default function ReceiptReview() {
                 </Pressable>
               ) : null}
               <Button
-                label={t.rcptReceiveCta.replace('{x}', String(receivable.length))}
+                label={t.rcptReceiveCta.replace('{x}', String(readyCount))}
                 loading={committing}
                 disabled={
                   extracting ||
                   sessionDead ||
                   !affirmed ||
-                  unmatchedLines.length > 0 ||
-                  convPending.length > 0
+                  receivable.length === 0 ||
+                  readyCount < receivable.length
                 }
                 onPress={() => void doCommit()}
               />
@@ -852,6 +895,15 @@ const styles = StyleSheet.create({
   bulkBox: { backgroundColor: T.elev1, borderRadius: 12, padding: 12, gap: 8 },
   bulkText: { ...TYPE.footnote, color: T.label },
   blocker: { ...TYPE.subhead, color: T.amber },
+  blockerBox: {
+    backgroundColor: T.redSoft,
+    borderRadius: 12,
+    padding: 12,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: T.red,
+  },
+  blockerTitle: { ...TYPE.headline, color: T.red },
   skippedHead: { paddingVertical: 6 },
   skippedTitle: { ...TYPE.headline, color: T.sec },
   skippedRow: {

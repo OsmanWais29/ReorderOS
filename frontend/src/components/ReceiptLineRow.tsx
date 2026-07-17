@@ -10,19 +10,22 @@ import { View, Text, TextInput, Pressable, StyleSheet, Switch } from 'react-nati
 import { Button, Pill } from '@/components/atoms';
 import { useLang } from '@/i18n/LangProvider';
 import { T, TYPE } from '@/theme/tokens';
-import { CANONICAL_UNITS } from '@/api/units';
+import { CANONICAL_UNITS, dimensionOf } from '@/api/units';
 import { lineNeedsConversion } from '@/api/receipts';
 import type { LineUpdatePayload, ReceiptLine } from '@/api/receipts';
 
 export function ReceiptLineRow({
   line,
   busy,
+  attention = false,
   onPatch,
   onOpenPicker,
   onFixItemUnit,
 }: {
   line: ReceiptLine;
   busy: boolean;
+  /** Red needs-attention state: this line blocks receiving until fixed. */
+  attention?: boolean;
   onPatch: (patch: LineUpdatePayload) => void;
   onOpenPicker: () => void;
   onFixItemUnit?: (itemId: string, unit: string) => void;
@@ -78,12 +81,18 @@ export function ReceiptLineRow({
   };
 
   return (
-    <View style={[styles.card, skipped && styles.cardSkipped]}>
+    <View
+      style={[styles.card, skipped && styles.cardSkipped, attention && !skipped && styles.cardAttention]}
+    >
       <View style={styles.top}>
         <Text style={[styles.name, skipped && styles.nameSkipped]} numberOfLines={2}>
           {line.extracted_name ?? t.rcptLineUnnamed}
         </Text>
-        <Pill label={matchLabel[line.match_status]} tone={matchTone} />
+        {attention && !skipped ? (
+          <Pill label={t.rcptNeedsAttention} tone="red" />
+        ) : (
+          <Pill label={matchLabel[line.match_status]} tone={matchTone} />
+        )}
       </View>
       {/* Translation block — "invoice language" on top, always */}
       {!skipped ? (
@@ -366,6 +375,19 @@ function ConversionPanel({
       <Text style={styles.convTitle}>
         {t.rcptConvInvoiceSays} {pq} {line.extracted_unit}
       </Text>
+      {/* Canonical unit in the WRONG dimension (ea → L): say it in plain words —
+          the item may be right (needs a package conversion) or wrong entirely. */}
+      {line.extracted_unit &&
+      dimensionOf(line.extracted_unit) !== null &&
+      dimensionOf(su) !== null &&
+      dimensionOf(line.extracted_unit) !== dimensionOf(su) ? (
+        <Text style={styles.whyLine}>
+          {t.rcptConvCrossDim
+            .replace('{unit}', line.extracted_unit)
+            .replace('{item}', line.item_name ?? line.extracted_name ?? '?')
+            .replace('{su}', su)}
+        </Text>
+      ) : null}
       {why ? <Text style={styles.whyLine}>{why}</Text> : null}
       {line.unit_mismatch_warning ? (
         <>
@@ -466,6 +488,7 @@ function ConversionPanel({
 const styles = StyleSheet.create({
   card: { backgroundColor: T.elev1, borderRadius: 14, padding: 14, gap: 10 },
   cardSkipped: { opacity: 0.55 },
+  cardAttention: { borderWidth: 1, borderColor: T.red },
   top: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10 },
   name: { ...TYPE.headline, color: T.text, flex: 1 },
   linkedItem: { ...TYPE.subhead, color: T.ac },

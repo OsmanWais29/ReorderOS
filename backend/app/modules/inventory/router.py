@@ -329,13 +329,13 @@ async def commit_receipt_endpoint(
                 "(or skip it) before committing.",
             },
         ) from None
-    except ReceiptConversionRequired:
+    except ReceiptConversionRequired as exc:
         raise HTTPException(
             status_code=422,
             detail={
-                "code": "RECEIPT_CONVERSION_REQUIRED",
-                "message": "Confirm the pack conversion (e.g. 1 CS = 16 L) for every "
-                "case/pack line before committing.",
+                "code": "RECEIPT_UNIT_CONVERSION_REQUIRED",
+                "message": "One or more items need a package conversion.",
+                "errors": exc.errors,
             },
         ) from None
     except ReceiptNothingToCommit:

@@ -18,20 +18,37 @@ import { Platform } from 'react-native';
 
 import { API_BASE } from '../auth/config';
 import { tenantHeader } from './activeTenant';
-import { CANONICAL_UNITS } from './units';
+import { CANONICAL_UNITS, dimensionOf } from './units';
 import { tryRefresh } from '../auth/session';
+
+/** Structured per-line blocker from RECEIPT_UNIT_CONVERSION_REQUIRED (422). */
+export type ConversionBlocker = {
+  receipt_line_id: string;
+  inventory_item_id: string;
+  inventory_item_name: string | null;
+  invoice_name: string | null;
+  purchase_quantity: string | null;
+  purchase_unit: string | null;
+  storage_unit: string | null;
+  package_hint: string | null;
+  suggested_factor: string | null;
+  suggested_received_quantity: string | null;
+};
 
 // ── Error type: stable codes let the UI branch (RECEIPT_REVIEW_REQUIRED, ...) ──
 export class ReceiptApiError extends Error {
   status: number;
   code: string | null;
   detail: string;
-  constructor(status: number, code: string | null, detail: string) {
+  /** Structured payload for codes that carry one (conversion blockers). */
+  errors: ConversionBlocker[];
+  constructor(status: number, code: string | null, detail: string, errors?: ConversionBlocker[]) {
     super(detail);
     this.name = 'ReceiptApiError';
     this.status = status;
     this.code = code;
     this.detail = detail;
+    this.errors = errors ?? [];
   }
 }
 
@@ -56,13 +73,14 @@ async function req<T>(token: string, path: string, init?: RequestInit): Promise<
   }
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as {
-      detail?: string | { code?: string; message?: string };
+      detail?: string | { code?: string; message?: string; errors?: ConversionBlocker[] };
     };
     const d = body.detail;
     const code = typeof d === 'object' && d?.code ? d.code : null;
     const message =
       typeof d === 'string' ? d : (d?.message ?? `Request failed (${res.status})`);
-    throw new ReceiptApiError(res.status, code, message);
+    const errors = typeof d === 'object' && Array.isArray(d?.errors) ? d.errors : undefined;
+    throw new ReceiptApiError(res.status, code, message, errors);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json().catch(() => undefined)) as T;
@@ -190,18 +208,30 @@ export type LineUpdatePayload = {
   override_unit_mismatch?: boolean;
 };
 
-/** A linked case/pack line the operator hasn't confirmed a storage conversion
- * for yet — commit is blocked (RECEIPT_CONVERSION_REQUIRED) until they do.
- * Mirrors the backend gate: non-canonical purchase unit (CS/SAC/...) that isn't
- * literally the storage unit. Canonical units (ml → L) convert automatically. */
-export const lineNeedsConversion = (l: ReceiptLine): boolean =>
-  l.match_status !== 'skipped' &&
-  l.inventory_item_id !== null &&
-  l.item_storage_unit !== null &&
-  l.conversion_confirmed_at === null &&
-  l.extracted_unit !== null &&
-  l.extracted_unit !== l.item_storage_unit &&
-  !(CANONICAL_UNITS as readonly string[]).includes(l.extracted_unit);
+/** A linked line the operator hasn't confirmed a storage conversion for yet —
+ * commit is blocked (RECEIPT_UNIT_CONVERSION_REQUIRED) until they do.
+ * Mirrors the backend gate exactly; two ways a line needs confirmation:
+ *   - non-canonical purchase unit (CS/SAC/...) that isn't literally the
+ *     storage unit;
+ *   - a CANONICAL unit in a DIFFERENT dimension than the storage unit
+ *     (ea → L) — same-dimension canonical (ml → L) converts automatically,
+ *     cross-dimension has no conversion path (live-cert: SIROP VANILLE). */
+export const lineNeedsConversion = (l: ReceiptLine): boolean => {
+  if (
+    l.match_status === 'skipped' ||
+    l.inventory_item_id === null ||
+    l.item_storage_unit === null ||
+    l.conversion_confirmed_at !== null ||
+    l.extracted_unit === null ||
+    l.extracted_unit === l.item_storage_unit
+  ) {
+    return false;
+  }
+  if (!(CANONICAL_UNITS as readonly string[]).includes(l.extracted_unit)) return true;
+  const from = dimensionOf(l.extracted_unit);
+  const to = dimensionOf(l.item_storage_unit);
+  return from !== null && to !== null && from !== to;
+};
 
 export type LineCreatePayload = {
   extracted_name: string;

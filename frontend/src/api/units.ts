@@ -27,3 +27,11 @@ export const CANONICAL_UNITS: readonly string[] = [
 export function isCanonical(unit: string): boolean {
   return CANONICAL_UNITS.includes(unit);
 }
+
+/** Dimension of a canonical unit; null for non-canonical strings (CS, SAC, ...). */
+export function dimensionOf(unit: string): Dimension | null {
+  for (const d of Object.keys(CANONICAL_UNITS_BY_DIMENSION) as Dimension[]) {
+    if (CANONICAL_UNITS_BY_DIMENSION[d].includes(unit)) return d;
+  }
+  return null;
+}

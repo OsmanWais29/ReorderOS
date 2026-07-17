@@ -80,6 +80,39 @@ class ReceiptNetCostInvalid(Exception):
     invoice line, never ids."""
 
 
+def compute_line_cost_basis(
+    *,
+    gross_total_cents: int | None,
+    adjustment_cents: int,
+    storage_qty: Decimal,
+    fallback_unit_cost_cents: int | None,
+) -> tuple[int, Decimal] | None:
+    """THE single cost formula for a committed receipt line (Part C).
+
+    net  = gross printed line total + signed operator-linked adjustments
+    exact unit cost = net / received STORAGE quantity   (Decimal end to end)
+
+    Returns (unit_cost_cents [int, HALF_UP], unit_cost_cents_exact [Decimal,
+    quantized 0.0001 HALF_UP]) — the two snapshot columns. Falls back to the
+    line's own unit_cost_cents (manual path, already per received unit; linked
+    adjustments require a printed total, so none apply). None = no cost
+    evidence at all (no snapshot is written).
+
+    Deliberately supplier/product/currency-shape agnostic: inputs are integers
+    of cents, a Decimal quantity, and nothing else.
+    """
+    if gross_total_cents is not None and storage_qty > 0:
+        exact = Decimal(gross_total_cents + adjustment_cents) / storage_qty
+    elif fallback_unit_cost_cents is not None:
+        exact = Decimal(fallback_unit_cost_cents)
+    else:
+        return None
+    return (
+        int(exact.quantize(Decimal("1"), rounding=ROUND_HALF_UP)),
+        exact.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP),
+    )
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # on_hand() — Python implementation (replaces retired on_hand() SQL function)
 #
@@ -955,18 +988,16 @@ async def commit_receipt(
             key=key,
         )
 
-        # Cost basis precedence: the NET line total (gross printed total + signed
-        # operator-linked adjustments, Part C) over storage qty (exact, survives
-        # weight-priced lines and sub-cent unit costs) → else the line's
-        # unit_cost_cents (manual path; already per received unit). NUMERIC
-        # column is the truth; the legacy int column is a rounded convenience.
-        exact_cost: Decimal | None = None
-        if ln["line_total_cents"] is not None and storage_qty > 0:
-            net_total = int(ln["line_total_cents"]) + adjustments_by_line.get(str(ln["id"]), 0)
-            exact_cost = Decimal(net_total) / storage_qty
-        elif ln["unit_cost_cents"] is not None:
-            exact_cost = Decimal(ln["unit_cost_cents"])
-        if exact_cost is not None:
+        # THE single cost formula lives in compute_line_cost_basis — net printed
+        # total (gross + signed operator-linked adjustments) over storage qty.
+        basis = compute_line_cost_basis(
+            gross_total_cents=ln["line_total_cents"],
+            adjustment_cents=adjustments_by_line.get(str(ln["id"]), 0),
+            storage_qty=storage_qty,
+            fallback_unit_cost_cents=ln["unit_cost_cents"],
+        )
+        if basis is not None:
+            cost_int, cost_exact = basis
             await session.execute(
                 text("""
                     INSERT INTO ingredient_cost_snapshots
@@ -978,8 +1009,8 @@ async def commit_receipt(
                 {
                     "tid": tenant_id,
                     "iid": item_id,
-                    "cost": int(exact_cost.quantize(Decimal("1"), rounding=ROUND_HALF_UP)),
-                    "exact": exact_cost.quantize(Decimal("0.0001")),
+                    "cost": cost_int,
+                    "exact": cost_exact,
                     "puid": ln["purchase_unit_id"],
                     "lid": line_id,
                 },

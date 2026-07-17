@@ -310,3 +310,34 @@ async def test_ops_verify_command_happy_and_missing(admin_conn: Any, monkeypatch
         await admin_conn.execute("DELETE FROM receipts WHERE tenant_id = $1", tid)
         await admin_conn.execute("DELETE FROM inbound_email_inbox WHERE tenant_id = $1", tid)
         await admin_conn.execute("DELETE FROM tenants WHERE id = $1", tid)
+
+
+async def test_ops_verifier_receipt_id_mode(admin_conn: Any) -> None:
+    """--receipt-id mode: verifies the receipt chain directly (upload/manual
+    intake has no email chain); missing id FAILs without crashing."""
+    from app.ops.verify_postmark_inbound import format_report, verify
+    from tests.conftest import DB_URL_SYNC
+
+    tid, rid = uuid.uuid4(), uuid.uuid4()
+    await admin_conn.execute(
+        "INSERT INTO tenants (id, slug, name) VALUES ($1, $2, 'OPSR')", tid, f"or-{tid.hex[:8]}"
+    )
+    try:
+        await admin_conn.execute(
+            "INSERT INTO receipts (id, tenant_id, commit_state, source, extraction_status) "
+            "VALUES ($1, $2, 'draft', 'mobile_photo', 'none')",
+            rid,
+            tid,
+        )
+        out, checks = await verify(None, DB_URL_SYNC, receipt_id=str(rid))
+        report = format_report(out, checks)
+        assert ("exactly one receipt", True) in checks
+        assert ("draft receipt has 0 movements", True) in checks
+        assert ("draft receipt has 0 cost snapshots", True) in checks
+        assert "OVERALL: PASS" in report
+
+        _out2, checks2 = await verify(None, DB_URL_SYNC, receipt_id=str(uuid.uuid4()))
+        assert ("exactly one receipt", False) in checks2
+    finally:
+        await admin_conn.execute("DELETE FROM receipts WHERE tenant_id = $1", tid)
+        await admin_conn.execute("DELETE FROM tenants WHERE id = $1", tid)

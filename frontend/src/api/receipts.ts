@@ -220,7 +220,8 @@ export type LineUpdatePayload = {
  *     storage unit;
  *   - a CANONICAL unit in a DIFFERENT dimension than the storage unit
  *     (ea → L) — same-dimension canonical (ml → L) converts automatically,
- *     cross-dimension has no conversion path (live-cert: SIROP VANILLE). */
+ *     cross-dimension has no conversion path (a cross-dimension purchase
+ *     unit caught in live certification). */
 export const lineNeedsConversion = (l: ReceiptLine): boolean => {
   if (
     l.match_status === 'skipped' ||

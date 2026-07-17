@@ -1,4 +1,4 @@
-"""Purchase-unit → storage-unit conversion SUGGESTIONS (Sprint 6, Lauzon smoke).
+"""Purchase-unit → storage-unit conversion SUGGESTIONS (Sprint 6, supplier smoke test).
 
 Invoices price in purchase units (CS, SAC, EA, BOX); inventory and depletion run
 in canonical storage units (L, ml, kg, g, ea). This module turns extraction's

@@ -4,7 +4,7 @@ Revision ID: 0028_purchase_unit_conversion
 Revises: 0027_receipt_commit_trigger
 Create Date: 2026-07-15 00:00:00.000000
 
-The live Lauzon smoke proved invoices arrive in purchase units (CS, SAC, EA)
+The live supplier smoke test proved invoices arrive in purchase units (CS, SAC, EA)
 while inventory/depletion runs in canonical storage units (L, kg, ea). The
 operator must confirm a pack conversion (1 CS = 16 L) before commit — never a
 silent guess. This adds:

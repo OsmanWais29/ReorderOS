@@ -851,7 +851,7 @@ async def commit_receipt(
     #   (b) a CANONICAL unit in a DIFFERENT dimension than the storage unit
     #       (ea → L) — convert() has no path across dimensions, and the old
     #       canonical exemption let exactly this reach the movement loop (live
-    #       cert: SIROP VANILLE, 'ea' invoice unit, litre-tracked item).
+    #       cert: a count-unit invoice line against a volume-tracked item).
     # We NEVER guess a factor; a wrong silent conversion corrupts stock+costing.
     from app.modules.receipts.conversion import suggest_conversion
 

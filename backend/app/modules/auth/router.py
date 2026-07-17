@@ -251,7 +251,7 @@ class ExchangeResponse(BaseModel):
     access_token: str
     # WorkOS access tokens live ~5 minutes BY DESIGN; the refresh token carries
     # the session (rotated single-use on every refresh). Discarding it — as this
-    # API did until the Lauzon smoke — forced a full re-login every 5 minutes.
+    # API did until the supplier smoke test — forced a full re-login every 5 minutes.
     refresh_token: str | None = None
 
 

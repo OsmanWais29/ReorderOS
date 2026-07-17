@@ -373,7 +373,8 @@ export default function ReceiptReview() {
   // "Safe" = linked item + backend suggestion + no mismatch warning + unambiguous.
   // AUDITED RULE for cross-dimension lines (ea → L): bulk-accept ONLY on explicit,
   // line-specific invoice evidence whose unit lives in the STORAGE dimension
-  // ("750 ml" for an L-tracked item). Remembered factors and weak inference are
+  // (explicit package evidence, e.g. a printed pack size, for a volume-tracked
+  // item). Remembered factors and weak inference are
   // NOT evidence — those lines stay in per-line review. Dimension-mismatch
   // overrides never bulk (already excluded via unit_mismatch_warning).
   const safeLines = useMemo(

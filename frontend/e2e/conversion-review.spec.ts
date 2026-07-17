@@ -78,6 +78,18 @@ test('blocked ea→L line: named, marked, disabled CTA; accept+re-affirm enables
   await expect(page.getByText('How: 6 ea × 0.75 L = 4.5 L')).toBeVisible();
   await expect(page.getByRole('switch').first()).not.toBeChecked();
 
+  // ── Part C: link the promo discount → net-cost breakdown before approval ──
+  await page.getByText(/^Not added to stock/).click();
+  await expect(page.getByText('PROMO SIROP -10%')).toBeVisible();
+  await page.getByText('Apply to item…').click();
+  await page.getByText('SIROP VANILLE', { exact: true }).click(); // picker chip
+  await expect(page.getByText('Applied to SIROP VANILLE')).toBeVisible();
+  // Gross $53.70 · −$5.37 · Net $48.33 → $10.74/L — the exact commit basis.
+  await expect(
+    page.getByText('Gross: $53.70 · Adjustments: −$5.37 · Net: $48.33'),
+  ).toBeVisible();
+  await expect(page.getByText('Cost: $48.33 ÷ 4.5 L = $10.74/L')).toBeVisible();
+
   // ── Functional disabled-proof: without re-affirmation, clicking does NOTHING ──
   await expect(page.getByText('2 of 2 items ready')).toBeVisible();
   const cta = page.getByText('Receive 2 items into stock');
@@ -91,4 +103,5 @@ test('blocked ea→L line: named, marked, disabled CTA; accept+re-affirm enables
   await cta.click();
   await expect(page.getByText('Inventory received')).toBeVisible();
   await expect(page.getByText('+4.5 L')).toBeVisible(); // 6 ea became 4.5 L, received
+  await expect(page.getByText('$10.74/L')).toBeVisible(); // NET unit cost, not gross
 });

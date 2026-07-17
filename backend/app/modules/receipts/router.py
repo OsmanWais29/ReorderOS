@@ -25,6 +25,7 @@ from app.modules.inventory.item_resolver import UnitTypeConflict
 from app.modules.inventory.services import (
     ReceiptConversionRequired,
     ReceiptLinesUnmatched,
+    ReceiptNetCostInvalid,
     ReceiptNothingToCommit,
     ReceiptReviewRequired,
     commit_receipt,
@@ -194,6 +195,11 @@ async def update_receipt_line(
                 "code": "RECEIPT_LINE_NOT_LINKED",
                 "message": "Link an inventory item before confirming its conversion.",
             },
+        ) from None
+    except services.AdjustmentLinkInvalid as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "RECEIPT_ADJUSTMENT_LINK_INVALID", "message": str(exc)},
         ) from None
     except services.LineConversionInconsistent:
         raise HTTPException(
@@ -413,6 +419,11 @@ async def commit_receipt_endpoint(
                 # one response — the client marks each and jumps to the first.
                 "errors": exc.errors,
             },
+        ) from None
+    except ReceiptNetCostInvalid as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "RECEIPT_NET_COST_INVALID", "message": str(exc)},
         ) from None
     except ReceiptNothingToCommit:
         raise HTTPException(

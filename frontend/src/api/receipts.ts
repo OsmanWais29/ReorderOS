@@ -131,6 +131,8 @@ export type ReceiptLine = {
   line_total_cents: number | null;
   /** Extractor row classification; non-item rows arrive as skipped lines. */
   line_type: 'item' | 'discount' | 'credit' | 'backorder' | 'fee_or_deposit';
+  /** Cost-adjustment link: a discount/credit row's target item line (Part C). */
+  adjusts_line_id: string | null;
   /** Invoice evidence vs item storage unit dimension mismatch (wrong item?). */
   unit_mismatch_warning: boolean;
   received_quantity: number | null;
@@ -206,6 +208,9 @@ export type LineUpdatePayload = {
   /** Explicit consent to confirm into a dimension-mismatched item —
    * the server refuses without it (RECEIPT_UNIT_MISMATCH). */
   override_unit_mismatch?: boolean;
+  /** Cost-adjustment link (travels ALONE): UUID links a discount/credit row to
+   * an item line; explicit null unlinks. */
+  adjusts_line_id?: string | null;
 };
 
 /** A linked line the operator hasn't confirmed a storage conversion for yet —

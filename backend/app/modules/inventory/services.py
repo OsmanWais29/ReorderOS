@@ -73,6 +73,13 @@ class ReceiptReviewRequired(Exception):
     manually-corrected line OR a review affirmation (D-606-22) (→ RECEIPT_REVIEW_REQUIRED)."""
 
 
+class ReceiptNetCostInvalid(Exception):
+    """Linked adjustments drive a line's NET cost to zero or below — a credit
+    larger than the product's gross total cannot silently produce free or
+    negative-cost stock (→ RECEIPT_NET_COST_INVALID). The message names the
+    invoice line, never ids."""
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # on_hand() — Python implementation (replaces retired on_hand() SQL function)
 #
@@ -765,6 +772,7 @@ async def commit_receipt(
                        rl.received_unit, rl.line_total_cents, rl.extracted_name,
                        rl.pack_count, rl.pack_size_qty, rl.pack_size_unit,
                        rl.actual_weight_qty, rl.actual_weight_unit,
+                       rl.line_type, rl.adjusts_line_id,
                        pu.name AS purchase_unit_name, su.name AS storage_unit_name,
                        ii.name AS item_name
                   FROM receipt_lines rl
@@ -889,6 +897,30 @@ async def commit_receipt(
                 "requires >=1 manually-corrected line or a review affirmation"
             )
 
+    # ── 3.6 net cost basis (Part C): operator-linked DISCOUNT/CREDIT rows reduce
+    #    their target item line's cost. Taxes are header-level (never here);
+    #    deposits/fees are not linkable by the update_line validation. Fail
+    #    closed on a non-positive net BEFORE any write.
+    adjustments_by_line: dict[str, int] = {}
+    for ln in lines:
+        if (
+            ln["line_type"] in ("discount", "credit")
+            and ln["match_status"] == "skipped"
+            and ln["adjusts_line_id"] is not None
+            and ln["line_total_cents"] is not None
+        ):
+            key_id = str(ln["adjusts_line_id"])
+            adjustments_by_line[key_id] = adjustments_by_line.get(key_id, 0) + int(
+                ln["line_total_cents"]
+            )
+    for ln in movable:
+        adj = adjustments_by_line.get(str(ln["id"]), 0)
+        if adj and ln["line_total_cents"] is not None and ln["line_total_cents"] + adj <= 0:
+            raise ReceiptNetCostInvalid(
+                f"Adjustments on '{ln['extracted_name'] or 'a line'}' exceed its "
+                f"line total — net cost must stay above zero."
+            )
+
     # ── 4. per movable line → movement + cost snapshot + back-link ────────────
     movement_ids = []
     for ln in movable:
@@ -923,14 +955,15 @@ async def commit_receipt(
             key=key,
         )
 
-        # Cost basis precedence: the invoice's printed line total over storage
-        # qty (exact, survives weight-priced lines and sub-cent unit costs) →
-        # else the line's unit_cost_cents (manual path; already per received
-        # unit). NUMERIC column is the truth; the legacy int column is a
-        # rounded convenience for existing readers.
+        # Cost basis precedence: the NET line total (gross printed total + signed
+        # operator-linked adjustments, Part C) over storage qty (exact, survives
+        # weight-priced lines and sub-cent unit costs) → else the line's
+        # unit_cost_cents (manual path; already per received unit). NUMERIC
+        # column is the truth; the legacy int column is a rounded convenience.
         exact_cost: Decimal | None = None
         if ln["line_total_cents"] is not None and storage_qty > 0:
-            exact_cost = Decimal(ln["line_total_cents"]) / storage_qty
+            net_total = int(ln["line_total_cents"]) + adjustments_by_line.get(str(ln["id"]), 0)
+            exact_cost = Decimal(net_total) / storage_qty
         elif ln["unit_cost_cents"] is not None:
             exact_cost = Decimal(ln["unit_cost_cents"])
         if exact_cost is not None:

@@ -71,6 +71,12 @@ class LineUnitMismatch(Exception):
     override (→ 422 RECEIPT_UNIT_MISMATCH)."""
 
 
+class AdjustmentLinkInvalid(Exception):
+    """A cost-adjustment link was refused: only a skipped DISCOUNT/CREDIT row may
+    adjust, and only a receivable ITEM line on the SAME receipt may be adjusted.
+    Deposits/fees/taxes are never linkable (→ RECEIPT_ADJUSTMENT_LINK_INVALID)."""
+
+
 class ResetNeedsConfirm(Exception):
     """reset-extraction called without discard_edits=true — destructive action
     requires the explicit flag (→ 409 RECEIPT_RESET_NEEDS_CONFIRM)."""
@@ -284,7 +290,7 @@ async def update_line(
                 text("""
                     SELECT id, inventory_item_id, match_status, received_quantity,
                            extracted_unit, purchase_unit, purchase_quantity,
-                           pack_size_unit, actual_weight_unit
+                           pack_size_unit, actual_weight_unit, line_type
                       FROM receipt_lines
                      WHERE tenant_id = :tid AND receipt_id = :rid AND id = :lid
                      FOR UPDATE
@@ -302,7 +308,32 @@ async def update_line(
     params: dict[str, Any] = {"tid": tenant_id, "rid": receipt_id, "lid": line_id}
     fields = patch.model_fields_set
 
-    if "skipped" in fields:
+    if "adjusts_line_id" in fields:
+        # Cost-adjustment link (Part C). Source must be a skipped DISCOUNT/CREDIT
+        # row; target must be a receivable ITEM line on the same tenant+receipt.
+        # Explicit operator action — an invoice-level charge is never allocated
+        # silently.
+        if line["line_type"] not in ("discount", "credit") or line["match_status"] != "skipped":
+            raise AdjustmentLinkInvalid(
+                "only a discount or credit row can be applied to an item's cost"
+            )
+        if patch.adjusts_line_id is not None:
+            target = (
+                await db.execute(
+                    text(
+                        "SELECT line_type, match_status FROM receipt_lines "
+                        "WHERE tenant_id = :tid AND receipt_id = :rid AND id = :target"
+                    ),
+                    {"tid": tenant_id, "rid": receipt_id, "target": patch.adjusts_line_id},
+                )
+            ).fetchone()
+            if target is None or target[0] != "item" or target[1] == "skipped":
+                raise AdjustmentLinkInvalid(
+                    "the adjustment must apply to a receivable item line on this invoice"
+                )
+        sets.append("adjusts_line_id = :adj")
+        params["adj"] = patch.adjusts_line_id
+    elif "skipped" in fields:
         if patch.skipped:
             sets.append("match_status = 'skipped'")
         else:

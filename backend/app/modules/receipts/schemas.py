@@ -82,6 +82,10 @@ class LineUpdate(BaseModel):
     # Explicit operator override for a dimension-mismatched item (count-based
     # invoice into a weight-stored item). Without it the confirm is refused.
     override_unit_mismatch: bool = False
+    # Cost-adjustment link (Part C): set on a DISCOUNT/CREDIT non-stock row to
+    # apply its signed amount to one item line's cost basis. Tri-state: absent =
+    # unchanged, UUID = link, explicit null = unlink. Travels ALONE.
+    adjusts_line_id: UUID | None = None
 
     @field_validator("extracted_unit", "new_item_unit", "received_unit")
     @classmethod
@@ -136,6 +140,8 @@ class LineUpdate(BaseModel):
             raise ValueError("remember_conversion is only valid with a conversion confirmation")
         if confirms and (self.skipped is not None or clears_item):
             raise ValueError("confirm conversion on an active, linked line only")
+        if "adjusts_line_id" in self.model_fields_set and len(self.model_fields_set) > 1:
+            raise ValueError("adjusts_line_id is its own action — no other edits in the same call")
         return self
 
 
@@ -216,6 +222,8 @@ class ReceiptLineOut(BaseModel):
     # Extractor's row classification. Non-item rows (discount/credit/backorder/
     # fee_or_deposit) materialize as skipped lines — visible, never receivable.
     line_type: str = "item"
+    # Cost-adjustment link (Part C): a discount/credit row's target item line.
+    adjusts_line_id: UUID | None = None
     # Invoice evidence and item storage unit live in different dimensions
     # (count vs weight etc.) — the operator is probably on the wrong item.
     unit_mismatch_warning: bool = False

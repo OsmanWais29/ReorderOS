@@ -18,6 +18,7 @@ export function ReceiptLineRow({
   line,
   busy,
   attention = false,
+  adjustmentCents = 0,
   onPatch,
   onOpenPicker,
   onFixItemUnit,
@@ -26,6 +27,8 @@ export function ReceiptLineRow({
   busy: boolean;
   /** Red needs-attention state: this line blocks receiving until fixed. */
   attention?: boolean;
+  /** Signed operator-linked discount/credit cents applied to this line (Part C). */
+  adjustmentCents?: number;
   onPatch: (patch: LineUpdatePayload) => void;
   onOpenPicker: () => void;
   onFixItemUnit?: (itemId: string, unit: string) => void;
@@ -125,12 +128,36 @@ export function ReceiptLineRow({
           {line.line_total_cents != null &&
           line.received_quantity != null &&
           line.received_quantity > 0 ? (
-            <Text style={styles.howLine}>
-              {t.rcptCostLabel}: ${(line.line_total_cents / 100).toFixed(2)} ÷{' '}
-              {line.received_quantity} {line.received_unit} = $
-              {(line.line_total_cents / 100 / line.received_quantity).toFixed(2)}/
-              {line.received_unit}
-            </Text>
+            adjustmentCents !== 0 ? (
+              // Net-cost breakdown (Part C): gross, adjustment, net, unit cost —
+              // shown BEFORE approval; commit computes from the same net.
+              <>
+                <Text style={styles.howLine}>
+                  {t.rcptGross}: ${(line.line_total_cents / 100).toFixed(2)} ·{' '}
+                  {t.rcptAdjustment}: {adjustmentCents < 0 ? '−' : '+'}$
+                  {Math.abs(adjustmentCents / 100).toFixed(2)} · {t.rcptNet}: $
+                  {((line.line_total_cents + adjustmentCents) / 100).toFixed(2)}
+                </Text>
+                <Text style={styles.howLine}>
+                  {t.rcptCostLabel}: $
+                  {((line.line_total_cents + adjustmentCents) / 100).toFixed(2)} ÷{' '}
+                  {line.received_quantity} {line.received_unit} = $
+                  {(
+                    (line.line_total_cents + adjustmentCents) /
+                    100 /
+                    line.received_quantity
+                  ).toFixed(2)}
+                  /{line.received_unit}
+                </Text>
+              </>
+            ) : (
+              <Text style={styles.howLine}>
+                {t.rcptCostLabel}: ${(line.line_total_cents / 100).toFixed(2)} ÷{' '}
+                {line.received_quantity} {line.received_unit} = $
+                {(line.line_total_cents / 100 / line.received_quantity).toFixed(2)}/
+                {line.received_unit}
+              </Text>
+            )
           ) : null}
         </View>
       ) : null}
@@ -140,6 +167,7 @@ export function ReceiptLineRow({
         <ConversionPanel
           line={line}
           busy={busy}
+          adjustmentCents={adjustmentCents}
           onFixItemUnit={onFixItemUnit}
           convQty={convQty}
           convFactor={convFactor}
@@ -292,6 +320,7 @@ export function ReceiptLineRow({
 function ConversionPanel({
   line,
   busy,
+  adjustmentCents = 0,
   convQty,
   convFactor,
   onQty,
@@ -301,6 +330,7 @@ function ConversionPanel({
 }: {
   line: ReceiptLine;
   busy: boolean;
+  adjustmentCents?: number;
   convQty: string;
   convFactor: string;
   onQty: (v: string) => void;
@@ -323,9 +353,11 @@ function ConversionPanel({
   const q = Number(convQty.replace(',', '.'));
   // Printed line total is the costing truth (weight-priced lines make
   // unit_cost x purchase_qty wrong); fall back to the product only without it.
-  const totalCents =
+  const grossCents =
     line.line_total_cents ??
     (line.unit_cost_cents != null && pq ? line.unit_cost_cents * pq : null);
+  // Net of operator-linked adjustments (Part C) — the same basis commit uses.
+  const totalCents = grossCents != null ? grossCents + adjustmentCents : null;
   const perUnit =
     totalCents != null && Number.isFinite(q) && q > 0 ? totalCents / q / 100 : null;
   const valid =

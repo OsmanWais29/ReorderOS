@@ -36,6 +36,7 @@ from app.modules.inventory.services import (
     ItemInRecipes,
     ReceiptConversionRequired,
     ReceiptLinesUnmatched,
+    ReceiptNetCostInvalid,
     ReceiptNothingToCommit,
     ReceiptReviewRequired,
     add_receipt_line,
@@ -337,6 +338,11 @@ async def commit_receipt_endpoint(
                 "message": "One or more items need a package conversion.",
                 "errors": exc.errors,
             },
+        ) from None
+    except ReceiptNetCostInvalid as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "RECEIPT_NET_COST_INVALID", "message": str(exc)},
         ) from None
     except ReceiptNothingToCommit:
         raise HTTPException(

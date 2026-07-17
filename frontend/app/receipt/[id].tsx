@@ -354,6 +354,22 @@ export default function ReceiptReview() {
     () => convPending.filter((l) => l.unit_mismatch_warning),
     [convPending],
   );
+  // Signed adjustment cents per ITEM line (operator-linked discount/credit rows).
+  const adjustmentsByLine = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const l of lines) {
+      if (
+        (l.line_type === 'discount' || l.line_type === 'credit') &&
+        l.match_status === 'skipped' &&
+        l.adjusts_line_id &&
+        l.line_total_cents != null
+      ) {
+        m[l.adjusts_line_id] = (m[l.adjusts_line_id] ?? 0) + l.line_total_cents;
+      }
+    }
+    return m;
+  }, [lines]);
+
   // "Safe" = linked item + backend suggestion + no mismatch warning + unambiguous.
   // AUDITED RULE for cross-dimension lines (ea → L): bulk-accept ONLY on explicit,
   // line-specific invoice evidence whose unit lives in the STORAGE dimension
@@ -409,8 +425,9 @@ export default function ReceiptReview() {
     // failure stops the run instead of half-applying in parallel.
     for (const l of safeLines) {
       const pq = l.received_quantity;
-      const totalCents =
+      const gross =
         l.line_total_cents ?? (l.unit_cost_cents != null && pq ? l.unit_cost_cents * pq : null);
+      const totalCents = gross != null ? gross + (adjustmentsByLine[l.id] ?? 0) : null;
       const q = l.suggested_quantity as number;
       try {
         await updateLine(token, id, l.id, {
@@ -429,10 +446,12 @@ export default function ReceiptReview() {
     setAffirmed(false);
     await refresh();
     setBulkBusy(false);
-  }, [token, id, bulkBusy, safeLines, refresh, t]);
+  }, [token, id, bulkBusy, safeLines, adjustmentsByLine, refresh, t]);
 
   const [showSkipped, setShowSkipped] = useState(false);
   const [justReceived, setJustReceived] = useState(false);
+  // Which discount/credit row is currently picking its target item line.
+  const [linkingRowId, setLinkingRowId] = useState<string | null>(null);
 
   // Ready = would actually receive (mirrors the backend gate line-for-line).
   const readyCount = useMemo(
@@ -477,8 +496,13 @@ export default function ReceiptReview() {
                   l.received_quantity != null &&
                   l.received_quantity > 0 ? (
                     <Text style={styles.successCost}>
-                      ${(l.line_total_cents / 100 / l.received_quantity).toFixed(2)}/
-                      {l.received_unit ?? l.extracted_unit ?? ''}
+                      $
+                      {(
+                        (l.line_total_cents + (adjustmentsByLine[l.id] ?? 0)) /
+                        100 /
+                        l.received_quantity
+                      ).toFixed(2)}
+                      /{l.received_unit ?? l.extracted_unit ?? ''}
                     </Text>
                   ) : null}
                 </View>
@@ -622,6 +646,7 @@ export default function ReceiptReview() {
                   line={line}
                   busy={busyLineId === line.id || !editable || bulkBusy}
                   attention={!!serverBlockers[line.id] || lineNeedsConversion(line)}
+                  adjustmentCents={adjustmentsByLine[line.id] ?? 0}
                   onFixItemUnit={(itemId, unit) => void fixItemUnit(itemId, unit)}
                   onPatch={(patch) => void patchLine(line.id, patch)}
                   onOpenPicker={() =>
@@ -651,30 +676,76 @@ export default function ReceiptReview() {
               </Pressable>
               {showSkipped ? (
                 <View style={styles.lines}>
-                  {nonStockLines.map((l) => (
-                    <View key={l.id} style={styles.skippedRow}>
-                      <View style={styles.skippedRowText}>
-                        <Text style={styles.skippedType}>
-                          {l.line_type === 'discount'
-                            ? t.rcptTypeDiscount
-                            : l.line_type === 'credit'
-                              ? t.rcptTypeCredit
-                              : l.line_type === 'backorder'
-                                ? t.rcptTypeBackorder
-                                : t.rcptTypeFee}
-                        </Text>
-                        <Text style={styles.skippedName} numberOfLines={1}>
-                          {l.extracted_name ?? '—'}
-                        </Text>
+                  {nonStockLines.map((l) => {
+                    const linkable =
+                      editable && (l.line_type === 'discount' || l.line_type === 'credit');
+                    const target = l.adjusts_line_id
+                      ? receivable.find((r) => r.id === l.adjusts_line_id)
+                      : undefined;
+                    return (
+                      <View key={l.id} style={styles.skippedCard}>
+                        <View style={styles.skippedRowInner}>
+                          <View style={styles.skippedRowText}>
+                            <Text style={styles.skippedType}>
+                              {l.line_type === 'discount'
+                                ? t.rcptTypeDiscount
+                                : l.line_type === 'credit'
+                                  ? t.rcptTypeCredit
+                                  : l.line_type === 'backorder'
+                                    ? t.rcptTypeBackorder
+                                    : t.rcptTypeFee}
+                            </Text>
+                            <Text style={styles.skippedName} numberOfLines={1}>
+                              {l.extracted_name ?? '—'}
+                            </Text>
+                          </View>
+                          {l.line_total_cents != null ? (
+                            <Text style={styles.skippedAmt}>
+                              {l.line_total_cents < 0 ? '−' : ''}$
+                              {Math.abs(l.line_total_cents / 100).toFixed(2)}
+                            </Text>
+                          ) : null}
+                        </View>
+                        {/* Explicit cost-adjustment link — never allocated silently */}
+                        {linkable ? (
+                          target ? (
+                            <View style={styles.adjLinkRow}>
+                              <Text style={styles.adjLinkedText} numberOfLines={1}>
+                                {t.rcptAdjAppliedTo}{' '}
+                                {target.item_name ?? target.extracted_name ?? '?'}
+                              </Text>
+                              <Pressable
+                                onPress={() => void patchLine(l.id, { adjusts_line_id: null })}
+                              >
+                                <Text style={styles.adjAction}>{t.rcptAdjRemove}</Text>
+                              </Pressable>
+                            </View>
+                          ) : linkingRowId === l.id ? (
+                            <View style={styles.adjPickWrap}>
+                              {receivable.map((r) => (
+                                <Pressable
+                                  key={r.id}
+                                  style={styles.adjPickChip}
+                                  onPress={() => {
+                                    setLinkingRowId(null);
+                                    void patchLine(l.id, { adjusts_line_id: r.id });
+                                  }}
+                                >
+                                  <Text style={styles.adjPickLabel} numberOfLines={1}>
+                                    {r.item_name ?? r.extracted_name ?? '?'}
+                                  </Text>
+                                </Pressable>
+                              ))}
+                            </View>
+                          ) : (
+                            <Pressable onPress={() => setLinkingRowId(l.id)}>
+                              <Text style={styles.adjAction}>{t.rcptApplyToItem}</Text>
+                            </Pressable>
+                          )
+                        ) : null}
                       </View>
-                      {l.line_total_cents != null ? (
-                        <Text style={styles.skippedAmt}>
-                          {l.line_total_cents < 0 ? '−' : ''}$
-                          {Math.abs(l.line_total_cents / 100).toFixed(2)}
-                        </Text>
-                      ) : null}
-                    </View>
-                  ))}
+                    );
+                  })}
                   {receipt.tax_cents != null ? (
                     <View style={styles.skippedRow}>
                       <Text style={styles.skippedName}>{t.rcptTaxRow}</Text>
@@ -953,6 +1024,25 @@ const styles = StyleSheet.create({
   skippedName: { ...TYPE.subhead, color: T.sec },
   skippedAmt: { ...TYPE.subhead, color: T.sec },
   skippedRowText: { flex: 1, gap: 2 },
+  skippedCard: {
+    backgroundColor: T.elev1,
+    borderRadius: 12,
+    padding: 12,
+    gap: 8,
+  },
+  skippedRowInner: { flexDirection: 'row', justifyContent: 'space-between', gap: 8 },
+  adjLinkRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  adjLinkedText: { ...TYPE.footnote, color: T.ac, flexShrink: 1 },
+  adjAction: { ...TYPE.subhead, color: T.ac },
+  adjPickWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  adjPickChip: {
+    backgroundColor: T.elev2,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    maxWidth: 220,
+  },
+  adjPickLabel: { ...TYPE.footnote, color: T.label },
   skippedType: { ...TYPE.caption1, color: T.ter, textTransform: 'uppercase' },
   successHead: { alignItems: 'center', gap: 8, marginVertical: 12 },
   successTitle: { ...TYPE.title2, color: T.text },

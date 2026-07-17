@@ -79,6 +79,12 @@ async def main(tenant_id: str) -> None:
         "750, 'ml', 1) RETURNING id",
         tid, rid, syrup,
     )
+    promo = await c.fetchval(
+        "INSERT INTO receipt_lines (tenant_id, receipt_id, line_type, match_status, "
+        "extracted_name, line_total_cents, line_ordinal) "
+        "VALUES ($1, $2, 'discount', 'skipped', 'PROMO SIROP -10%', -537, 2) RETURNING id",
+        tid, rid,
+    )
     await c.close()
     print(json.dumps({
         "receipt_id": str(rid),

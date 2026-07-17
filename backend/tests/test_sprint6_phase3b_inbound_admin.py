@@ -400,3 +400,79 @@ async def test_inbound_address_rotation(
     assert r.status_code == 409
     assert r.json()["detail"]["code"] == "INBOUND_ADDRESS_NOT_CONFIGURED"
     get_settings.cache_clear()
+
+
+async def test_ops_verifier_committed_branch_counts_movements(admin_conn: Any) -> None:
+    """The Gate-1 verifier bug: movements record source_id=<line id>, and the
+    verifier filtered by receipt id → 0 movements on a good commit. This pins
+    the corrected join on a COMMITTED receipt with a real movement+snapshot."""
+    from app.ops.verify_postmark_inbound import format_report, verify
+    from tests.conftest import DB_URL_SYNC
+
+    tid, rid, mid_ = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    await admin_conn.execute(
+        "INSERT INTO tenants (id, slug, name) VALUES ($1, $2, 'OPSC')", tid, f"oc-{tid.hex[:8]}"
+    )
+    try:
+        uom = await admin_conn.fetchval(
+            "INSERT INTO units_of_measure (tenant_id, name, abbreviation, unit_type) "
+            "VALUES ($1, 'ea', 'ea', 'count') RETURNING id",
+            tid,
+        )
+        item = await admin_conn.fetchval(
+            "INSERT INTO inventory_items (tenant_id, name, inventory_mode, storage_unit_id, "
+            "recipe_unit_id) VALUES ($1, 'OPS ITEM', 'recipe_deducted', $2, $2) RETURNING id",
+            tid,
+            uom,
+        )
+        await admin_conn.execute(
+            "INSERT INTO receipts (id, tenant_id, commit_state, source, extraction_status, "
+            "confirmed_at, committed_at) "
+            "VALUES ($1, $2, 'committed', 'email', 'none', now(), now())",
+            rid,
+            tid,
+        )
+        await admin_conn.execute(
+            "INSERT INTO inventory_movements (id, tenant_id, inventory_item_id, movement_type, "
+            "delta, source_type, source_id, idempotency_key) "
+            "VALUES ($1, $2, $3, 'receive', 4, 'receipt_line', $1, $4)",
+            mid_,
+            tid,
+            item,
+            f"k-{tid.hex[:8]}",
+        )
+        line = await admin_conn.fetchval(
+            "INSERT INTO receipt_lines (tenant_id, receipt_id, inventory_item_id, "
+            "received_quantity, extracted_name, match_status, emits_movement_id) "
+            "VALUES ($1, $2, $3, 4, 'OPS ROW', 'matched', $4) RETURNING id",
+            tid,
+            rid,
+            item,
+            mid_,
+        )
+        await admin_conn.execute(
+            "INSERT INTO ingredient_cost_snapshots (id, tenant_id, inventory_item_id, "
+            "unit_cost_cents, unit_cost_cents_exact, source_receipt_line_id) "
+            "VALUES (gen_random_uuid(), $1, $2, 2200, 2200.0000, $3)",
+            tid,
+            item,
+            line,
+        )
+        out, checks = await verify(None, DB_URL_SYNC, receipt_id=str(rid))
+        report = format_report(out, checks)
+        assert ("committed receipt has movements + confirmed_at", True) in checks
+        assert ("movement count equals receivable line count", True) in checks
+        assert "movement count: 1" in report
+        assert "2200.0000" in report
+        assert "OVERALL: PASS" in report
+    finally:
+        for t in (
+            "ingredient_cost_snapshots",
+            "receipt_lines",
+            "inventory_movements",
+            "receipts",
+            "inventory_items",
+            "units_of_measure",
+        ):
+            await admin_conn.execute(f"DELETE FROM {t} WHERE tenant_id = $1", tid)
+        await admin_conn.execute("DELETE FROM tenants WHERE id = $1", tid)

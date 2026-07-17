@@ -128,12 +128,20 @@ async def _verify_receipt_chain(
     ]
     checks.append(("only discount/credit rows carry adjustment links", len(bad_links) == 0))
 
-    out.append("=== inventory_movements (source = this receipt) ===")
+    out.append("=== inventory_movements (via this receipt's lines) ===")
+    # Movements record source_type='receipt_line', source_id=<LINE id> — join
+    # through receipt_lines.emits_movement_id, never filter source_id by the
+    # receipt id (the Gate-1 verifier bug: it reported 0 movements on a
+    # correctly committed receipt).
     movs = [
         dict(r)
         for r in (
             await c.execute(
-                text("SELECT * FROM inventory_movements WHERE source_id = :rid"),
+                text(
+                    "SELECT m.* FROM inventory_movements m "
+                    "JOIN receipt_lines rl ON rl.emits_movement_id = m.id "
+                    "WHERE rl.receipt_id = :rid"
+                ),
                 {"rid": rec["id"]},
             )
         )

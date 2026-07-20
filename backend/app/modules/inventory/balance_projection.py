@@ -117,9 +117,7 @@ async def current_balance_batch(
           LEFT JOIN signals  ON signals.iid  = i.id
           LEFT JOIN yf        ON yf.iid       = i.id
     """
-    rows = (
-        await session.execute(text(sql), {"tid": tenant_id, "ids": item_ids})
-    ).all()
+    rows = (await session.execute(text(sql), {"tid": tenant_id, "ids": item_ids})).all()
     out: dict[UUID, Decimal | None] = {}
     for iid, qty in rows:
         out[iid] = Decimal(str(qty)) if qty is not None else None

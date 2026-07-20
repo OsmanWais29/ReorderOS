@@ -139,7 +139,9 @@ async def _matrix(db: Any) -> tuple[uuid.UUID, list[uuid.UUID]]:
     await _mv(db, tid, a1, mtype="opening_balance", delta="100", when=now - timedelta(days=30))
     await _mv(db, tid, a1, mtype="receive", delta="48", when=now - timedelta(days=10))
     await _mv(db, tid, a1, mtype="sale_depletion", delta="-25.5", when=now - timedelta(days=5))
-    await _mv(db, tid, a1, mtype="sale_depletion_reversal", delta="0.5", when=now - timedelta(days=4))
+    await _mv(
+        db, tid, a1, mtype="sale_depletion_reversal", delta="0.5", when=now - timedelta(days=4)
+    )
     await _mv(db, tid, a1, mtype="count_adjust", delta="-1", when=now - timedelta(days=2))
     ids.append(a1)
 
@@ -157,15 +159,23 @@ async def _matrix(db: Any) -> tuple[uuid.UUID, list[uuid.UUID]]:
     # 4. Mode B counted, with signals after the count and a receipt after it.
     count_at = now - timedelta(days=6)
     b1 = await _item(
-        db, tid, unit, mode="count_anchored",
-        last_count_at=count_at, last_count_quantity=Decimal("200"),
+        db,
+        tid,
+        unit,
+        mode="count_anchored",
+        last_count_at=count_at,
+        last_count_quantity=Decimal("200"),
     )
     await _mv(db, tid, b1, mtype="receive", delta="30", when=now - timedelta(days=4))
-    await _mv(db, tid, b1, mtype="sale_signal", delta="-12", when=now - timedelta(days=2), yfa="1.0")
+    await _mv(
+        db, tid, b1, mtype="sale_signal", delta="-12", when=now - timedelta(days=2), yfa="1.0"
+    )
     ids.append(b1)
 
     # 5. Mode B NOT counted (last_count_quantity NULL → on_hand None).
-    b2 = await _item(db, tid, unit, mode="count_anchored", last_count_at=None, last_count_quantity=None)
+    b2 = await _item(
+        db, tid, unit, mode="count_anchored", last_count_at=None, last_count_quantity=None
+    )
     await _mv(db, tid, b2, mtype="receive", delta="15", when=now - timedelta(days=1))
     ids.append(b2)
 
@@ -216,12 +226,24 @@ async def test_list_endpoint_mode_b_diverges_from_on_hand_documented(db: Any) ->
     now = datetime.now(UTC)
     count_at = now - timedelta(days=6)
     b = await _item(
-        db, tid, unit, mode="count_anchored",
-        last_count_at=count_at, last_count_quantity=Decimal("200"),
+        db,
+        tid,
+        unit,
+        mode="count_anchored",
+        last_count_at=count_at,
+        last_count_quantity=Decimal("200"),
     )
     await _mv(db, tid, b, mtype="receive", delta="30", when=now - timedelta(days=5))
     await _mv(db, tid, b, mtype="sale_signal", delta="-12", when=now - timedelta(days=3), yfa="1.0")
-    await _mv(db, tid, b, mtype="sale_signal_reversal", delta="12", when=now - timedelta(days=2), yfa="1.0")
+    await _mv(
+        db,
+        tid,
+        b,
+        mtype="sale_signal_reversal",
+        delta="12",
+        when=now - timedelta(days=2),
+        yfa="1.0",
+    )
 
     authoritative = await on_hand(db, tenant_id=tid, inventory_item_id=b)
     # on_hand: 200 + 30 - (-12 + 12) = 230
@@ -254,16 +276,7 @@ async def test_list_endpoint_mode_b_diverges_from_on_hand_documented(db: Any) ->
     assert authoritative != Decimal(str(list_value)), "divergence must be real"
 
 
-async def test_empty_batch_returns_empty() -> None:
-    # Pure function guard — no DB needed.
-    import asyncio
-
-    async def _run() -> None:
-        async with engine.connect() as c:
-            await c.begin()
-            s = make_bound_session(c)
-            out = await current_balance_batch(s, tenant_id=uuid.uuid4(), item_ids=[])
-            assert out == {}
-            await c.rollback()
-
-    await _run()
+async def test_empty_batch_returns_empty(db: Any) -> None:
+    # Empty id list short-circuits without a query.
+    out = await current_balance_batch(db, tenant_id=uuid.uuid4(), item_ids=[])
+    assert out == {}

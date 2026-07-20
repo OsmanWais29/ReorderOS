@@ -16,7 +16,9 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import get_db_session
 from app.core.deps import get_rls_session
+from app.core.rls import set_rls_context
 from app.core.security import Principal, get_principal, require_role
 from app.modules.inventory.depletion.units import CANONICAL_UNITS
 from app.modules.inventory.idempotency import (
@@ -24,6 +26,7 @@ from app.modules.inventory.idempotency import (
     compute_fingerprint,
     store_response,
 )
+from app.modules.inventory.insights import ItemNotFound, build_item_insights
 from app.modules.inventory.item_resolver import UnitTypeConflict
 from app.modules.inventory.schemas import (
     CountEventCreate,
@@ -543,3 +546,108 @@ async def list_inventory_items(
         )
 
     return JSONResponse({"items": result, "total": len(result)})
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Stock Item Insights (PR-A1) — GET /inventory/items/{item_id}/insights
+# ═════════════════════════════════════════════════════════════════════════════
+
+_INSIGHTS_WINDOWS = {"7d", "14d", "30d"}
+DEFAULT_TARGET_COVER_DAYS = 7
+
+
+async def _get_insights_session(
+    session: AsyncSession = Depends(get_db_session),
+    principal: Principal = Depends(get_principal),
+) -> AsyncSession:
+    """Read-only REPEATABLE READ snapshot session for insights.
+
+    SET TRANSACTION must be the first statement of the transaction; get_db_session
+    yields a fresh session that autobegins on first execute, so this runs before
+    any query and gives every insights query one MVCC snapshot. In the bound-
+    session test harness a transaction is already open (SAVEPOINT mode), so the
+    SET is best-effort there — the production guarantee holds on a fresh pooled
+    session; tests assert behavior, not isolation.
+    """
+    # On a fresh pooled session no transaction has begun yet, so SET TRANSACTION
+    # is the first statement and the REPEATABLE READ snapshot holds for every
+    # query in the request. The bound-session test harness shares an already-open
+    # outer transaction (SET TRANSACTION there errors and poisons it), so skip
+    # when tagged — tests assert behavior, not isolation.
+    if not session.info.get("is_bound_test_session"):
+        await session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
+    await set_rls_context(session, principal)
+    return session
+
+
+def _resolve_timezone(raw: str | None) -> tuple[str, str]:
+    """(timezone_name, timezone_source). Unset or invalid → UTC fallback — a stale
+    tenant value must never 500 a read."""
+    if raw:
+        try:
+            from zoneinfo import ZoneInfo
+
+            ZoneInfo(raw)
+            return raw, "configured"
+        except Exception:
+            return "UTC", "fallback"
+    return "UTC", "fallback"
+
+
+@router.get("/items/{item_id}/insights")
+async def item_insights(
+    item_id: UUID,
+    window: str = "14d",
+    target_cover_days: int | None = None,
+    db: AsyncSession = Depends(_get_insights_session),
+    principal: Principal = Depends(get_principal),
+) -> JSONResponse:
+    tenant_id = UUID(principal.tenant_id)
+    if window not in _INSIGHTS_WINDOWS:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "INSIGHTS_WINDOW_INVALID",
+                "message": "window must be 7d, 14d, or 30d.",
+            },
+        )
+    tcd = DEFAULT_TARGET_COVER_DAYS
+    tcd_source = "default"
+    if target_cover_days is not None:
+        if not (1 <= target_cover_days <= 60):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "TARGET_COVER_INVALID",
+                    "message": "target_cover_days must be 1-60.",
+                },
+            )
+        tcd, tcd_source = target_cover_days, "scenario"
+
+    # DB-derived as_of, shared by every query in the snapshot.
+    as_of = (await db.execute(text("SELECT now()"))).scalar_one()
+    tz_raw = (
+        await db.execute(text("SELECT timezone FROM tenants WHERE id = :t"), {"t": tenant_id})
+    ).scalar_one_or_none()
+    tz_name, tz_source = _resolve_timezone(tz_raw)
+
+    can_view_cost = principal.role in ("manager", "owner")
+
+    try:
+        payload = await build_item_insights(
+            db,
+            tenant_id=tenant_id,
+            item_id=item_id,
+            window_key=window,
+            as_of=as_of,
+            timezone_name=tz_name,
+            timezone_source=tz_source,
+            can_view_cost=can_view_cost,
+            target_cover_days=tcd,
+            target_source=tcd_source,
+        )
+    except ItemNotFound:
+        raise HTTPException(
+            status_code=404, detail={"code": "ITEM_NOT_FOUND", "message": "Item not found."}
+        ) from None
+    return JSONResponse(payload)

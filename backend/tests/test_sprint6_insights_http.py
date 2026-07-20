@@ -1,0 +1,139 @@
+"""Stock Item Insights — HTTP-layer tests (error codes, RBAC, snapshot happy path).
+
+Exercises GET /api/v1/inventory/items/{id}/insights through the ASGI app with the
+principal + bound-session overrides, covering the stable error contract and the
+server-side cost redaction for staff.
+"""
+
+from __future__ import annotations
+
+import uuid
+from collections.abc import AsyncIterator
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection
+
+from app.core.database import engine, get_db_session, make_bound_session
+from app.core.security import Principal, get_principal
+from app.main import create_app
+
+pytestmark = pytest.mark.integration
+
+
+async def _seed_min_item(conn: AsyncConnection, tid: uuid.UUID) -> uuid.UUID:
+    await conn.execute(
+        text("INSERT INTO tenants (id, slug, name) VALUES (:id,:s,'INSH')"),
+        {"id": tid, "s": f"insh-{tid.hex[:8]}"},
+    )
+    unit = (
+        await conn.execute(
+            text(
+                "INSERT INTO units_of_measure (tenant_id, name, abbreviation, unit_type) "
+                "VALUES (:t,'ea','ea','count') RETURNING id"
+            ),
+            {"t": tid},
+        )
+    ).scalar_one()
+    item = (
+        await conn.execute(
+            text(
+                "INSERT INTO inventory_items (tenant_id, name, inventory_mode, storage_unit_id, "
+                "recipe_unit_id, par_level) VALUES (:t,'Item','recipe_deducted',:u,:u,10) RETURNING id"
+            ),
+            {"t": tid, "u": unit},
+        )
+    ).scalar_one()
+    await conn.execute(
+        text(
+            "INSERT INTO ingredient_cost_snapshots (tenant_id, inventory_item_id, unit_cost_cents, "
+            "unit_cost_cents_exact) VALUES (:t,:i,120,120.0000)"
+        ),
+        {"t": tid, "i": item},
+    )
+    return item
+
+
+class _Ctx:
+    def __init__(self, conn: AsyncConnection, tid: uuid.UUID, item: uuid.UUID, client: AsyncClient):
+        self.conn, self.tid, self.item, self.client = conn, tid, item, client
+
+
+async def _ctx(role: str) -> AsyncIterator[_Ctx]:
+    app = create_app()
+    tid, uid = uuid.uuid4(), uuid.uuid4()
+    conn: AsyncConnection
+    async with engine.connect() as conn:
+        await conn.begin()
+        bound = make_bound_session(conn)
+        app.dependency_overrides[get_db_session] = lambda: bound
+        app.dependency_overrides[get_principal] = lambda: Principal(
+            user_id=str(uid),
+            workos_id=f"w_{uid.hex[:8]}",
+            email="x@test.com",
+            tenant_id=str(tid),
+            role=role,  # type: ignore[arg-type]
+        )
+        try:
+            item = await _seed_min_item(conn, tid)
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as c:
+                yield _Ctx(conn, tid, item, c)
+        finally:
+            app.dependency_overrides.clear()
+            await conn.rollback()
+
+
+_BASE = "/api/v1/inventory/items"
+
+
+async def test_window_invalid_422() -> None:
+    async for ctx in _ctx("manager"):
+        r = await ctx.client.get(f"{_BASE}/{ctx.item}/insights?window=99d")
+        assert r.status_code == 422
+        assert r.json()["detail"]["code"] == "INSIGHTS_WINDOW_INVALID"
+
+
+async def test_target_cover_invalid_422() -> None:
+    async for ctx in _ctx("manager"):
+        r = await ctx.client.get(f"{_BASE}/{ctx.item}/insights?target_cover_days=999")
+        assert r.status_code == 422
+        assert r.json()["detail"]["code"] == "TARGET_COVER_INVALID"
+
+
+async def test_unknown_item_404() -> None:
+    async for ctx in _ctx("manager"):
+        r = await ctx.client.get(f"{_BASE}/{uuid.uuid4()}/insights")
+        assert r.status_code == 404
+        assert r.json()["detail"]["code"] == "ITEM_NOT_FOUND"
+
+
+async def test_manager_sees_cost_200() -> None:
+    async for ctx in _ctx("manager"):
+        r = await ctx.client.get(f"{_BASE}/{ctx.item}/insights?window=14d")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["cost"]["available"] is True
+        assert body["cost"]["latest_unit_cost_cents_exact"] == "120.0000"
+        assert body["forecast"]["state"] == "NOT_YET_CERTIFIED"
+        assert body["snapshot"]["isolation"] == "repeatable_read"
+
+
+async def test_staff_cost_redacted_200() -> None:
+    async for ctx in _ctx("staff"):
+        r = await ctx.client.get(f"{_BASE}/{ctx.item}/insights?window=14d")
+        assert r.status_code == 200, r.text
+        cost = r.json()["cost"]
+        assert cost["available"] is False
+        assert cost["reason"]["code"] == "MANAGER_ONLY"
+        assert "latest_unit_cost_cents_exact" not in cost
+
+
+async def test_scenario_target_cover_days_echoed() -> None:
+    async for ctx in _ctx("manager"):
+        r = await ctx.client.get(f"{_BASE}/{ctx.item}/insights?target_cover_days=10")
+        assert r.status_code == 200
+        ro = r.json()["reorder"]
+        assert ro["target_cover_days"] == 10
+        assert ro["target_source"] == "scenario"

@@ -10,19 +10,25 @@ import { View, Text, TextInput, Pressable, StyleSheet, Switch } from 'react-nati
 import { Button, Pill } from '@/components/atoms';
 import { useLang } from '@/i18n/LangProvider';
 import { T, TYPE } from '@/theme/tokens';
-import { CANONICAL_UNITS } from '@/api/units';
+import { CANONICAL_UNITS, dimensionOf } from '@/api/units';
 import { lineNeedsConversion } from '@/api/receipts';
 import type { LineUpdatePayload, ReceiptLine } from '@/api/receipts';
 
 export function ReceiptLineRow({
   line,
   busy,
+  attention = false,
+  adjustmentCents = 0,
   onPatch,
   onOpenPicker,
   onFixItemUnit,
 }: {
   line: ReceiptLine;
   busy: boolean;
+  /** Red needs-attention state: this line blocks receiving until fixed. */
+  attention?: boolean;
+  /** Signed operator-linked discount/credit cents applied to this line (Part C). */
+  adjustmentCents?: number;
   onPatch: (patch: LineUpdatePayload) => void;
   onOpenPicker: () => void;
   onFixItemUnit?: (itemId: string, unit: string) => void;
@@ -78,26 +84,82 @@ export function ReceiptLineRow({
   };
 
   return (
-    <View style={[styles.card, skipped && styles.cardSkipped]}>
+    <View
+      style={[styles.card, skipped && styles.cardSkipped, attention && !skipped && styles.cardAttention]}
+    >
       <View style={styles.top}>
         <Text style={[styles.name, skipped && styles.nameSkipped]} numberOfLines={2}>
           {line.extracted_name ?? t.rcptLineUnnamed}
         </Text>
-        <Pill label={matchLabel[line.match_status]} tone={matchTone} />
+        {attention && !skipped ? (
+          <Pill label={t.rcptNeedsAttention} tone="red" />
+        ) : (
+          <Pill label={matchLabel[line.match_status]} tone={matchTone} />
+        )}
       </View>
+      {/* Translation block — "invoice language" on top, always */}
+      {!skipped ? (
+        <Text style={styles.saysLine}>
+          {t.rcptSays}:{' '}
+          {line.purchase_quantity ?? line.received_quantity ?? '—'}{' '}
+          {line.purchase_unit ?? line.extracted_unit ?? ''}
+          {line.line_total_cents != null
+            ? `  ·  $${(line.line_total_cents / 100).toFixed(2)}`
+            : ''}
+        </Text>
+      ) : null}
       {!skipped && line.item_name ? (
         <Text style={styles.linkedItem} numberOfLines={1}>
           → {line.item_name}
         </Text>
       ) : null}
 
-      {/* Confirmed conversion summary: 3 CS → 48 L (1 CS = 16 L) */}
+      {/* Confirmed: what stock will actually receive, and how we got there */}
       {!skipped && line.conversion_confirmed_at && line.purchase_unit ? (
-        <Text style={styles.convDone}>
-          ✓ {line.purchase_quantity} {line.purchase_unit} → {line.received_quantity}{' '}
-          {line.received_unit} (1 {line.purchase_unit} = {line.conversion_factor}{' '}
-          {line.received_unit})
-        </Text>
+        <View style={styles.doneBlock}>
+          <Text style={styles.convDone}>
+            ✓ {t.rcptWillReceive}: {line.received_quantity} {line.received_unit}
+            {line.item_name ? ` → ${line.item_name}` : ''}
+          </Text>
+          <Text style={styles.howLine}>
+            {t.rcptHow}: {line.purchase_quantity} {line.purchase_unit} × {line.conversion_factor}{' '}
+            {line.received_unit} = {line.received_quantity} {line.received_unit}
+          </Text>
+          {line.line_total_cents != null &&
+          line.received_quantity != null &&
+          line.received_quantity > 0 ? (
+            adjustmentCents !== 0 ? (
+              // Net-cost breakdown (Part C): gross, adjustment, net, unit cost —
+              // shown BEFORE approval; commit computes from the same net.
+              <>
+                <Text style={styles.howLine}>
+                  {t.rcptGross}: ${(line.line_total_cents / 100).toFixed(2)} ·{' '}
+                  {t.rcptAdjustment}: {adjustmentCents < 0 ? '−' : '+'}$
+                  {Math.abs(adjustmentCents / 100).toFixed(2)} · {t.rcptNet}: $
+                  {((line.line_total_cents + adjustmentCents) / 100).toFixed(2)}
+                </Text>
+                <Text style={styles.howLine}>
+                  {t.rcptCostLabel}: $
+                  {((line.line_total_cents + adjustmentCents) / 100).toFixed(2)} ÷{' '}
+                  {line.received_quantity} {line.received_unit} = $
+                  {(
+                    (line.line_total_cents + adjustmentCents) /
+                    100 /
+                    line.received_quantity
+                  ).toFixed(2)}
+                  /{line.received_unit}
+                </Text>
+              </>
+            ) : (
+              <Text style={styles.howLine}>
+                {t.rcptCostLabel}: ${(line.line_total_cents / 100).toFixed(2)} ÷{' '}
+                {line.received_quantity} {line.received_unit} = $
+                {(line.line_total_cents / 100 / line.received_quantity).toFixed(2)}/
+                {line.received_unit}
+              </Text>
+            )
+          ) : null}
+        </View>
       ) : null}
 
       {/* Conversion panel: invoice U/M (CS/SAC) → storage unit, operator-confirmed */}
@@ -105,6 +167,7 @@ export function ReceiptLineRow({
         <ConversionPanel
           line={line}
           busy={busy}
+          adjustmentCents={adjustmentCents}
           onFixItemUnit={onFixItemUnit}
           convQty={convQty}
           convFactor={convFactor}
@@ -207,20 +270,36 @@ export function ReceiptLineRow({
 
       {/* Suggestions (unmatched only) + picker + skip actions */}
       {!skipped && line.match_status === 'unmatched' ? (
-        <View style={styles.suggestions}>
-          {line.suggestions.map((sg) => (
-            <Pressable
-              key={sg.id}
-              disabled={busy}
-              onPress={() => onPatch({ inventory_item_id: sg.id })}
-              style={styles.suggestionChip}
-            >
-              <Text style={styles.suggestionLabel}>{sg.name}</Text>
+        <View style={styles.suggestBlock}>
+          {line.suggestions.length > 0 ? (
+            <Text style={styles.suggestLabel}>{t.rcptSuggestedMatch}</Text>
+          ) : null}
+          {line.pack_size_unit || line.actual_weight_unit ? (
+            <Text style={styles.suggestHint}>
+              {t.rcptUnitHint.replace(
+                '{unit}',
+                (line.actual_weight_unit ?? line.pack_size_unit) as string,
+              )}
+            </Text>
+          ) : null}
+          <View style={styles.suggestions}>
+            {line.suggestions.map((sg) => (
+              <Pressable
+                key={sg.id}
+                disabled={busy}
+                onPress={() => onPatch({ inventory_item_id: sg.id })}
+                style={styles.suggestionChip}
+              >
+                <Text style={styles.suggestionLabel}>{sg.name}</Text>
+              </Pressable>
+            ))}
+            <Pressable disabled={busy} onPress={onOpenPicker} style={styles.suggestionChipAlt}>
+              <Text style={styles.suggestionLabelAlt}>{t.rcptLinePick}</Text>
             </Pressable>
-          ))}
-          <Pressable disabled={busy} onPress={onOpenPicker} style={styles.suggestionChipAlt}>
-            <Text style={styles.suggestionLabelAlt}>{t.rcptLinePick}</Text>
-          </Pressable>
+            <Pressable disabled={busy} onPress={onOpenPicker} style={styles.suggestionChipAlt}>
+              <Text style={styles.suggestionLabelAlt}>{t.rcptCreateItem}</Text>
+            </Pressable>
+          </View>
         </View>
       ) : null}
 
@@ -241,6 +320,7 @@ export function ReceiptLineRow({
 function ConversionPanel({
   line,
   busy,
+  adjustmentCents = 0,
   convQty,
   convFactor,
   onQty,
@@ -250,6 +330,7 @@ function ConversionPanel({
 }: {
   line: ReceiptLine;
   busy: boolean;
+  adjustmentCents?: number;
   convQty: string;
   convFactor: string;
   onQty: (v: string) => void;
@@ -272,30 +353,48 @@ function ConversionPanel({
   const q = Number(convQty.replace(',', '.'));
   // Printed line total is the costing truth (weight-priced lines make
   // unit_cost x purchase_qty wrong); fall back to the product only without it.
-  const totalCents =
+  const grossCents =
     line.line_total_cents ??
     (line.unit_cost_cents != null && pq ? line.unit_cost_cents * pq : null);
+  // Net of operator-linked adjustments (Part C) — the same basis commit uses.
+  const totalCents = grossCents != null ? grossCents + adjustmentCents : null;
   const perUnit =
     totalCents != null && Number.isFinite(q) && q > 0 ? totalCents / q / 100 : null;
   const valid =
     Number.isFinite(q) && q > 0 && Number.isFinite(Number(convFactor.replace(',', '.')));
 
-  // Package clue exactly as the invoice printed it.
-  const clue = line.actual_weight_qty
-    ? `${t.rcptConvClue} ${line.actual_weight_qty} ${line.actual_weight_unit ?? ''} (${t.rcptConvActual})`
-    : line.pack_size_qty
-      ? `${t.rcptConvClue} ${line.pack_count ? `${line.pack_count} x ` : ''}${line.pack_size_qty} ${line.pack_size_unit ?? ''}`
-      : null;
+  // WHY this suggestion — plain words first, then the arithmetic (req: every
+  // suggestion explains itself; ambiguity says exactly what's missing).
+  const why = !hasSuggestion
+    ? t.rcptWhyAmbiguous.replace('{unit}', line.extracted_unit ?? '?')
+    : line.suggestion_source === 'remembered'
+      ? t.rcptWhyRemembered
+      : line.actual_weight_qty
+        ? t.rcptWhyWeight.replace(
+            '{w}',
+            `${line.actual_weight_qty} ${line.actual_weight_unit ?? ''}`,
+          )
+        : line.pack_size_qty && (line.pack_size_unit ?? '').toUpperCase().includes('CT')
+          ? t.rcptWhyCount.replace('{n}', `${line.pack_size_qty}`)
+          : line.pack_size_qty
+            ? t.rcptWhyPack
+                .replace('{n}', String(pq ?? ''))
+                .replace('{unit}', line.extracted_unit ?? '')
+                .replace(
+                  '{pack}',
+                  `${line.pack_count ? `${line.pack_count} × ` : ''}${line.pack_size_qty} ${line.pack_size_unit ?? ''}`,
+                )
+            : null;
 
-  // Calculation explanation for the suggestion, in the invoice's own terms.
+  // The arithmetic in the invoice's own terms.
   const explain = !hasSuggestion
     ? null
     : line.suggestion_source === 'remembered'
-      ? `1 ${line.extracted_unit} = ${line.suggested_factor} ${su} (${t.rcptConvRemembered})`
+      ? `1 ${line.extracted_unit} = ${line.suggested_factor} ${su}`
       : line.actual_weight_qty
-        ? `${t.rcptConvActual} ${line.actual_weight_qty} ${line.actual_weight_unit ?? ''} = ${line.suggested_quantity} ${su}`
+        ? `${line.actual_weight_qty} ${line.actual_weight_unit ?? ''} = ${line.suggested_quantity} ${su}`
         : line.pack_size_qty
-          ? `${pq} ${line.extracted_unit} x ${line.pack_count ? `${line.pack_count} x ` : ''}${line.pack_size_qty} ${line.pack_size_unit ?? ''} = ${line.suggested_quantity} ${su}`
+          ? `${pq} ${line.extracted_unit} × ${line.pack_count ? `${line.pack_count} × ` : ''}${line.pack_size_qty} ${line.pack_size_unit ?? ''} = ${line.suggested_quantity} ${su}`
           : `${pq} ${line.extracted_unit} = ${line.suggested_quantity} ${su}`;
 
   const costPreview =
@@ -308,7 +407,20 @@ function ConversionPanel({
       <Text style={styles.convTitle}>
         {t.rcptConvInvoiceSays} {pq} {line.extracted_unit}
       </Text>
-      {clue ? <Text style={styles.convCost}>{clue}</Text> : null}
+      {/* Canonical unit in the WRONG dimension (ea → L): say it in plain words —
+          the item may be right (needs a package conversion) or wrong entirely. */}
+      {line.extracted_unit &&
+      dimensionOf(line.extracted_unit) !== null &&
+      dimensionOf(su) !== null &&
+      dimensionOf(line.extracted_unit) !== dimensionOf(su) ? (
+        <Text style={styles.whyLine}>
+          {t.rcptConvCrossDim
+            .replace('{unit}', line.extracted_unit)
+            .replace('{item}', line.item_name ?? line.extracted_name ?? '?')
+            .replace('{su}', su)}
+        </Text>
+      ) : null}
+      {why ? <Text style={styles.whyLine}>{why}</Text> : null}
       {line.unit_mismatch_warning ? (
         <>
           <Text style={styles.convWarn}>{t.rcptConvDimWarn.replace('{unit}', su)}</Text>
@@ -348,9 +460,13 @@ function ConversionPanel({
       {!editing && hasSuggestion ? (
         <>
           <Text style={styles.convSuggest}>
-            {t.rcptConvReceiveAs} {line.suggested_quantity} {su}
+            {t.rcptWillReceive}: {line.suggested_quantity} {su}
           </Text>
-          {explain ? <Text style={styles.convCost}>{explain}</Text> : null}
+          {explain ? (
+            <Text style={styles.convCost}>
+              {t.rcptHow}: {explain}
+            </Text>
+          ) : null}
           {costPreview ? <Text style={styles.convCost}>{costPreview}</Text> : null}
           <View style={styles.convRow}>
             <Button
@@ -404,10 +520,18 @@ function ConversionPanel({
 const styles = StyleSheet.create({
   card: { backgroundColor: T.elev1, borderRadius: 14, padding: 14, gap: 10 },
   cardSkipped: { opacity: 0.55 },
+  cardAttention: { borderWidth: 1, borderColor: T.red },
   top: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10 },
   name: { ...TYPE.headline, color: T.text, flex: 1 },
   linkedItem: { ...TYPE.subhead, color: T.ac },
+  saysLine: { ...TYPE.footnote, color: T.label },
+  doneBlock: { gap: 2 },
   convDone: { ...TYPE.footnote, color: T.ac },
+  howLine: { ...TYPE.footnote, color: T.ter },
+  whyLine: { ...TYPE.footnote, color: T.label },
+  suggestBlock: { gap: 4 },
+  suggestLabel: { ...TYPE.footnote, color: T.sec },
+  suggestHint: { ...TYPE.footnote, color: T.ter },
   convBox: { backgroundColor: T.elev2, borderRadius: 12, padding: 12, gap: 8 },
   convTitle: { ...TYPE.subhead, color: T.text },
   convRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },

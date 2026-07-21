@@ -27,3 +27,26 @@ export const CANONICAL_UNITS: readonly string[] = [
 export function isCanonical(unit: string): boolean {
   return CANONICAL_UNITS.includes(unit);
 }
+
+/** Dimension of a canonical unit; null for non-canonical strings (CS, SAC, ...). */
+export function dimensionOf(unit: string): Dimension | null {
+  for (const d of Object.keys(CANONICAL_UNITS_BY_DIMENSION) as Dimension[]) {
+    if (CANONICAL_UNITS_BY_DIMENSION[d].includes(unit)) return d;
+  }
+  return null;
+}
+
+// Free-form invoice hint units ("ML", "Kg", "CT") — case-insensitive dimension
+// lookup, mirroring the backend's normalize_hint_unit vocabulary.
+const HINT_DIMENSION: Record<string, Dimension> = {
+  g: 'weight', kg: 'weight', lb: 'weight', lbs: 'weight', oz: 'weight', oz_weight: 'weight',
+  ml: 'volume', l: 'volume', litre: 'volume', liter: 'volume', fl_oz: 'volume', floz: 'volume',
+  cup: 'volume', tsp: 'volume', tbsp: 'volume',
+  ea: 'count', un: 'count', unit: 'count', ct: 'count', count: 'count', dozen: 'count',
+};
+
+/** Dimension the invoice's package/weight hint points at; null when unknown. */
+export function hintDimension(unit: string | null | undefined): Dimension | null {
+  if (!unit) return null;
+  return HINT_DIMENSION[unit.trim().toLowerCase()] ?? null;
+}

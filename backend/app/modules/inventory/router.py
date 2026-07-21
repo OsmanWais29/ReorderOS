@@ -34,8 +34,10 @@ from app.modules.inventory.schemas import (
 from app.modules.inventory.services import (
     ItemHasMovements,
     ItemInRecipes,
+    ReceiptAdjustmentsUnreviewed,
     ReceiptConversionRequired,
     ReceiptLinesUnmatched,
+    ReceiptNetCostInvalid,
     ReceiptNothingToCommit,
     ReceiptReviewRequired,
     add_receipt_line,
@@ -329,14 +331,28 @@ async def commit_receipt_endpoint(
                 "(or skip it) before committing.",
             },
         ) from None
-    except ReceiptConversionRequired:
+    except ReceiptConversionRequired as exc:
         raise HTTPException(
             status_code=422,
             detail={
-                "code": "RECEIPT_CONVERSION_REQUIRED",
-                "message": "Confirm the pack conversion (e.g. 1 CS = 16 L) for every "
-                "case/pack line before committing.",
+                "code": "RECEIPT_UNIT_CONVERSION_REQUIRED",
+                "message": "One or more items need a package conversion.",
+                "errors": exc.errors,
             },
+        ) from None
+    except ReceiptAdjustmentsUnreviewed as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "RECEIPT_ADJUSTMENTS_UNREVIEWED",
+                "message": str(exc),
+                "errors": exc.errors,
+            },
+        ) from None
+    except ReceiptNetCostInvalid as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "RECEIPT_NET_COST_INVALID", "message": str(exc)},
         ) from None
     except ReceiptNothingToCommit:
         raise HTTPException(
@@ -446,12 +462,17 @@ async def list_inventory_items(
                                           ('receive','transfer_in','count_adjust','opening_balance')
                                ), 0)
                              - (COALESCE((
-                                   SELECT SUM(ABS(m.delta))
+                                   -- Canonical signal behavior (MUST match on_hand()):
+                                   -- signed SUM(delta) over sale_signal AND
+                                   -- sale_signal_reversal. The old SUM(ABS(delta))
+                                   -- over sale_signal ONLY ignored refund reversals,
+                                   -- understating on-hand after a refund.
+                                   SELECT SUM(m.delta)
                                      FROM inventory_movements m
                                     WHERE m.tenant_id         = ii.tenant_id
                                       AND m.inventory_item_id = ii.id
                                       AND m.recorded_at       > ii.last_count_at
-                                      AND m.movement_type     = 'sale_signal'
+                                      AND m.movement_type IN ('sale_signal', 'sale_signal_reversal')
                                ), 0)
                                * COALESCE((
                                    SELECT yf.yield_factor

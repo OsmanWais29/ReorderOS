@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.inventory.depletion.conversions import convert
+from app.modules.inventory.depletion.units import DIMENSION_OF
 from app.modules.inventory.depletion.units import is_canonical as is_canonical_unit
 
 log = logging.getLogger(__name__)
@@ -42,9 +43,18 @@ class ReceiptLinesUnmatched(Exception):
 
 
 class ReceiptConversionRequired(Exception):
-    """A movable line is denominated in a purchase unit (CS, SAC, ...) with no
-    operator-confirmed conversion to the item's storage unit. Commit never
-    guesses a factor (→ RECEIPT_CONVERSION_REQUIRED)."""
+    """One or more movable lines cannot convert to their item's storage unit —
+    a purchase unit (CS, SAC, ...) with no operator-confirmed conversion, OR a
+    canonical unit in a DIFFERENT dimension (ea → L). Commit never guesses a
+    factor (→ RECEIPT_UNIT_CONVERSION_REQUIRED).
+
+    `errors` is the structured per-line payload (machine-readable ids + names +
+    package evidence + safe suggestion). The exception MESSAGE stays free of
+    ids/internal terms — it may reach a UI verbatim."""
+
+    def __init__(self, message: str, errors: list[dict[str, Any]] | None = None) -> None:
+        super().__init__(message)
+        self.errors = errors or []
 
 
 class ItemHasMovements(Exception):
@@ -61,6 +71,61 @@ class ItemInRecipes(Exception):
 class ReceiptReviewRequired(Exception):
     """An intake-source commit lacks the human gate: confirm + at least one
     manually-corrected line OR a review affirmation (D-606-22) (→ RECEIPT_REVIEW_REQUIRED)."""
+
+
+class ReceiptAdjustmentsUnreviewed(Exception):
+    """A discount/credit row still carries disposition 'pending' — nobody
+    decided whether it reduces an item's inventory cost. Committing anyway
+    would silently receive at gross (the Gate-1 live failure). Fail closed
+    BEFORE any write (→ RECEIPT_ADJUSTMENTS_UNREVIEWED).
+
+    `errors` is the structured per-adjustment payload (ids + invoice text +
+    signed amount + a suggested target when unambiguous). The MESSAGE stays
+    free of ids/internal terms — it may reach a UI verbatim."""
+
+    def __init__(self, message: str, errors: list[dict[str, Any]] | None = None) -> None:
+        super().__init__(message)
+        self.errors = errors or []
+
+
+class ReceiptNetCostInvalid(Exception):
+    """Linked adjustments drive a line's NET cost to zero or below — a credit
+    larger than the product's gross total cannot silently produce free or
+    negative-cost stock (→ RECEIPT_NET_COST_INVALID). The message names the
+    invoice line, never ids."""
+
+
+def compute_line_cost_basis(
+    *,
+    gross_total_cents: int | None,
+    adjustment_cents: int,
+    storage_qty: Decimal,
+    fallback_unit_cost_cents: int | None,
+) -> tuple[int, Decimal] | None:
+    """THE single cost formula for a committed receipt line (Part C).
+
+    net  = gross printed line total + signed operator-linked adjustments
+    exact unit cost = net / received STORAGE quantity   (Decimal end to end)
+
+    Returns (unit_cost_cents [int, HALF_UP], unit_cost_cents_exact [Decimal,
+    quantized 0.0001 HALF_UP]) — the two snapshot columns. Falls back to the
+    line's own unit_cost_cents (manual path, already per received unit; linked
+    adjustments require a printed total, so none apply). None = no cost
+    evidence at all (no snapshot is written).
+
+    Deliberately supplier/product/currency-shape agnostic: inputs are integers
+    of cents, a Decimal quantity, and nothing else.
+    """
+    if gross_total_cents is not None and storage_qty > 0:
+        exact = Decimal(gross_total_cents + adjustment_cents) / storage_qty
+    elif fallback_unit_cost_cents is not None:
+        exact = Decimal(fallback_unit_cost_cents)
+    else:
+        return None
+    return (
+        int(exact.quantize(Decimal("1"), rounding=ROUND_HALF_UP)),
+        exact.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP),
+    )
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -752,11 +817,18 @@ async def commit_receipt(
                 SELECT rl.id, rl.inventory_item_id, rl.received_quantity,
                        rl.purchase_unit_id, rl.unit_cost_cents, rl.idempotency_key,
                        rl.match_status, rl.manually_corrected, rl.extracted_unit,
-                       rl.received_unit, rl.line_total_cents,
-                       pu.name AS purchase_unit_name, su.name AS storage_unit_name
+                       rl.received_unit, rl.line_total_cents, rl.extracted_name,
+                       rl.pack_count, rl.pack_size_qty, rl.pack_size_unit,
+                       rl.actual_weight_qty, rl.actual_weight_unit,
+                       rl.line_type, rl.adjusts_line_id, rl.adjustment_disposition,
+                       pu.name AS purchase_unit_name, su.name AS storage_unit_name,
+                       ii.name AS item_name
                   FROM receipt_lines rl
                   LEFT JOIN units_of_measure pu ON pu.id = rl.purchase_unit_id
-                  LEFT JOIN inventory_items   ii ON ii.id = rl.inventory_item_id
+                  -- tenant predicate on the item join: a (hypothetical) cross-tenant
+                  -- item id yields NULL name — another tenant's data never leaves here
+                  LEFT JOIN inventory_items   ii
+                         ON ii.id = rl.inventory_item_id AND ii.tenant_id = rl.tenant_id
                   LEFT JOIN units_of_measure  su ON su.id = ii.storage_unit_id
                  WHERE rl.tenant_id = :tid AND rl.receipt_id = :rid
                  FOR UPDATE OF rl
@@ -787,19 +859,81 @@ async def commit_receipt(
     if not movable:
         raise ReceiptNothingToCommit(f"receipt {receipt_id} has no inventory-moving line")
 
-    # Purchase-unit gate: a movable line whose effective unit is non-canonical
-    # (CS, SAC, BOX...) and not literally the item's storage unit cannot commit —
-    # the operator must confirm the pack conversion first (received_unit). We
-    # NEVER guess a factor; a wrong silent conversion corrupts stock and costing.
-    unconverted = []
+    # Unit-conversion gate — validate EVERY movable line BEFORE any write and
+    # return all blockers together. Two ways a line can't convert:
+    #   (a) non-canonical purchase unit (CS, SAC, BOX...) with no operator-
+    #       confirmed conversion;
+    #   (b) a CANONICAL unit in a DIFFERENT dimension than the storage unit
+    #       (ea → L) — convert() has no path across dimensions, and the old
+    #       canonical exemption let exactly this reach the movement loop (live
+    #       cert: a count-unit invoice line against a volume-tracked item).
+    # We NEVER guess a factor; a wrong silent conversion corrupts stock+costing.
+    from app.modules.receipts.conversion import suggest_conversion
+
+    conversion_errors: list[dict[str, Any]] = []
     for ln in movable:
         eff = ln["received_unit"] or ln["purchase_unit_name"] or ln["extracted_unit"]
-        if eff and not is_canonical_unit(eff) and eff != ln["storage_unit_name"]:
-            unconverted.append(ln)
-    if unconverted:
+        storage = ln["storage_unit_name"]
+        if not eff or eff == storage:
+            continue
+        if storage is not None:
+            cross_dimension = (
+                is_canonical_unit(eff)
+                and DIMENSION_OF.get(eff) is not None
+                and DIMENSION_OF.get(storage) is not None
+                and DIMENSION_OF[eff] != DIMENSION_OF[storage]
+            )
+            if is_canonical_unit(eff) and not cross_dimension:
+                continue  # same-dimension canonical (ml → L) converts deterministically
+        # storage None (tenant-scoped item join yielded nothing — e.g. a foreign
+        # item id) can never validate → block; names stay None, nothing leaks.
+        qty = Decimal(str(ln["received_quantity"])) if ln["received_quantity"] else None
+        suggestion = (
+            suggest_conversion(
+                purchase_qty=qty,
+                purchase_unit=eff,
+                storage_unit=storage,
+                pack_count=ln["pack_count"],
+                pack_size_qty=ln["pack_size_qty"],
+                pack_size_unit=ln["pack_size_unit"],
+                actual_weight_qty=ln["actual_weight_qty"],
+                actual_weight_unit=ln["actual_weight_unit"],
+            )
+            if qty and qty > 0 and storage is not None
+            else None
+        )
+        package_hint = (
+            f"{ln['actual_weight_qty']} {ln['actual_weight_unit'] or ''}".strip()
+            if ln["actual_weight_qty"]
+            else (
+                f"{ln['pack_count']} x {ln['pack_size_qty']} {ln['pack_size_unit'] or ''}".strip()
+                if ln["pack_count"] and ln["pack_size_qty"]
+                else (
+                    f"{ln['pack_size_qty']} {ln['pack_size_unit'] or ''}".strip()
+                    if ln["pack_size_qty"]
+                    else None
+                )
+            )
+        )
+        conversion_errors.append(
+            {
+                "receipt_line_id": str(ln["id"]),
+                "inventory_item_id": str(ln["inventory_item_id"]),
+                "inventory_item_name": ln["item_name"],  # tenant-safe join above
+                "invoice_name": ln["extracted_name"],
+                "purchase_quantity": str(qty) if qty is not None else None,
+                "purchase_unit": eff,
+                "storage_unit": storage,
+                "package_hint": package_hint,
+                "suggested_factor": str(suggestion.factor) if suggestion else None,
+                "suggested_received_quantity": str(suggestion.quantity) if suggestion else None,
+            }
+        )
+    if conversion_errors:
+        # Message is user-safe by contract: counts only — ids/units live in `errors`.
         raise ReceiptConversionRequired(
-            f"receipt {receipt_id} has {len(unconverted)} line(s) in a purchase unit "
-            f"with no confirmed storage conversion"
+            f"{len(conversion_errors)} item(s) need a package conversion before receiving.",
+            errors=conversion_errors,
         )
 
     if source in _INTAKE_SOURCES:
@@ -809,6 +943,68 @@ async def commit_receipt(
         if not any_corrected and not reviewed_affirmation:
             raise ReceiptReviewRequired(
                 "requires >=1 manually-corrected line or a review affirmation"
+            )
+
+    # ── 3.5 adjustment-decision gate (Gate-1 lesson): every discount/credit row
+    #    needs an EXPLICIT persisted decision — linked to an item or excluded
+    #    from inventory cost. 'pending' (or a legacy NULL on a linkable row)
+    #    blocks the whole commit BEFORE any write; nothing is ever silently
+    #    received at gross.
+    undecided = [
+        ln
+        for ln in lines
+        if ln["line_type"] in ("discount", "credit")
+        and ln["match_status"] == "skipped"
+        and ln["adjustment_disposition"] in (None, "pending")
+    ]
+    if undecided:
+        # Suggested target: only when it is unambiguous (exactly one receivable
+        # item line) — a guess across several items is exactly the silent
+        # allocation this gate exists to prevent.
+        suggested = movable[0] if len(movable) == 1 else None
+        raise ReceiptAdjustmentsUnreviewed(
+            f"{len(undecided)} adjustment(s) on this invoice need a decision before receiving.",
+            errors=[
+                {
+                    "adjustment_line_id": str(ln["id"]),
+                    "line_type": ln["line_type"],
+                    "invoice_name": ln["extracted_name"],
+                    "amount_cents": (
+                        int(ln["line_total_cents"]) if ln["line_total_cents"] is not None else None
+                    ),
+                    "suggested_target_line_id": (str(suggested["id"]) if suggested else None),
+                    "suggested_target_name": (
+                        (suggested["item_name"] or suggested["extracted_name"])
+                        if suggested
+                        else None
+                    ),
+                }
+                for ln in undecided
+            ],
+        )
+
+    # ── 3.6 net cost basis (Part C): operator-linked DISCOUNT/CREDIT rows reduce
+    #    their target item line's cost. Taxes are header-level (never here);
+    #    deposits/fees are not linkable by the update_line validation. Fail
+    #    closed on a non-positive net BEFORE any write.
+    adjustments_by_line: dict[str, int] = {}
+    for ln in lines:
+        if (
+            ln["line_type"] in ("discount", "credit")
+            and ln["match_status"] == "skipped"
+            and ln["adjusts_line_id"] is not None
+            and ln["line_total_cents"] is not None
+        ):
+            key_id = str(ln["adjusts_line_id"])
+            adjustments_by_line[key_id] = adjustments_by_line.get(key_id, 0) + int(
+                ln["line_total_cents"]
+            )
+    for ln in movable:
+        adj = adjustments_by_line.get(str(ln["id"]), 0)
+        if adj and ln["line_total_cents"] is not None and ln["line_total_cents"] + adj <= 0:
+            raise ReceiptNetCostInvalid(
+                f"Adjustments on '{ln['extracted_name'] or 'a line'}' exceed its "
+                f"line total — net cost must stay above zero."
             )
 
     # ── 4. per movable line → movement + cost snapshot + back-link ────────────
@@ -845,17 +1041,16 @@ async def commit_receipt(
             key=key,
         )
 
-        # Cost basis precedence: the invoice's printed line total over storage
-        # qty (exact, survives weight-priced lines and sub-cent unit costs) →
-        # else the line's unit_cost_cents (manual path; already per received
-        # unit). NUMERIC column is the truth; the legacy int column is a
-        # rounded convenience for existing readers.
-        exact_cost: Decimal | None = None
-        if ln["line_total_cents"] is not None and storage_qty > 0:
-            exact_cost = Decimal(ln["line_total_cents"]) / storage_qty
-        elif ln["unit_cost_cents"] is not None:
-            exact_cost = Decimal(ln["unit_cost_cents"])
-        if exact_cost is not None:
+        # THE single cost formula lives in compute_line_cost_basis — net printed
+        # total (gross + signed operator-linked adjustments) over storage qty.
+        basis = compute_line_cost_basis(
+            gross_total_cents=ln["line_total_cents"],
+            adjustment_cents=adjustments_by_line.get(str(ln["id"]), 0),
+            storage_qty=storage_qty,
+            fallback_unit_cost_cents=ln["unit_cost_cents"],
+        )
+        if basis is not None:
+            cost_int, cost_exact = basis
             await session.execute(
                 text("""
                     INSERT INTO ingredient_cost_snapshots
@@ -867,8 +1062,8 @@ async def commit_receipt(
                 {
                     "tid": tenant_id,
                     "iid": item_id,
-                    "cost": int(exact_cost.quantize(Decimal("1"), rounding=ROUND_HALF_UP)),
-                    "exact": exact_cost.quantize(Decimal("0.0001")),
+                    "cost": cost_int,
+                    "exact": cost_exact,
                     "puid": ln["purchase_unit_id"],
                     "lid": line_id,
                 },

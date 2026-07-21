@@ -4,7 +4,7 @@ Revision ID: 0029_cost_precision
 Revises: 0028_purchase_unit_conversion
 Create Date: 2026-07-15 02:00:00.000000
 
-The Lauzon live smoke exposed two costing corruptions:
+The live supplier smoke test exposed two costing corruptions:
   - integer cents per TINY storage unit destroys food cost (oat: true
     0.5803¢/ml snapshotted as 1¢/ml — a 72% error)
   - weight-priced lines (espresso $17.85/kg with SAC purchase units)

@@ -23,6 +23,7 @@ dependencies = [
     "boto3>=1.35",
     "python-multipart>=0.0.12",
     "Pillow>=11.0",
+    "pypdf>=5.1",
     "PyJWT[cryptography]>=2.9",
     "cryptography>=42",
     "uuid6>=2024.1.12",

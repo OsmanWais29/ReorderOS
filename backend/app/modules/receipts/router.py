@@ -18,12 +18,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import storage
 from app.core.deps import get_rls_session
+from app.core.logging import get_logger
 from app.core.security import Principal, require_role
 from app.modules.inventory.depletion.conversions import ConversionError
 from app.modules.inventory.item_resolver import UnitTypeConflict
 from app.modules.inventory.services import (
+    ReceiptAdjustmentsUnreviewed,
     ReceiptConversionRequired,
     ReceiptLinesUnmatched,
+    ReceiptNetCostInvalid,
     ReceiptNothingToCommit,
     ReceiptReviewRequired,
     commit_receipt,
@@ -45,6 +48,8 @@ from app.modules.receipts.schemas import (
     UploadResponse,
 )
 from app.modules.receipts.validation import ReceiptValidationError
+
+log = get_logger(__name__)
 
 router = APIRouter(prefix="/receipts", tags=["receipts"])
 
@@ -191,6 +196,11 @@ async def update_receipt_line(
                 "code": "RECEIPT_LINE_NOT_LINKED",
                 "message": "Link an inventory item before confirming its conversion.",
             },
+        ) from None
+    except services.AdjustmentLinkInvalid as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "RECEIPT_ADJUSTMENT_LINK_INVALID", "message": str(exc)},
         ) from None
     except services.LineConversionInconsistent:
         raise HTTPException(
@@ -399,14 +409,33 @@ async def commit_receipt_endpoint(
                 "(or skip it) before committing.",
             },
         ) from None
-    except ReceiptConversionRequired:
+    except ReceiptConversionRequired as exc:
         raise HTTPException(
             status_code=422,
             detail={
-                "code": "RECEIPT_CONVERSION_REQUIRED",
-                "message": "Confirm the pack conversion (e.g. 1 CS = 16 L) for every "
-                "case/pack line before committing.",
+                "code": "RECEIPT_UNIT_CONVERSION_REQUIRED",
+                "message": "One or more items need a package conversion.",
+                # Structured per-line blockers: machine-readable ids + tenant-safe
+                # names + package evidence + safe suggestion. ALL failing lines in
+                # one response — the client marks each and jumps to the first.
+                "errors": exc.errors,
             },
+        ) from None
+    except ReceiptAdjustmentsUnreviewed as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "RECEIPT_ADJUSTMENTS_UNREVIEWED",
+                "message": str(exc),
+                # Per-adjustment blockers: id + invoice text + signed amount +
+                # a suggested target only when unambiguous. Zero writes happened.
+                "errors": exc.errors,
+            },
+        ) from None
+    except ReceiptNetCostInvalid as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "RECEIPT_NET_COST_INVALID", "message": str(exc)},
         ) from None
     except ReceiptNothingToCommit:
         raise HTTPException(
@@ -418,8 +447,17 @@ async def commit_receipt_endpoint(
             status_code=422, detail={"code": "RECEIPT_REVIEW_REQUIRED", "message": str(exc)}
         ) from None
     except ConversionError as exc:
+        # Last-resort net — the pre-validation gate above should make this
+        # unreachable. NEVER echo str(exc): it embeds unit names, item and
+        # tenant UUIDs (the live-cert leak). Log it, return a generic message.
+        log.error("receipt.commit.conversion_error", error_class=type(exc).__name__)
         raise HTTPException(
-            status_code=422, detail={"code": "RECEIPT_UNIT_CONVERSION", "message": str(exc)}
+            status_code=422,
+            detail={
+                "code": "RECEIPT_UNIT_CONVERSION_REQUIRED",
+                "message": "One or more items need a package conversion.",
+                "errors": [],
+            },
         ) from None
     await db.commit()
     return {

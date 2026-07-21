@@ -733,19 +733,40 @@ async def test_oracle_equals_list_endpoint_mode_a() -> None:
 
 
 # ── strict 4-way equality certification (replaces the Mode-B divergence pin) ──
-# raw-row oracle == on_hand() == GET /inventory/items == insights item.on_hand,
-# now that PR #12 fixed the Mode-B list. Covers: sale signal, equal refund
-# reversal, duplicate replay (one idempotency key), a non-1 yield factor, and an
-# uncounted Mode-B item (all four surfaces return None/unavailable).
+# The four members are the ACTUAL production surfaces:
+#   raw-row oracle == on_hand() == GET /inventory/items == GET .../insights,
+# now that PR #12 fixed the Mode-B list. The insights endpoint is exercised over
+# HTTP (asserting 200) — build_item_insights() is NOT the endpoint member; it is
+# only an optional labeled service-level cross-check. Covers: sale signal, equal
+# refund reversal, duplicate replay (one idempotency key), a non-1 yield factor,
+# and an uncounted Mode-B item (all four return None/null while HTTP stays 200).
 
 
 async def _four_way(bound: Any, app: Any, tid: uuid.UUID, item: uuid.UUID) -> Decimal | None:
     from httpx import ASGITransport, AsyncClient
 
+    # 1) independent raw-row oracle
     oracle = await oracle_on_hand(bound, tid, item)
+    # 2) authoritative on_hand()
     auth = await on_hand(bound, tenant_id=tid, inventory_item_id=item)
     assert auth == oracle, f"on_hand {auth} != oracle {oracle}"
-    ins = await build_item_insights(
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        # 3) GET /inventory/items HTTP surface — assert 200 BEFORE reading JSON
+        list_r = await c.get("/api/v1/inventory/items")
+        assert list_r.status_code == 200, list_r.text
+        listed = next((x for x in list_r.json()["items"] if x["id"] == str(item)), None)
+        assert listed is not None, "item absent from list endpoint"
+        list_oh = listed["on_hand"]
+
+        # 4) GET /inventory/items/{id}/insights HTTP surface — assert 200, read item.on_hand
+        ins_r = await c.get(f"/api/v1/inventory/items/{item}/insights?window=30d")
+        assert ins_r.status_code == 200, ins_r.text
+        ins_oh = ins_r.json()["item"]["on_hand"]
+
+    # optional 5th, service-level cross-check (NOT the endpoint member of equality)
+    svc = await build_item_insights(
         bound,
         tenant_id=tid,
         item_id=item,
@@ -757,25 +778,15 @@ async def _four_way(bound: Any, app: Any, tid: uuid.UUID, item: uuid.UUID) -> De
         target_cover_days=7,
         target_source="default",
     )
-    ins_oh = ins["item"]["on_hand"]
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
-        listed = next(
-            (
-                x
-                for x in (await c.get("/api/v1/inventory/items")).json()["items"]
-                if x["id"] == str(item)
-            ),
-            None,
-        )
-    list_oh = listed["on_hand"] if listed else None
+    svc_oh = svc["item"]["on_hand"]  # service-level insights
+
     if oracle is None:
-        assert auth is None and ins_oh is None and list_oh is None
+        # all four surfaces None/null; both HTTP endpoints still returned 200 above
+        assert auth is None and list_oh is None and ins_oh is None and svc_oh is None
     else:
-        assert Decimal(ins_oh) == oracle, f"insights {ins_oh} != oracle {oracle}"
-        assert list_oh is not None and Decimal(str(list_oh)) == oracle, (
-            f"list {list_oh} != {oracle}"
-        )
+        assert Decimal(str(list_oh)) == oracle, f"list {list_oh} != oracle {oracle}"
+        assert Decimal(str(ins_oh)) == oracle, f"insights(HTTP) {ins_oh} != oracle {oracle}"
+        assert Decimal(str(svc_oh)) == oracle, f"insights(service) {svc_oh} != oracle {oracle}"
     return oracle
 
 

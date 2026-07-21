@@ -324,7 +324,8 @@ async def test_affected_menu_items_ids_and_truncation(db: Any) -> None:
     assert entry["menu_item_id"] is None  # this one had no catalog menu_item
     assert entry["revenue_cents"] == 3800
     assert entry["affected_sale_line_count"] == 1
-    assert entry["repair"] == "fix_recipe"
+    assert entry["repair"] == "review_recipe"
+    assert affected["scope"] == "tenant"
 
 
 async def test_consumption_single_confidence_object(db: Any) -> None:
@@ -823,3 +824,427 @@ async def test_affected_items_no_cross_tenant_leak(db: Any) -> None:
     assert a_ids.isdisjoint(b_ids - {None}) or (a_ids == {None} and b_ids == {None})
     assert "Unmapped Special" in names
     assert sum(x["revenue_cents"] for x in affected["items"]) == 3800  # only A's line
+
+
+# ── Finding 1: evidence-only stage statuses (no false 'ok') ──────────────────
+
+
+async def _seed_one_line(
+    db: Any, *, status: str, reason: str | None, net_rev: int = 1000
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """Tenant + Mode-A item + active connection + one eligible sale line in the
+    given depletion state. No movements are manufactured for the funnel tests —
+    they assert the STAGE logic over the recorded depletion_status/reason."""
+    now = datetime.now(UTC)
+    tid = uuid.uuid4()
+    await db.execute(
+        text("INSERT INTO tenants (id, slug, name) VALUES (:id,:s,'ONE')"),
+        {"id": tid, "s": f"one-{tid.hex[:8]}"},
+    )
+    unit = await _scalar(
+        db,
+        "INSERT INTO units_of_measure (tenant_id, name, abbreviation, unit_type) "
+        "VALUES (:t,'ea','ea','count') RETURNING id",
+        t=tid,
+    )
+    item = await _scalar(
+        db,
+        "INSERT INTO inventory_items (tenant_id, name, inventory_mode, storage_unit_id, "
+        "recipe_unit_id) VALUES (:t,'Oil','recipe_deducted',:u,:u) RETURNING id",
+        t=tid,
+        u=unit,
+    )
+    cid = uuid.uuid4()
+    await db.execute(
+        text(
+            "INSERT INTO tenant_pos_connections (connection_id, tenant_id, vendor, merchant_id, "
+            "environment, state, access_token_enc, access_token_expires_at, refresh_token_enc, "
+            "refresh_token_expires_at, last_reconciliation_at, updated_at) "
+            "VALUES (:c,:t,'clover',:m,'sandbox','active','x',:e,'y',:e,:lr,:lr)"
+        ),
+        {
+            "c": cid,
+            "t": tid,
+            "m": f"M-{tid.hex[:8]}",
+            "e": now + timedelta(days=30),
+            "lr": now - timedelta(minutes=3),
+        },
+    )
+    ib = uuid.uuid4()
+    await db.execute(
+        text(
+            "INSERT INTO pos_event_inbox (inbox_id, tenant_id, connection_id, vendor, "
+            "vendor_event_id, vendor_object_type, vendor_event_type, vendor_ts, raw_payload, "
+            "state, received_at, processed_at) "
+            "VALUES (:id,:t,:c,'clover','E','O','CREATE',1,'{}','processed',:r,:r)"
+        ),
+        {"id": ib, "t": tid, "c": cid, "r": now - timedelta(days=2)},
+    )
+    order = await _scalar(
+        db,
+        "INSERT INTO orders (id, tenant_id, pos_event_inbox_id, clover_order_id, state, "
+        "payment_state, closed_at, processed_at) VALUES (:id,:t,:ib,'O1','locked','PAID',:c,:c) "
+        "RETURNING id",
+        id=uuid.uuid4(),
+        t=tid,
+        ib=ib,
+        c=now - timedelta(days=2),
+    )
+    await db.execute(
+        text(
+            "INSERT INTO sale_line_items (id, tenant_id, order_id, clover_line_item_id, "
+            "name_at_sale, quantity, price_cents_at_sale, net_revenue_cents, depletion_status, "
+            "depletion_reason) VALUES (:id,:t,:o,'L',:n,1,:nr,:nr,:st,:rs)"
+        ),
+        {
+            "id": uuid.uuid4(),
+            "t": tid,
+            "o": order,
+            "n": "Widget",
+            "nr": net_rev,
+            "st": status,
+            "rs": reason,
+        },
+    )
+    return tid, item
+
+
+async def test_pending_line_never_reports_ok(db: Any) -> None:
+    # Finding 1: a pending line must NOT make any stage 'ok' by subtraction.
+    tid, item = await _seed_one_line(db, status="pending", reason=None)
+    dims = (await _insights(db, tid, item))["pos"]["dimensions"]
+    assert dims["recipe_mapping"]["status"] == "in_progress"  # not ok
+    assert dims["recipe_mapping"]["pending_count"] == 1
+    assert dims["conversion_coverage"]["status"] == "unavailable"  # nothing evaluated
+    assert dims["depletion_execution"]["status"] == "unavailable"
+    assert dims["end_to_end_coverage"]["status"] == "in_progress"
+    codes = {b["code"] for b in dims["forecast_eligibility"]["blockers"]}
+    assert "PENDING_SALE_LINES" in codes
+
+
+async def test_unknown_reason_line_yields_unknown_stage(db: Any) -> None:
+    # An eligible failed line with a reason outside the funnel taxonomy → the
+    # recipe stage is 'unknown', never a false 'ok'.
+    tid, item = await _seed_one_line(db, status="failed", reason="sale_ineligible")
+    dims = (await _insights(db, tid, item))["pos"]["dimensions"]
+    assert dims["recipe_mapping"]["status"] == "unknown"
+    assert dims["recipe_mapping"]["unknown_count"] == 1
+
+
+# ── Finding 2: zero/negative revenue ─────────────────────────────────────────
+
+
+async def test_zero_revenue_falls_back_to_line_coverage(db: Any) -> None:
+    tid, item = await _seed_one_line(db, status="depleted", reason=None, net_rev=0)
+    e2e = (await _insights(db, tid, item))["pos"]["dimensions"]["end_to_end_coverage"]
+    assert e2e["eligible_net_revenue_cents"] == 0
+    assert e2e["revenue_coverage_pct"] is None  # N/A, not a broken number
+    assert e2e["revenue_coverage_applicable"] is False
+    assert e2e["line_coverage_pct"] == "100.0"  # line coverage authoritative
+    assert e2e["effective_coverage_pct"] == "100.0"
+    assert e2e["status"] == "complete"
+
+
+async def test_negative_revenue_is_not_applicable(db: Any) -> None:
+    # A fully-discounted / credited line can make depleted_rev exceed or invert
+    # eligible_rev — revenue coverage must be N/A, never negative or >100.
+    tid, item = await _seed_one_line(db, status="depleted", reason=None, net_rev=-500)
+    e2e = (await _insights(db, tid, item))["pos"]["dimensions"]["end_to_end_coverage"]
+    assert e2e["revenue_coverage_pct"] is None
+    assert e2e["effective_coverage_pct"] == "100.0"  # line coverage authoritative
+
+
+# ── Finding 3: connection-scoped health + catalog timestamp isolation ────────
+
+
+async def test_old_connection_events_do_not_break_new_one(db: Any) -> None:
+    now = datetime.now(UTC)
+    tid = uuid.uuid4()
+    await db.execute(
+        text("INSERT INTO tenants (id, slug, name) VALUES (:id,:s,'RC')"),
+        {"id": tid, "s": f"rc-{tid.hex[:8]}"},
+    )
+    unit = await _scalar(
+        db,
+        "INSERT INTO units_of_measure (tenant_id, name, abbreviation, unit_type) "
+        "VALUES (:t,'ea','ea','count') RETURNING id",
+        t=tid,
+    )
+    item = await _scalar(
+        db,
+        "INSERT INTO inventory_items (tenant_id, name, inventory_mode, storage_unit_id, "
+        "recipe_unit_id) VALUES (:t,'Oil','recipe_deducted',:u,:u) RETURNING id",
+        t=tid,
+        u=unit,
+    )
+
+    async def conn(state: str, ago_min: int) -> uuid.UUID:
+        c = uuid.uuid4()
+        await db.execute(
+            text(
+                "INSERT INTO tenant_pos_connections (connection_id, tenant_id, vendor, merchant_id, "
+                "environment, state, access_token_enc, access_token_expires_at, refresh_token_enc, "
+                "refresh_token_expires_at, updated_at) "
+                "VALUES (:c,:t,'clover',:m,'sandbox',:st,'x',:e,'y',:e,:u)"
+            ),
+            {
+                "c": c,
+                "t": tid,
+                "m": f"M-{c.hex[:8]}",
+                "st": state,
+                "e": now + timedelta(days=30),
+                "u": now - timedelta(minutes=ago_min),
+            },
+        )
+        return c
+
+    old = await conn("revoked", 60)
+    new = await conn("active", 1)
+    # Old connection has an unresolved dead-letter event; new one is clean.
+    await db.execute(
+        text(
+            "INSERT INTO pos_event_inbox (inbox_id, tenant_id, connection_id, vendor, "
+            "vendor_event_id, vendor_object_type, vendor_event_type, vendor_ts, raw_payload, state, "
+            "received_at) VALUES (:id,:t,:c,'clover','OLD','O','CREATE',1,'{}','dead_letter',:r)"
+        ),
+        {"id": uuid.uuid4(), "t": tid, "c": old, "r": now - timedelta(days=3)},
+    )
+    dims = (await _insights(db, tid, item))["pos"]["dimensions"]
+    # The NEW active connection is chosen; its current processing is clean…
+    assert dims["connection"]["status"] == "connected"
+    assert dims["processing"]["status"] == "current"
+    assert dims["processing"]["permanently_failed_event_count"] == 0
+    # …and the old event is surfaced separately, not folded into current health.
+    assert dims["processing"]["historical_unresolved_event_count"] == 1
+    assert str(new)  # sanity
+
+
+async def test_catalog_processed_event_is_not_sales_data(db: Any) -> None:
+    now = datetime.now(UTC)
+    tid = uuid.uuid4()
+    await db.execute(
+        text("INSERT INTO tenants (id, slug, name) VALUES (:id,:s,'CAT')"),
+        {"id": tid, "s": f"cat-{tid.hex[:8]}"},
+    )
+    unit = await _scalar(
+        db,
+        "INSERT INTO units_of_measure (tenant_id, name, abbreviation, unit_type) "
+        "VALUES (:t,'ea','ea','count') RETURNING id",
+        t=tid,
+    )
+    item = await _scalar(
+        db,
+        "INSERT INTO inventory_items (tenant_id, name, inventory_mode, storage_unit_id, "
+        "recipe_unit_id) VALUES (:t,'Oil','recipe_deducted',:u,:u) RETURNING id",
+        t=tid,
+        u=unit,
+    )
+    cid = uuid.uuid4()
+    await db.execute(
+        text(
+            "INSERT INTO tenant_pos_connections (connection_id, tenant_id, vendor, merchant_id, "
+            "environment, state, access_token_enc, access_token_expires_at, refresh_token_enc, "
+            "refresh_token_expires_at, updated_at) "
+            "VALUES (:c,:t,'clover',:m,'sandbox','active','x',:e,'y',:e,:u)"
+        ),
+        {"c": cid, "t": tid, "m": f"M-{tid.hex[:8]}", "e": now + timedelta(days=30), "u": now},
+    )
+    # A processed CATALOG event ('I'), no order events at all.
+    await db.execute(
+        text(
+            "INSERT INTO pos_event_inbox (inbox_id, tenant_id, connection_id, vendor, "
+            "vendor_event_id, vendor_object_type, vendor_event_type, vendor_ts, raw_payload, state, "
+            "received_at, processed_at) VALUES (:id,:t,:c,'clover','CAT','I','CREATE',1,'{}',"
+            "'processed',:r,:r)"
+        ),
+        {"id": uuid.uuid4(), "t": tid, "c": cid, "r": now - timedelta(hours=1)},
+    )
+    dims = (await _insights(db, tid, item))["pos"]["dimensions"]
+    # Neither received nor processed SALES timestamps set — a catalog event is
+    # not sales data.
+    assert dims["event_activity"]["latest_sales_data_received_at"] is None
+    assert dims["processing"]["latest_sales_data_processed_at"] is None
+
+
+# ── Finding 7: production-path (real depletion), not manufactured states ──────
+
+
+async def test_production_path_deplete_flows_through_funnel(db: Any) -> None:
+    from uuid import UUID as _UUID
+
+    from app.modules.inventory.depletion import handler
+    from tests.helpers.sprint5 import seed_recipe_version_session
+
+    now = datetime.now(UTC)
+    tid = uuid.uuid4()
+    await db.execute(
+        text("INSERT INTO tenants (id, slug, name) VALUES (:id,:s,'PROD')"),
+        {"id": tid, "s": f"prod-{tid.hex[:8]}"},
+    )
+    su = await _scalar(
+        db,
+        "INSERT INTO units_of_measure (tenant_id, name, abbreviation, unit_type) "
+        "VALUES (:t,'g','g','weight') RETURNING id",
+        t=tid,
+    )
+    item = await _scalar(
+        db,
+        "INSERT INTO inventory_items (tenant_id, name, inventory_mode, storage_unit_id, "
+        "recipe_unit_id, storage_to_recipe_factor) "
+        "VALUES (:t,'Flour','recipe_deducted',:u,:u,1) RETURNING id",
+        t=tid,
+        u=su,
+    )
+    seeded = await seed_recipe_version_session(
+        db, str(tid), ingredients=[(item, 2, "g")], yield_quantity=1.0, status="confirmed"
+    )
+    cid = uuid.uuid4()
+    await db.execute(
+        text(
+            "INSERT INTO tenant_pos_connections (connection_id, tenant_id, vendor, merchant_id, "
+            "environment, state, access_token_enc, access_token_expires_at, refresh_token_enc, "
+            "refresh_token_expires_at, last_reconciliation_at, updated_at) "
+            "VALUES (:c,:t,'clover',:m,'sandbox','active','x',:e,'y',:e,:lr,:lr)"
+        ),
+        {
+            "c": cid,
+            "t": tid,
+            "m": f"M-{tid.hex[:8]}",
+            "e": now + timedelta(days=30),
+            "lr": now - timedelta(minutes=1),
+        },
+    )
+    ib = uuid.uuid4()
+    await db.execute(
+        text(
+            "INSERT INTO pos_event_inbox (inbox_id, tenant_id, connection_id, vendor, "
+            "vendor_event_id, vendor_object_type, vendor_event_type, vendor_ts, raw_payload, state, "
+            "received_at, processed_at) VALUES (:id,:t,:c,'clover','E','O','CREATE',1,'{}',"
+            "'processed',:r,:r)"
+        ),
+        {"id": ib, "t": tid, "c": cid, "r": now - timedelta(days=2)},
+    )
+    order = await _scalar(
+        db,
+        "INSERT INTO orders (id, tenant_id, pos_event_inbox_id, clover_order_id, state, "
+        "payment_state, closed_at, processed_at) VALUES (:id,:t,:ib,'PO','locked','PAID',:c,:c) "
+        "RETURNING id",
+        id=uuid.uuid4(),
+        t=tid,
+        ib=ib,
+        c=now - timedelta(days=2),
+    )
+    sli = await _scalar(
+        db,
+        "INSERT INTO sale_line_items (id, tenant_id, order_id, clover_line_item_id, "
+        "menu_item_id, name_at_sale, quantity, price_cents_at_sale, net_revenue_cents, "
+        "recipe_version_id, depletion_status) VALUES (:id,:t,:o,'L',:m,'Bread',3,900,900,:rv,"
+        "'pending') RETURNING id",
+        id=uuid.uuid4(),
+        t=tid,
+        o=order,
+        m=seeded.menu_item_id,
+        rv=seeded.recipe_version_id,
+    )
+    # REAL depletion path — writes movements + flips status via the walker/writer.
+    status, reason = await handler.process_line(db, tid, _UUID(str(sli)))
+    assert (status, reason) == ("depleted", None)
+
+    dims = (await _insights(db, tid, item))["pos"]["dimensions"]
+    assert dims["recipe_mapping"]["status"] == "ok"
+    assert dims["conversion_coverage"]["status"] == "ok"
+    assert dims["depletion_execution"]["status"] == "ok"
+    assert dims["end_to_end_coverage"]["status"] == "complete"
+    # Consumption reflects the REAL movement (2 g/unit x 3 sold = 6 g).
+    out = await _insights(db, tid, item)
+    total = sum(Decimal(d["consumed"]) for d in out["consumption"]["daily"])
+    assert total == Decimal("6")
+
+
+async def test_production_path_missing_conversion_is_conversion_failure(db: Any) -> None:
+    from uuid import UUID as _UUID
+
+    from app.modules.inventory.depletion import handler
+    from tests.helpers.sprint5 import seed_recipe_version_session
+
+    now = datetime.now(UTC)
+    tid = uuid.uuid4()
+    await db.execute(
+        text("INSERT INTO tenants (id, slug, name) VALUES (:id,:s,'PRODC')"),
+        {"id": tid, "s": f"prodc-{tid.hex[:8]}"},
+    )
+    su = await _scalar(
+        db,
+        "INSERT INTO units_of_measure (tenant_id, name, abbreviation, unit_type) "
+        "VALUES (:t,'g','g','weight') RETURNING id",
+        t=tid,
+    )
+    item = await _scalar(
+        db,
+        "INSERT INTO inventory_items (tenant_id, name, inventory_mode, storage_unit_id, "
+        "recipe_unit_id) VALUES (:t,'Flour','recipe_deducted',:u,:u) RETURNING id",
+        t=tid,
+        u=su,
+    )
+    # Recipe ingredient in 'ml' (volume) but item stores in 'g' (weight) →
+    # cross-dimension, no conversion path → real missing_conversion failure.
+    seeded = await seed_recipe_version_session(
+        db, str(tid), ingredients=[(item, 2, "ml")], yield_quantity=1.0, status="confirmed"
+    )
+    cid = uuid.uuid4()
+    await db.execute(
+        text(
+            "INSERT INTO tenant_pos_connections (connection_id, tenant_id, vendor, merchant_id, "
+            "environment, state, access_token_enc, access_token_expires_at, refresh_token_enc, "
+            "refresh_token_expires_at, last_reconciliation_at, updated_at) "
+            "VALUES (:c,:t,'clover',:m,'sandbox','active','x',:e,'y',:e,:lr,:lr)"
+        ),
+        {
+            "c": cid,
+            "t": tid,
+            "m": f"M-{tid.hex[:8]}",
+            "e": now + timedelta(days=30),
+            "lr": now - timedelta(minutes=1),
+        },
+    )
+    ib = uuid.uuid4()
+    await db.execute(
+        text(
+            "INSERT INTO pos_event_inbox (inbox_id, tenant_id, connection_id, vendor, "
+            "vendor_event_id, vendor_object_type, vendor_event_type, vendor_ts, raw_payload, state, "
+            "received_at, processed_at) VALUES (:id,:t,:c,'clover','E','O','CREATE',1,'{}',"
+            "'processed',:r,:r)"
+        ),
+        {"id": ib, "t": tid, "c": cid, "r": now - timedelta(days=2)},
+    )
+    order = await _scalar(
+        db,
+        "INSERT INTO orders (id, tenant_id, pos_event_inbox_id, clover_order_id, state, "
+        "payment_state, closed_at, processed_at) VALUES (:id,:t,:ib,'PO','locked','PAID',:c,:c) "
+        "RETURNING id",
+        id=uuid.uuid4(),
+        t=tid,
+        ib=ib,
+        c=now - timedelta(days=2),
+    )
+    sli = await _scalar(
+        db,
+        "INSERT INTO sale_line_items (id, tenant_id, order_id, clover_line_item_id, "
+        "menu_item_id, name_at_sale, quantity, price_cents_at_sale, net_revenue_cents, "
+        "recipe_version_id, depletion_status) VALUES (:id,:t,:o,'L',:m,'Bread',3,900,900,:rv,"
+        "'pending') RETURNING id",
+        id=uuid.uuid4(),
+        t=tid,
+        o=order,
+        m=seeded.menu_item_id,
+        rv=seeded.recipe_version_id,
+    )
+    status, reason = await handler.process_line(db, tid, _UUID(str(sli)))
+    assert status == "failed" and reason == "missing_conversion"
+
+    dims = (await _insights(db, tid, item))["pos"]["dimensions"]
+    # The recipe EXISTED — recipe stage passes; the CONVERSION stage owns the fail.
+    assert dims["recipe_mapping"]["no_recipe_count"] == 0
+    assert dims["conversion_coverage"]["status"] == "failures"
+    assert dims["conversion_coverage"]["missing_conversion_count"] == 1
+    assert dims["depletion_execution"]["status"] == "unavailable"

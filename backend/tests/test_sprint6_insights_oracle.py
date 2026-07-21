@@ -730,3 +730,143 @@ async def test_oracle_equals_list_endpoint_mode_a() -> None:
         finally:
             app.dependency_overrides.clear()
             await conn.rollback()
+
+
+# ── strict 4-way equality certification (replaces the Mode-B divergence pin) ──
+# raw-row oracle == on_hand() == GET /inventory/items == insights item.on_hand,
+# now that PR #12 fixed the Mode-B list. Covers: sale signal, equal refund
+# reversal, duplicate replay (one idempotency key), a non-1 yield factor, and an
+# uncounted Mode-B item (all four surfaces return None/unavailable).
+
+
+async def _four_way(bound: Any, app: Any, tid: uuid.UUID, item: uuid.UUID) -> Decimal | None:
+    from httpx import ASGITransport, AsyncClient
+
+    oracle = await oracle_on_hand(bound, tid, item)
+    auth = await on_hand(bound, tenant_id=tid, inventory_item_id=item)
+    assert auth == oracle, f"on_hand {auth} != oracle {oracle}"
+    ins = await build_item_insights(
+        bound,
+        tenant_id=tid,
+        item_id=item,
+        window_key="30d",
+        as_of=datetime.now(UTC),
+        timezone_name="UTC",
+        timezone_source="fallback",
+        can_view_aggregated_cost=True,
+        target_cover_days=7,
+        target_source="default",
+    )
+    ins_oh = ins["item"]["on_hand"]
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        listed = next(
+            (
+                x
+                for x in (await c.get("/api/v1/inventory/items")).json()["items"]
+                if x["id"] == str(item)
+            ),
+            None,
+        )
+    list_oh = listed["on_hand"] if listed else None
+    if oracle is None:
+        assert auth is None and ins_oh is None and list_oh is None
+    else:
+        assert Decimal(ins_oh) == oracle, f"insights {ins_oh} != oracle {oracle}"
+        assert list_oh is not None and Decimal(str(list_oh)) == oracle, (
+            f"list {list_oh} != {oracle}"
+        )
+    return oracle
+
+
+async def test_modeb_four_way_equality_certification() -> None:
+    from app.core.database import get_db_session
+    from app.core.security import Principal, get_principal
+    from app.main import create_app
+
+    app = create_app()
+    tid, uid = uuid.uuid4(), uuid.uuid4()
+    now = datetime.now(UTC)
+    async with engine.connect() as conn:
+        await conn.begin()
+        bound = make_bound_session(conn)
+        app.dependency_overrides[get_db_session] = lambda: bound
+        app.dependency_overrides[get_principal] = lambda: Principal(
+            user_id=str(uid),
+            workos_id=f"w_{uid.hex[:8]}",
+            email="x@test.com",
+            tenant_id=str(tid),
+            role="manager",
+        )
+        try:
+            await conn.execute(
+                text("INSERT INTO tenants (id, slug, name) VALUES (:id,:s,'4WAY')"),
+                {"id": tid, "s": f"4w-{tid.hex[:8]}"},
+            )
+            count_at = now - timedelta(days=6)
+            item = await _item(
+                bound,
+                tid,
+                mode="count_anchored",
+                count_at=count_at,
+                count_qty=Decimal("200"),
+            )
+            # non-1 yield factor
+            await conn.execute(
+                text(
+                    "INSERT INTO inventory_yield_factors (tenant_id, inventory_item_id, "
+                    "yield_factor) VALUES (:t,:i,'0.5')"
+                ),
+                {"t": tid, "i": item},
+            )
+            # receipt after count
+            await _mv(bound, tid, item, mtype="receive", delta="30", when=now - timedelta(days=5))
+            # a sale signal (consumption) — Mode-B convention: positive magnitude
+            await _mv(
+                bound,
+                tid,
+                item,
+                mtype="sale_signal",
+                delta="12",
+                when=now - timedelta(days=3),
+                yfa="0.5",
+                key="sig-1",
+            )
+            # duplicate replay: SAME idempotency key → dropped by ON CONFLICT
+            await _mv(
+                bound,
+                tid,
+                item,
+                mtype="sale_signal",
+                delta="12",
+                when=now - timedelta(days=3),
+                yfa="0.5",
+                key="sig-1",
+            )
+
+            # before the refund: 200 + 30 - (12 * 0.5) = 224
+            v1 = await _four_way(bound, app, tid, item)
+            assert v1 == Decimal("224.0")
+
+            # an EQUAL refund reversal credits the signal back: signals net 0
+            await _mv(
+                bound,
+                tid,
+                item,
+                mtype="sale_signal_reversal",
+                delta="-12",
+                when=now - timedelta(days=2),
+                yfa="0.5",
+                key="rev-1",
+            )
+            # 200 + 30 - ((12 - 12) * 0.5) = 230
+            v2 = await _four_way(bound, app, tid, item)
+            assert v2 == Decimal("230.0")
+
+            # an UNCOUNTED Mode-B item → None across all four surfaces
+            unc = await _item(bound, tid, mode="count_anchored", count_at=None, count_qty=None)
+            await _mv(bound, tid, unc, mtype="receive", delta="99", when=now)
+            assert await _four_way(bound, app, tid, unc) is None
+        finally:
+            app.dependency_overrides.clear()
+            await conn.rollback()

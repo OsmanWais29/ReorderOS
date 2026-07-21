@@ -208,72 +208,13 @@ async def test_mode_a_balance_before_infinity_matches_on_hand(db: Any) -> None:
             assert bounded is None, f"Mode B must return None, got {bounded} for {iid}"
 
 
-async def test_list_endpoint_mode_b_diverges_from_on_hand_documented(db: Any) -> None:
-    """DOCUMENTS why the list is NOT consolidated in PR-A1.
-
-    The GET /inventory/items inline Mode-B math uses SUM(ABS(delta)) over
-    'sale_signal' ONLY; on_hand() sums signed delta over BOTH signal types. On a
-    count-anchored item with a signal reversal they disagree, so switching the
-    list onto the canonical projection would silently change displayed on-hand.
-    This test pins that disagreement so the divergence cannot regress unnoticed.
-    """
-    tid = uuid.uuid4()
-    await db.execute(
-        text("INSERT INTO tenants (id, slug, name) VALUES (:id, :s, 'DIVERGE')"),
-        {"id": tid, "s": f"div-{tid.hex[:8]}"},
-    )
-    unit = await _unit(db, tid)
-    now = datetime.now(UTC)
-    count_at = now - timedelta(days=6)
-    b = await _item(
-        db,
-        tid,
-        unit,
-        mode="count_anchored",
-        last_count_at=count_at,
-        last_count_quantity=Decimal("200"),
-    )
-    await _mv(db, tid, b, mtype="receive", delta="30", when=now - timedelta(days=5))
-    await _mv(db, tid, b, mtype="sale_signal", delta="-12", when=now - timedelta(days=3), yfa="1.0")
-    await _mv(
-        db,
-        tid,
-        b,
-        mtype="sale_signal_reversal",
-        delta="12",
-        when=now - timedelta(days=2),
-        yfa="1.0",
-    )
-
-    authoritative = await on_hand(db, tenant_id=tid, inventory_item_id=b)
-    # on_hand: 200 + 30 - (-12 + 12) = 230
-    assert authoritative == Decimal("230")
-
-    # The list's ABS(sale_signal)-only formula, reproduced exactly:
-    list_value = (
-        await db.execute(
-            text("""
-                SELECT ii.last_count_quantity
-                     + COALESCE((SELECT SUM(m.delta) FROM inventory_movements m
-                                  WHERE m.tenant_id=ii.tenant_id AND m.inventory_item_id=ii.id
-                                    AND m.recorded_at>ii.last_count_at
-                                    AND m.movement_type IN
-                                        ('receive','transfer_in','count_adjust','opening_balance')),0)
-                     - (COALESCE((SELECT SUM(ABS(m.delta)) FROM inventory_movements m
-                                   WHERE m.tenant_id=ii.tenant_id AND m.inventory_item_id=ii.id
-                                     AND m.recorded_at>ii.last_count_at
-                                     AND m.movement_type='sale_signal'),0)
-                        * COALESCE((SELECT yf.yield_factor FROM inventory_yield_factors yf
-                                     WHERE yf.tenant_id=ii.tenant_id
-                                       AND yf.inventory_item_id=ii.id),1.0))
-                  FROM inventory_items ii WHERE ii.id = :b
-            """),
-            {"b": b},
-        )
-    ).scalar_one()
-    # list: 200 + 30 - 12 = 218  (drops the +12 reversal)
-    assert Decimal(str(list_value)) == Decimal("218")
-    assert authoritative != Decimal(str(list_value)), "divergence must be real"
+# NOTE: the former `test_list_endpoint_mode_b_diverges_from_on_hand_documented`
+# pinned the OLD list/on_hand divergence. PR #12 fixed the list (signed
+# sale_signal + sale_signal_reversal), so that divergence no longer exists. The
+# replacement is the strict 4-way equality certification in
+# test_sprint6_insights_oracle.py::test_modeb_four_way_equality_certification
+# (raw-row oracle == on_hand() == GET /inventory/items == insights), which drives
+# the REAL endpoints instead of a hard-coded formula.
 
 
 async def test_empty_batch_returns_empty(db: Any) -> None:

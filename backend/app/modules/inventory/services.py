@@ -136,7 +136,10 @@ def compute_line_cost_basis(
 # Mode B (count_anchored):
 #   last_count_quantity
 #   + receipts/adjusts strictly AFTER last_count_at
-#   - SUM(ABS(sale_signals since last_count_at)) x yield_factor
+#   - SUM(signed delta over sale_signal AND sale_signal_reversal since
+#     last_count_at) x yield_factor
+#   (sale_signal delta is +consumption; a refund's sale_signal_reversal is
+#    -consumption, crediting it back — signed, never ABS)
 #   Returns None when last_count_quantity is NULL (count not yet done).
 # ═════════════════════════════════════════════════════════════════════════════
 

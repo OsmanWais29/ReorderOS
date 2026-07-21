@@ -631,7 +631,8 @@ async def item_insights(
     ).scalar_one_or_none()
     tz_name, tz_source = _resolve_timezone(tz_raw)
 
-    can_view_cost = principal.role in ("manager", "owner")
+    # Staff always see the latest unit cost; this gates only supplier + history.
+    can_view_aggregated_cost = principal.role in ("manager", "owner")
 
     try:
         payload = await build_item_insights(
@@ -642,7 +643,7 @@ async def item_insights(
             as_of=as_of,
             timezone_name=tz_name,
             timezone_source=tz_source,
-            can_view_cost=can_view_cost,
+            can_view_aggregated_cost=can_view_aggregated_cost,
             target_cover_days=tcd,
             target_source=tcd_source,
         )

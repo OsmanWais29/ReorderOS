@@ -120,14 +120,44 @@ async def test_manager_sees_cost_200() -> None:
         assert body["snapshot"]["isolation"] == "repeatable_read"
 
 
-async def test_staff_cost_redacted_200() -> None:
+async def test_staff_sees_latest_cost_aggregated_redacted_200() -> None:
     async for ctx in _ctx("staff"):
         r = await ctx.client.get(f"{_BASE}/{ctx.item}/insights?window=14d")
         assert r.status_code == 200, r.text
         cost = r.json()["cost"]
-        assert cost["available"] is False
-        assert cost["reason"]["code"] == "MANAGER_ONLY"
-        assert "latest_unit_cost_cents_exact" not in cost
+        # Staff see the latest unit cost, not supplier/history.
+        assert cost["available"] is True
+        assert cost["latest_unit_cost_cents_exact"] == "120.0000"
+        assert cost["aggregated"]["available"] is False
+        assert cost["aggregated"]["reason"]["code"] == "MANAGER_ONLY"
+
+
+async def test_no_banned_internal_language_in_response() -> None:
+    """Customer-facing safety: no internal jargon or raw ids in the response
+    body. Stable reason CODES are allowed; internal terms are not."""
+    # Exactly the internal terms the customer-facing contract bans (plus stack
+    # traces / raw payloads). NB "reconciliation" alone is allowed — the truthful
+    # label is "latest background reconciliation check".
+    banned = [
+        "inbox",
+        "dead_letter",
+        "dead letter",
+        "lease",
+        "reconciliation_cursor",
+        "reconciliation cursor",
+        "conversion_path",
+        "conversion path",
+        "raw_payload",
+        "traceback",
+    ]
+    async for ctx in _ctx("manager"):
+        r = await ctx.client.get(f"{_BASE}/{ctx.item}/insights?window=14d")
+        assert r.status_code == 200
+        body_l = r.text.lower()
+        for term in banned:
+            assert term not in body_l, f"banned internal term leaked: {term!r}"
+        # The tenant's own id must never appear in the body.
+        assert str(ctx.tid) not in r.text
 
 
 async def test_scenario_target_cover_days_echoed() -> None:

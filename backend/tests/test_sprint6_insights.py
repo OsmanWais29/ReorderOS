@@ -45,7 +45,7 @@ async def _insights(db: Any, tid: uuid.UUID, iid: uuid.UUID, **kw: Any) -> dict:
         as_of=now,
         timezone_name="UTC",
         timezone_source="fallback",
-        can_view_cost=True,
+        can_view_aggregated_cost=True,
         target_cover_days=7,
         target_source="default",
     )
@@ -270,24 +270,57 @@ async def test_item_state_and_status(db: Any) -> None:
     assert any(r["code"] == "ABOVE_PAR" for r in it["status_reasons"])
 
 
-# ── POS health + mapping coverage ────────────────────────────────────────────
+# ── POS diagnostics (8 independent dimensions) ───────────────────────────────
 
 
-async def test_pos_health_and_mapping_ratios(db: Any) -> None:
+async def test_pos_diagnostics_dimensions_and_mapping_ratios(db: Any) -> None:
     s = await _seed_mode_a(db)
     out = await _insights(db, s["tid"], s["item"])
     pos = out["pos"]
     assert pos["provider"] == "clover"
-    assert pos["connected"] is True
-    assert pos["pending_event_count"] == 1
-    assert pos["last_order_event_received_at"] is not None
-    assert pos["menu_items_mapped"] == 1
-    assert pos["menu_items_unmapped"] == 1
-    # 1 of 2 lines depleted → 50.0; revenue 10000/13800 → 72.5; effective = min = 50.0
-    assert pos["sale_line_mapping_pct"] == "50.0"
-    assert pos["revenue_mapping_pct"] == "72.5"
-    assert pos["effective_mapping_pct"] == "50.0"
-    assert pos["forecast_ready"] is False
+    dims = pos["dimensions"]
+    # Independent dimensions — connected but processing-backlogged (1 pending)
+    # and mapping-partial, with completeness unproven, all at once.
+    assert dims["connection"]["status"] == "connected"
+    assert dims["processing"]["status"] == "backlogged"  # 1 pending event
+    assert dims["processing"]["pending_event_count"] == 1
+    assert dims["ingestion"]["latest_sales_data_received_at"] is not None
+    assert dims["mapping"]["menu_items_mapped"] == 1
+    assert dims["mapping"]["menu_items_unmapped"] == 1
+    # eligible = 2 lines (both PAID/locked/not-refunded); 1 depleted → 50.0.
+    # eligible rev 13800, mapped 10000 → 72.5. effective = min = 50.0.
+    assert dims["mapping"]["eligible_sale_line_count"] == 2
+    assert dims["mapping"]["mapped_sale_line_count"] == 1
+    assert dims["mapping"]["sale_line_mapping_pct"] == "50.0"
+    assert dims["mapping"]["revenue_mapping_pct"] == "72.5"
+    assert dims["mapping"]["effective_mapping_pct"] == "50.0"
+    assert dims["mapping"]["status"] == "partial"
+    assert dims["mapping"]["reason_breakdown"]["NO_RECIPE"] == 1
+    assert dims["completeness"]["status"] == "unproven"
+    assert dims["forecast_eligibility"]["status"] == "blocked"
+    codes = {b["code"] for b in dims["forecast_eligibility"]["blockers"]}
+    assert "MAPPING_INCOMPLETE" in codes
+    assert "COMPLETENESS_UNPROVEN" in codes
+
+
+async def test_affected_menu_items_lists_unmapped_with_repair(db: Any) -> None:
+    s = await _seed_mode_a(db)
+    out = await _insights(db, s["tid"], s["item"])
+    affected = out["pos"]["dimensions"]["mapping"]["affected_menu_items"]
+    # The unmapped 'no_recipe' line surfaces with a fix_recipe destination.
+    entry = next(a for a in affected if a["reason_code"] == "NO_RECIPE")
+    assert entry["menu_item"] == "Unmapped Special"
+    assert entry["revenue_cents"] == 3800
+    assert entry["repair"] == "fix_recipe"
+
+
+async def test_consumption_floor_labeled_below_full_coverage(db: Any) -> None:
+    s = await _seed_mode_a(db)
+    out = await _insights(db, s["tid"], s["item"])
+    cov = out["consumption"]["coverage"]
+    assert cov["is_floor"] is True
+    assert cov["effective_mapping_pct"] == "50.0"
+    assert cov["note_code"] == "OBSERVED_USAGE_IS_MINIMUM_UNMAPPED_SALES"
 
 
 # ── Consumption + contributors ───────────────────────────────────────────────
@@ -336,21 +369,27 @@ async def test_deterministic_reasons(db: Any) -> None:
 # ── Cost RBAC redaction ──────────────────────────────────────────────────────
 
 
-async def test_cost_visible_to_manager(db: Any) -> None:
+async def test_cost_manager_sees_latest_and_aggregated(db: Any) -> None:
     s = await _seed_mode_a(db)
-    out = await _insights(db, s["tid"], s["item"], can_view_cost=True)
+    out = await _insights(db, s["tid"], s["item"], can_view_aggregated_cost=True)
     assert out["cost"]["available"] is True
     assert out["cost"]["latest_unit_cost_cents_exact"] == "120.0000"
-    assert out["cost"]["supplier_name"] == "Northstar Foods"
+    assert out["cost"]["aggregated"]["available"] is True
+    assert out["cost"]["aggregated"]["supplier_name"] == "Northstar Foods"
+    assert len(out["cost"]["aggregated"]["history"]) >= 1
 
 
-async def test_cost_redacted_for_staff(db: Any) -> None:
+async def test_cost_staff_sees_latest_but_aggregated_redacted(db: Any) -> None:
     s = await _seed_mode_a(db)
-    out = await _insights(db, s["tid"], s["item"], can_view_cost=False)
-    assert out["cost"]["available"] is False
-    assert out["cost"]["reason"]["code"] == "MANAGER_ONLY"
-    assert "supplier_name" not in out["cost"]
-    assert "latest_unit_cost_cents_exact" not in out["cost"]
+    out = await _insights(db, s["tid"], s["item"], can_view_aggregated_cost=False)
+    # Staff DO see the latest unit cost (needed for inventory operations)…
+    assert out["cost"]["available"] is True
+    assert out["cost"]["latest_unit_cost_cents_exact"] == "120.0000"
+    # …but supplier identity + history are manager+ only.
+    assert out["cost"]["aggregated"]["available"] is False
+    assert out["cost"]["aggregated"]["reason"]["code"] == "MANAGER_ONLY"
+    assert "supplier_name" not in out["cost"]["aggregated"]
+    assert "history" not in out["cost"]["aggregated"]
 
 
 # ── Forecast / reorder gated ─────────────────────────────────────────────────
@@ -459,3 +498,184 @@ async def test_timezone_fallback_default(db: Any) -> None:
     out = await _insights(db, s["tid"], s["item"])  # defaults UTC/fallback
     assert out["window"]["bucket_timezone"] == "UTC"
     assert out["window"]["timezone_source"] == "fallback"
+
+
+# ── POS diagnostic scenarios (independent dimensions) ────────────────────────
+
+
+async def _seed_pos(
+    db: Any,
+    *,
+    conn_state: str = "active",
+    inbox: list[tuple[str, float, bool]] | None = None,
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """Seed a tenant + item + connection + inbox rows. inbox entries are
+    (state, days_ago_received, has_processing_started)."""
+    now = datetime.now(UTC)
+    tid = uuid.uuid4()
+    await db.execute(
+        text("INSERT INTO tenants (id, slug, name) VALUES (:id,:s,'POS')"),
+        {"id": tid, "s": f"pos-{tid.hex[:8]}"},
+    )
+    unit = await _scalar(
+        db,
+        "INSERT INTO units_of_measure (tenant_id, name, abbreviation, unit_type) "
+        "VALUES (:t,'ea','ea','count') RETURNING id",
+        t=tid,
+    )
+    item = await _scalar(
+        db,
+        "INSERT INTO inventory_items (tenant_id, name, inventory_mode, storage_unit_id, "
+        "recipe_unit_id) VALUES (:t,'Oil','recipe_deducted',:u,:u) RETURNING id",
+        t=tid,
+        u=unit,
+    )
+    if conn_state is not None:
+        cid = uuid.uuid4()
+        await db.execute(
+            text(
+                "INSERT INTO tenant_pos_connections (connection_id, tenant_id, vendor, merchant_id, "
+                "environment, state, access_token_enc, access_token_expires_at, refresh_token_enc, "
+                "refresh_token_expires_at, last_reconciliation_at, updated_at) "
+                "VALUES (:c,:t,'clover','M','sandbox',:st,'x',:e,'y',:e,:lr,:lr)"
+            ),
+            {
+                "c": cid,
+                "t": tid,
+                "st": conn_state,
+                "e": now + timedelta(days=30),
+                "lr": now - timedelta(minutes=3),
+            },
+        )
+        for i, (state, days, has_proc) in enumerate(inbox or []):
+            await db.execute(
+                text("""
+                    INSERT INTO pos_event_inbox
+                        (inbox_id, tenant_id, connection_id, vendor, vendor_event_id,
+                         vendor_object_type, vendor_event_type, vendor_ts, raw_payload, state,
+                         received_at, processing_started_at, processed_at)
+                    VALUES (:id,:t,:c,'clover',:v,'O','CREATE',1,'{}',:st,:rec,:proc,:done)
+                """),
+                {
+                    "id": uuid.uuid4(),
+                    "t": tid,
+                    "c": cid,
+                    "v": f"E{i}",
+                    "st": state,
+                    "rec": now - timedelta(days=days),
+                    "proc": (now - timedelta(days=days)) if has_proc else None,
+                    "done": (now - timedelta(days=days)) if state == "processed" else None,
+                },
+            )
+    return tid, item
+
+
+async def test_pos_processing_stalled(db: Any) -> None:
+    # A 'processing' event whose lease is far past the 300s TTL → stalled.
+    tid, item = await _seed_pos(db, inbox=[("processing", 0.02, True)])  # ~28min old
+    dims = (await _insights(db, tid, item))["pos"]["dimensions"]
+    assert dims["processing"]["status"] == "stalled"
+    codes = {b["code"] for b in dims["forecast_eligibility"]["blockers"]}
+    assert "POS_PROCESSING_STALLED" in codes
+
+
+async def test_pos_pending_backlog(db: Any) -> None:
+    # A pending event older than the 900s backlog threshold.
+    tid, item = await _seed_pos(db, inbox=[("pending", 0.02, False)])
+    dims = (await _insights(db, tid, item))["pos"]["dimensions"]
+    assert dims["processing"]["status"] == "backlogged"
+    assert dims["processing"]["pending_event_count"] == 1
+
+
+async def test_pos_failed_and_permanently_failed_events(db: Any) -> None:
+    tid, item = await _seed_pos(db, inbox=[("failed", 0.1, True), ("dead_letter", 0.2, True)])
+    dims = (await _insights(db, tid, item))["pos"]["dimensions"]
+    assert dims["processing"]["failed_event_count"] == 1
+    assert dims["processing"]["permanently_failed_event_count"] == 1
+    assert dims["processing"]["status"] == "backlogged"
+
+
+async def test_pos_disconnected_dimensions(db: Any) -> None:
+    tid, item = await _seed_pos(db, conn_state="revoked", inbox=[("processed", 5, True)])
+    dims = (await _insights(db, tid, item))["pos"]["dimensions"]
+    assert dims["connection"]["status"] == "disconnected"
+    assert dims["ingestion"]["status"] == "unavailable"
+    assert dims["processing"]["status"] == "unavailable"
+    codes = {b["code"] for b in dims["forecast_eligibility"]["blockers"]}
+    assert "POS_DISCONNECTED" in codes
+
+
+async def test_full_coverage_still_blocked_by_completeness(db: Any) -> None:
+    # 100% eligible-line mapping, zero failures — forecast STILL blocked because
+    # completeness is unprovable in A1 (watermark null).
+    s = await _seed_mode_a(db)
+    # Mark the previously-unmapped line as depleted → 100% coverage.
+    await db.execute(
+        text(
+            "UPDATE sale_line_items SET depletion_status='depleted', depletion_reason=NULL "
+            "WHERE tenant_id=:t AND depletion_status='unmapped'"
+        ),
+        {"t": s["tid"]},
+    )
+    dims = (await _insights(db, s["tid"], s["item"]))["pos"]["dimensions"]
+    assert dims["mapping"]["effective_mapping_pct"] == "100.0"
+    assert dims["mapping"]["status"] == "complete"
+    codes = {b["code"] for b in dims["forecast_eligibility"]["blockers"]}
+    # Mapping/conversion/depletion no longer block at 100% + zero failures…
+    assert "MAPPING_INCOMPLETE" not in codes
+    assert "CONVERSION_FAILURES" not in codes
+    assert "DEPLETION_FAILURES" not in codes
+    # …but completeness is unprovable in A1, so it always blocks.
+    assert "COMPLETENESS_UNPROVEN" in codes
+    assert dims["forecast_eligibility"]["status"] == "blocked"
+
+
+async def test_conversion_failure_blocks_even_at_full_mapping(db: Any) -> None:
+    s = await _seed_mode_a(db)
+    # Full mapping but one line failed on missing_conversion.
+    await db.execute(
+        text(
+            "UPDATE sale_line_items SET depletion_status='failed', "
+            "depletion_reason='missing_conversion' WHERE tenant_id=:t "
+            "AND depletion_status='unmapped'"
+        ),
+        {"t": s["tid"]},
+    )
+    dims = (await _insights(db, s["tid"], s["item"]))["pos"]["dimensions"]
+    assert dims["conversion"]["status"] == "failures"
+    assert dims["conversion"]["missing_conversion_count"] == 1
+    codes = {b["code"] for b in dims["forecast_eligibility"]["blockers"]}
+    assert "CONVERSION_FAILURES" in codes
+    assert "COMPLETENESS_UNPROVEN" in codes
+
+
+async def test_missing_day_is_a_gap_not_a_zero(db: Any) -> None:
+    # Only days with actual movements appear; a quiet day is absent (a gap),
+    # never a zero-consumption bar.
+    s = await _seed_mode_a(db)
+    daily = (await _insights(db, s["tid"], s["item"]))["consumption"]["daily"]
+    dates = {d["date"] for d in daily}
+    # The single depletion was 5 days ago; days without movements aren't emitted.
+    assert len(dates) == len(daily)  # no duplicate/synthetic days
+    assert all(Decimal(d["consumed"]) != 0 or d["is_partial"] for d in daily)
+
+
+async def test_data_inconsistent_when_a_type_is_uncategorized(db: Any, monkeypatch: Any) -> None:
+    """If a movement type on_hand() counts is NOT in the ledger category map, the
+    displayed rows can't sum to the balance change → DATA_INCONSISTENT, rows
+    withheld, forecast suppressed, evidence (on_hand) preserved."""
+    import app.modules.inventory.insights as ins
+
+    # Drop 'count_adjust' from the partition to simulate a coverage gap.
+    patched = dict(ins._LEDGER_CATEGORY)
+    del patched["count_adjust"]
+    monkeypatch.setattr(ins, "_LEDGER_CATEGORY", patched)
+
+    s = await _seed_mode_a(db)  # seed has a count_adjust -1 in window
+    out = await _insights(db, s["tid"], s["item"])
+    lg = out["ledger"]
+    assert lg["state"] == "DATA_INCONSISTENT"
+    assert lg["reconciled"] is False
+    assert lg["rows"] == []  # withheld
+    assert lg["current_on_hand"] == "53"  # evidence preserved
+    assert lg["reconciliation_delta"] != "0"

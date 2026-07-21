@@ -6,9 +6,11 @@ NOT built here — they return NOT_YET_CERTIFIED, gated on the completeness
 watermark (which cannot advance yet; see balance_projection + migration 0034).
 
 Sections produced: item state, ledger reconciliation (Mode A; Mode B reports
-RECONCILIATION_UNAVAILABLE), POS health, observed consumption, mapping coverage,
-menu-item contributors, deterministic reasons, cost (manager+). RBAC redaction is
-applied by the caller-provided `can_view_cost` flag.
+RECONCILIATION_UNAVAILABLE), POS diagnostics (eight INDEPENDENT dimensions —
+never one 'healthy' boolean), observed consumption (floor-labeled below full
+coverage), mapping quality (reason breakdown + affected menu items), menu-item
+contributors, deterministic reasons, cost. RBAC: the latest unit cost is visible
+to all; supplier identity + cost history are gated by `can_view_aggregated_cost`.
 
 The caller MUST invoke build_item_insights inside one read-only REPEATABLE READ
 transaction with a DB-derived as_of, so all queries read one snapshot.
@@ -193,13 +195,36 @@ async def _ledger(
     return result
 
 
-async def _pos_health(s: AsyncSession, tid: UUID, window_start: datetime) -> dict[str, Any]:
+# Freshness/backlog thresholds (named constants, not magic numbers). Processing
+# lease TTL mirrors the POS worker's CLAIM_TTL_SECONDS=300.
+_INGEST_STALE_HOURS = 24
+_PROCESSING_LEASE_SECONDS = 300
+_PENDING_BACKLOG_SECONDS = 900  # a pending event older than this = a real backlog
+
+# Eligible sale line = one the production depletion rules SHOULD have depleted:
+# order locked + payment PAID/PARTIALLY_REFUNDED, line not voided, not refunded.
+# This is the denominator for every mapping ratio — only genuinely ineligible
+# lines are excluded.
+_ELIGIBLE_PREDICATE = (
+    "o.state = 'locked' AND o.payment_state IN ('PAID','PARTIALLY_REFUNDED') "
+    "AND sli.is_voided = false AND sli.is_refunded = false"
+)
+
+
+def _pct(num: int, den: int) -> str | None:
+    return None if den == 0 else str((_d(num) / _d(den) * 100).quantize(Decimal("0.1")))
+
+
+async def _pos_diagnostics(s: AsyncSession, tid: UUID, window_start: datetime) -> dict[str, Any]:
+    """POS health as INDEPENDENT dimensions — never one 'healthy' boolean. A
+    connected POS can be processing-stale, mapping-incomplete, or completeness-
+    unproven all at once, and each is reported separately with its evidence."""
+    now = _AS_OF.get()
     conn = (
         (
             await s.execute(
                 text("""
-                SELECT vendor, state, last_reconciliation_at, initial_sync_completed_at,
-                       orders_complete_through
+                SELECT vendor, state, last_reconciliation_at, orders_complete_through
                   FROM tenant_pos_connections
                  WHERE tenant_id = :t
                  ORDER BY (state = 'active') DESC, updated_at DESC
@@ -212,34 +237,26 @@ async def _pos_health(s: AsyncSession, tid: UUID, window_start: datetime) -> dic
         .fetchone()
     )
 
+    # ── connection ──
     if conn is None:
-        return {
-            "provider": None,
-            "connected": False,
-            "state": "not_connected",
-            "last_order_event_received_at": None,
-            "last_order_event_processed_at": None,
-            "last_background_check_at": None,
-            "orders_complete_through": None,
-            "pending_event_count": 0,
-            "processing_event_count": 0,
-            "failed_event_count": 0,
-            "dead_letter_event_count": 0,
-            "oldest_pending_at": None,
-            "oldest_processing_at": None,
-            "depletion_failure_count": 0,
-            "missing_conversion_count": 0,
-            "orders_in_window": 0,
-            "menu_items_mapped": 0,
-            "menu_items_unmapped": 0,
-            "sale_line_mapping_pct": None,
-            "revenue_mapping_pct": None,
-            "effective_mapping_pct": None,
-            "freshness": "unavailable",
-            "forecast_ready": False,
-            "forecast_blockers": [{"code": "POS_DISCONNECTED"}],
+        connection = {"status": "disconnected", "provider": None, "state": "not_connected"}
+        conn_state, provider = None, None
+    else:
+        conn_state, provider = conn["state"], conn["vendor"]
+        connection = {
+            "status": (
+                "connected"
+                if conn_state == "active"
+                else "error"
+                if conn_state == "error"
+                else "disconnected"
+            ),
+            "provider": provider,
+            "state": conn_state,
         }
+    connected = conn is not None and conn_state == "active"
 
+    # ── ingestion + processing (inbox) ──
     inbox = (
         (
             await s.execute(
@@ -263,16 +280,102 @@ async def _pos_health(s: AsyncSession, tid: UUID, window_start: datetime) -> dic
         .mappings()
         .one()
     )
+    last_received = inbox["last_received"]
+    last_processed = inbox["last_processed"]
+    pending = int(inbox["pending"])
+    processing = int(inbox["processing"])
+    failed = int(inbox["failed"])
+    dead_letter = int(inbox["dead_letter"])
+    oldest_pending = inbox["oldest_pending"]
+    oldest_processing = inbox["oldest_processing"]
 
-    orders_in_window = (
-        await s.execute(
-            text(
-                "SELECT COUNT(*) FROM orders "
-                "WHERE tenant_id = :t AND closed_at >= :ws AND closed_at < :ao"
-            ),
-            {"t": tid, "ws": window_start, "ao": _AS_OF.get()},
+    if not connected or last_received is None:
+        ingest_status = "unavailable"
+    elif (now - last_received).total_seconds() > _INGEST_STALE_HOURS * 3600:
+        ingest_status = "stale"
+    else:
+        ingest_status = "current"
+    ingestion = {
+        "status": ingest_status,
+        "latest_sales_data_received_at": _iso(last_received),
+        "latest_background_reconciliation_check_at": (
+            _iso(conn["last_reconciliation_at"]) if conn is not None else None
+        ),
+    }
+
+    proc_stalled = (
+        oldest_processing is not None
+        and (now - oldest_processing).total_seconds() > _PROCESSING_LEASE_SECONDS
+    )
+    backlogged = (
+        oldest_pending is not None
+        and (now - oldest_pending).total_seconds() > _PENDING_BACKLOG_SECONDS
+    )
+    if not connected:
+        proc_status = "unavailable"
+    elif proc_stalled:
+        proc_status = "stalled"
+    elif backlogged or failed > 0 or dead_letter > 0:
+        proc_status = "backlogged"
+    else:
+        proc_status = "current"
+    processing_dim = {
+        "status": proc_status,
+        "latest_sales_data_processed_at": _iso(last_processed),
+        "pending_event_count": pending,
+        "processing_event_count": processing,
+        "failed_event_count": failed,
+        # 'dead letter' is internal queue jargon — surfaced under a neutral name.
+        "permanently_failed_event_count": dead_letter,
+        "oldest_pending_at": _iso(oldest_pending),
+        "oldest_processing_at": _iso(oldest_processing),
+    }
+
+    # ── mapping (denominator = eligible sale lines) + reason breakdown ──
+    cov = (
+        (
+            await s.execute(
+                text(f"""
+                SELECT
+                    COUNT(*) AS eligible_lines,
+                    COUNT(*) FILTER (WHERE sli.depletion_status = 'depleted') AS mapped_lines,
+                    COALESCE(SUM(sli.net_revenue_cents), 0) AS eligible_rev,
+                    COALESCE(SUM(sli.net_revenue_cents)
+                             FILTER (WHERE sli.depletion_status = 'depleted'), 0) AS mapped_rev,
+                    COUNT(*) FILTER (WHERE sli.depletion_reason
+                        IN ('no_recipe','recipe_draft','recipe_skipped')) AS no_recipe,
+                    COUNT(*) FILTER (WHERE sli.depletion_reason = 'invalid_recipe')
+                        AS invalid_recipe,
+                    COUNT(*) FILTER (WHERE sli.depletion_reason = 'missing_conversion')
+                        AS missing_conversion,
+                    COUNT(*) FILTER (WHERE sli.depletion_reason = 'computation_error')
+                        AS depletion_failed,
+                    COUNT(*) FILTER (WHERE sli.depletion_status = 'pending') AS processing_pending
+                  FROM sale_line_items sli
+                  JOIN orders o ON o.id = sli.order_id
+                 WHERE sli.tenant_id = :t AND o.closed_at >= :ws AND o.closed_at < :ao
+                   AND {_ELIGIBLE_PREDICATE}
+            """),  # noqa: S608 — _ELIGIBLE_PREDICATE is a hardcoded literal
+                {"t": tid, "ws": window_start, "ao": now},
+            )
         )
-    ).scalar_one()
+        .mappings()
+        .one()
+    )
+    eligible_lines = int(cov["eligible_lines"])
+    mapped_lines = int(cov["mapped_lines"])
+    eligible_rev = int(cov["eligible_rev"])
+    mapped_rev = int(cov["mapped_rev"])
+    sale_line_pct = _pct(mapped_lines, eligible_lines)
+    revenue_pct = _pct(mapped_rev, eligible_rev)
+    eff = None
+    if sale_line_pct is not None and revenue_pct is not None:
+        eff = str(min(_d(sale_line_pct), _d(revenue_pct)))
+    missing_conversion = int(cov["missing_conversion"])
+    depletion_failed = int(cov["depletion_failed"])
+    no_recipe = int(cov["no_recipe"])
+    invalid_recipe = int(cov["invalid_recipe"])
+    processing_pending = int(cov["processing_pending"])
 
     menu = (
         (
@@ -289,89 +392,161 @@ async def _pos_health(s: AsyncSession, tid: UUID, window_start: datetime) -> dic
         .one()
     )
 
-    cov = (
-        (
-            await s.execute(
-                text("""
-                SELECT
-                    COUNT(*) AS total_lines,
-                    COUNT(*) FILTER (WHERE sli.depletion_status = 'depleted') AS depleted_lines,
-                    COALESCE(SUM(sli.net_revenue_cents), 0) AS total_rev,
-                    COALESCE(SUM(sli.net_revenue_cents)
-                             FILTER (WHERE sli.depletion_status = 'depleted'), 0) AS depleted_rev
-                  FROM sale_line_items sli
-                  JOIN orders o ON o.id = sli.order_id
-                 WHERE sli.tenant_id = :t AND o.closed_at >= :ws AND o.closed_at < :ao
-                   AND sli.is_refunded = false AND sli.is_voided = false
-            """),
-                {"t": tid, "ws": window_start, "ao": _AS_OF.get()},
-            )
-        )
-        .mappings()
-        .one()
-    )
-
-    def pct(num: int, den: int) -> str | None:
-        return None if den == 0 else str((_d(num) / _d(den) * 100).quantize(Decimal("0.1")))
-
-    sale_line_pct = pct(int(cov["depleted_lines"]), int(cov["total_lines"]))
-    revenue_pct = pct(int(cov["depleted_rev"]), int(cov["total_rev"]))
-    eff = None
-    if sale_line_pct is not None and revenue_pct is not None:
-        eff = str(min(_d(sale_line_pct), _d(revenue_pct)))
-
-    dep_fail = (
-        (
-            await s.execute(
-                text("""
-                SELECT
-                    COUNT(*) FILTER (WHERE sli.depletion_status = 'failed') AS failed,
-                    COUNT(*)
-                        FILTER (WHERE sli.depletion_reason = 'missing_conversion') AS missing_conv
-                  FROM sale_line_items sli
-                  JOIN orders o ON o.id = sli.order_id
-                 WHERE sli.tenant_id = :t AND o.closed_at >= :ws AND o.closed_at < :ao
-            """),
-                {"t": tid, "ws": window_start, "ao": _AS_OF.get()},
-            )
-        )
-        .mappings()
-        .one()
-    )
-
-    connected = conn["state"] == "active"
-    # Freshness is deliberately conservative: PR-A1 cannot certify completeness,
-    # so "current" is never claimed for forecast purposes — forecast stays
-    # NOT_YET_CERTIFIED regardless. We still surface truthful health signals.
-    freshness = "current" if connected else "unavailable"
-    blockers = [{"code": "NOT_YET_CERTIFIED"}]
-
-    return {
-        "provider": conn["vendor"],
-        "connected": connected,
-        "state": conn["state"],
-        "last_order_event_received_at": _iso(inbox["last_received"]),
-        "last_order_event_processed_at": _iso(inbox["last_processed"]),
-        "last_background_check_at": _iso(conn["last_reconciliation_at"]),
-        "orders_complete_through": _iso(conn["orders_complete_through"]),
-        "pending_event_count": int(inbox["pending"]),
-        "processing_event_count": int(inbox["processing"]),
-        "failed_event_count": int(inbox["failed"]),
-        "dead_letter_event_count": int(inbox["dead_letter"]),
-        "oldest_pending_at": _iso(inbox["oldest_pending"]),
-        "oldest_processing_at": _iso(inbox["oldest_processing"]),
-        "depletion_failure_count": int(dep_fail["failed"]),
-        "missing_conversion_count": int(dep_fail["missing_conv"]),
-        "orders_in_window": int(orders_in_window),
-        "menu_items_mapped": int(menu["mapped"]),
-        "menu_items_unmapped": int(menu["unmapped"]),
+    if eligible_lines == 0:
+        map_status = "unavailable"
+    elif eff is not None and _d(eff) >= Decimal("100"):
+        map_status = "complete"
+    elif mapped_lines == 0:
+        map_status = "none"
+    else:
+        map_status = "partial"
+    mapping = {
+        "status": map_status,
+        "eligible_sale_line_count": eligible_lines,
+        "mapped_sale_line_count": mapped_lines,
         "sale_line_mapping_pct": sale_line_pct,
+        "eligible_net_revenue_cents": eligible_rev,
+        "mapped_net_revenue_cents": mapped_rev,
         "revenue_mapping_pct": revenue_pct,
         "effective_mapping_pct": eff,
-        "freshness": freshness,
-        "forecast_ready": False,
-        "forecast_blockers": blockers,
+        "menu_items_mapped": int(menu["mapped"]),
+        "menu_items_unmapped": int(menu["unmapped"]),
+        "reason_breakdown": {
+            "NO_RECIPE": no_recipe,
+            "INVALID_RECIPE": invalid_recipe,
+            "MISSING_CONVERSION": missing_conversion,
+            "DEPLETION_FAILED": depletion_failed,
+            "PROCESSING_PENDING": processing_pending,
+        },
+        "affected_menu_items": await _affected_menu_items(s, tid, window_start),
     }
+
+    conversion = {
+        "status": "ok" if missing_conversion == 0 else "failures",
+        "missing_conversion_count": missing_conversion,
+    }
+    depletion = {
+        "status": "ok" if (depletion_failed == 0 and invalid_recipe == 0) else "failures",
+        "depletion_failure_count": depletion_failed,
+        "missing_recipe_count": no_recipe,
+        "invalid_recipe_count": invalid_recipe,
+    }
+
+    # ── completeness: ALWAYS unproven in PR-A1 (watermark cannot advance) ──
+    completeness = {
+        "status": "unproven",
+        "orders_complete_through": (
+            _iso(conn["orders_complete_through"]) if conn is not None else None
+        ),
+        "reason": {"code": "COMPLETENESS_UNPROVEN_PROVIDER_LIMITATION"},
+    }
+
+    # ── forecast eligibility: exact predictions need 100% eligible-line mapping,
+    #    zero conversion failures, zero depletion failures, AND proven
+    #    completeness. Completeness is unprovable in A1, so this is ALWAYS blocked
+    #    — but we report every failing gate truthfully, not just the umbrella one.
+    blockers: list[dict[str, Any]] = []
+    if not connected:
+        blockers.append({"code": "POS_DISCONNECTED"})
+    if proc_status in ("stalled", "backlogged"):
+        blockers.append({"code": "POS_PROCESSING_" + proc_status.upper()})
+    if eff is None or _d(eff) < Decimal("100"):
+        blockers.append({"code": "MAPPING_INCOMPLETE", "effective_mapping_pct": eff})
+    if missing_conversion > 0:
+        blockers.append({"code": "CONVERSION_FAILURES", "count": missing_conversion})
+    if depletion_failed > 0 or invalid_recipe > 0:
+        blockers.append({"code": "DEPLETION_FAILURES", "count": depletion_failed + invalid_recipe})
+    blockers.append({"code": "COMPLETENESS_UNPROVEN"})  # the always-present A1 gate
+    forecast_eligibility = {"status": "blocked", "blockers": blockers}
+
+    orders_in_window = (
+        await s.execute(
+            text(
+                "SELECT COUNT(*) FROM orders "
+                "WHERE tenant_id = :t AND closed_at >= :ws AND closed_at < :ao"
+            ),
+            {"t": tid, "ws": window_start, "ao": now},
+        )
+    ).scalar_one()
+
+    return {
+        "provider": provider,
+        "orders_in_window": int(orders_in_window),
+        "dimensions": {
+            "connection": connection,
+            "ingestion": ingestion,
+            "processing": processing_dim,
+            "mapping": mapping,
+            "conversion": conversion,
+            "depletion": depletion,
+            "completeness": completeness,
+            "forecast_eligibility": forecast_eligibility,
+        },
+    }
+
+
+async def _affected_menu_items(
+    s: AsyncSession, tid: UUID, window_start: datetime
+) -> list[dict[str, Any]]:
+    """Eligible sale lines that did NOT deplete, grouped by menu item + reason, with
+    a tenant-safe repair destination. Never claims an unmapped item contains a
+    specific ingredient — this is a mapping diagnostic, not ingredient attribution."""
+    rows = (
+        (
+            await s.execute(
+                text(f"""
+                SELECT COALESCE(mi.name, sli.name_at_sale) AS name,
+                       sli.depletion_reason AS reason,
+                       sli.depletion_status AS status,
+                       COALESCE(SUM(sli.quantity), 0) AS sold,
+                       COALESCE(SUM(sli.net_revenue_cents), 0) AS revenue
+                  FROM sale_line_items sli
+                  JOIN orders o ON o.id = sli.order_id
+                  LEFT JOIN menu_items mi ON mi.id = sli.menu_item_id
+                 WHERE sli.tenant_id = :t AND o.closed_at >= :ws AND o.closed_at < :ao
+                   AND {_ELIGIBLE_PREDICATE}
+                   AND sli.depletion_status <> 'depleted'
+                 GROUP BY COALESCE(mi.name, sli.name_at_sale),
+                          sli.depletion_reason, sli.depletion_status
+                 ORDER BY revenue DESC
+                 LIMIT 20
+            """),  # noqa: S608 — _ELIGIBLE_PREDICATE is a hardcoded literal
+                {"t": tid, "ws": window_start, "ao": _AS_OF.get()},
+            )
+        )
+        .mappings()
+        .all()
+    )
+    _REASON_CODE = {
+        "no_recipe": "NO_RECIPE",
+        "recipe_draft": "NO_RECIPE",
+        "recipe_skipped": "NO_RECIPE",
+        "invalid_recipe": "INVALID_RECIPE",
+        "missing_conversion": "MISSING_CONVERSION",
+        "computation_error": "DEPLETION_FAILED",
+    }
+    _REPAIR = {
+        "NO_RECIPE": "fix_recipe",
+        "INVALID_RECIPE": "fix_recipe",
+        "MISSING_CONVERSION": "fix_unit_conversion",
+        "DEPLETION_FAILED": None,
+    }
+    out = []
+    for r in rows:
+        if r["status"] == "pending":
+            code = "PROCESSING_PENDING"
+        else:
+            code = _REASON_CODE.get(r["reason"] or "", "DEPLETION_FAILED")
+        out.append(
+            {
+                "menu_item": r["name"],
+                "units_sold": _s(_d(r["sold"])),
+                "revenue_cents": int(r["revenue"]),
+                "reason_code": code,
+                "repair": _REPAIR.get(code),
+            }
+        )
+    return out
 
 
 async def _consumption(
@@ -616,33 +791,39 @@ async def _reasons(
             }
         )
 
-    if pos["effective_mapping_pct"] is not None and _d(pos["effective_mapping_pct"]) < 100:
+    mapping = pos["dimensions"]["mapping"]
+    processing = pos["dimensions"]["processing"]
+    connection = pos["dimensions"]["connection"]
+    eff = mapping["effective_mapping_pct"]
+    if eff is not None and _d(eff) < 100:
         reasons.append(
             {
                 "code": "UNMAPPED_SOLD_ITEMS",
-                "unmapped_menu_items": pos["menu_items_unmapped"],
-                "effective_mapping_pct": pos["effective_mapping_pct"],
+                "unmapped_menu_items": mapping["menu_items_unmapped"],
+                "effective_mapping_pct": eff,
                 "source": "pos",
                 "drill": {"type": "recipe", "destination": "/onboarding/recipes"},
             }
         )
-    if not pos["connected"]:
+    if connection["status"] != "connected":
         reasons.append({"code": "POS_DISCONNECTED", "source": "pos", "drill": None})
-    if pos["pending_event_count"] > 0:
+    if processing["pending_event_count"] > 0:
         reasons.append(
             {
                 "code": "POS_BACKLOG",
-                "pending_event_count": pos["pending_event_count"],
-                "oldest_pending_at": pos["oldest_pending_at"],
+                "pending_event_count": processing["pending_event_count"],
+                "oldest_pending_at": processing["oldest_pending_at"],
                 "source": "pos",
                 "drill": None,
             }
         )
-    if pos["depletion_failure_count"] > 0:
+    if pos["dimensions"]["depletion"]["depletion_failure_count"] > 0:
         reasons.append(
             {
                 "code": "DEPLETION_FAILURES",
-                "depletion_failure_count": pos["depletion_failure_count"],
+                "depletion_failure_count": pos["dimensions"]["depletion"][
+                    "depletion_failure_count"
+                ],
                 "source": "pos",
                 "drill": None,
             }
@@ -650,9 +831,10 @@ async def _reasons(
     return reasons
 
 
-async def _cost(s: AsyncSession, tid: UUID, iid: UUID, can_view: bool) -> dict[str, Any]:
-    if not can_view:
-        return {"available": False, "reason": {"code": "MANAGER_ONLY"}}
+async def _cost(s: AsyncSession, tid: UUID, iid: UUID, can_view_aggregated: bool) -> dict[str, Any]:
+    """RBAC: the LATEST unit cost is visible to everyone (staff need it for
+    inventory operations). Supplier identity and cost HISTORY are manager+ only.
+    Estimated purchase cost is not produced in A1 (reorder is NOT_YET_CERTIFIED)."""
     row = (
         (
             await s.execute(
@@ -673,17 +855,54 @@ async def _cost(s: AsyncSession, tid: UUID, iid: UUID, can_view: bool) -> dict[s
     )
     if row is None:
         return {"available": False, "reason": {"code": "NO_COST_HISTORY"}}
-    return {
+    result: dict[str, Any] = {
         "available": True,
         # Cost exact keeps its full DB precision (e.g. "120.0000") — NOT trimmed;
-        # it is the 4-dp costing signal, unlike storage quantities.
+        # it is the 4-dp costing signal, unlike storage quantities. Visible to all.
         "latest_unit_cost_cents_exact": (
             str(row["unit_cost_cents_exact"]) if row["unit_cost_cents_exact"] is not None else None
         ),
         "as_of": _iso(row["effective_from"]),
+    }
+    if not can_view_aggregated:
+        # Staff: latest cost only. Supplier identity + history are manager+.
+        result["aggregated"] = {"available": False, "reason": {"code": "MANAGER_ONLY"}}
+        return result
+    history = (
+        (
+            await s.execute(
+                text("""
+                SELECT cs.unit_cost_cents_exact, cs.effective_from, r.id AS receipt_id
+                  FROM ingredient_cost_snapshots cs
+                  LEFT JOIN receipt_lines rl ON rl.id = cs.source_receipt_line_id
+                  LEFT JOIN receipts r ON r.id = rl.receipt_id
+                 WHERE cs.tenant_id = :t AND cs.inventory_item_id = :i
+                 ORDER BY cs.effective_from DESC LIMIT 20
+            """),
+                {"t": tid, "i": iid},
+            )
+        )
+        .mappings()
+        .all()
+    )
+    result["aggregated"] = {
+        "available": True,
         "supplier_name": row["supplier_name"],
         "receipt_id": str(row["receipt_id"]) if row["receipt_id"] else None,
+        "history": [
+            {
+                "unit_cost_cents_exact": (
+                    str(h["unit_cost_cents_exact"])
+                    if h["unit_cost_cents_exact"] is not None
+                    else None
+                ),
+                "effective_from": _iso(h["effective_from"]),
+                "receipt_id": str(h["receipt_id"]) if h["receipt_id"] else None,
+            }
+            for h in history
+        ],
     }
+    return result
 
 
 def _status(item: _Item, on_hand: Decimal | None) -> tuple[str, list[dict[str, Any]]]:
@@ -720,12 +939,15 @@ async def build_item_insights(
     as_of: datetime,
     timezone_name: str,
     timezone_source: str,
-    can_view_cost: bool,
+    can_view_aggregated_cost: bool,
     target_cover_days: int,
     target_source: str,
 ) -> dict[str, Any]:
     """Assemble the PR-A1 insights payload. Caller owns the REPEATABLE READ txn
-    and passes the DB-derived as_of. Forecast + reorder return NOT_YET_CERTIFIED."""
+    and passes the DB-derived as_of. Forecast + reorder return NOT_YET_CERTIFIED.
+
+    can_view_aggregated_cost: staff always see the latest unit cost; this gates
+    ONLY supplier identity + cost history (manager+)."""
     _AS_OF.set(as_of)
     days = WINDOW_DAYS[window_key]
     window_start = as_of - timedelta(days=days)
@@ -748,15 +970,23 @@ async def build_item_insights(
         pct_of_par = str((on_hand / item.par_level * 100).quantize(Decimal("0.1")))
 
     ledger = await _ledger(session, tenant_id, item_id, item, window_start, on_hand)
-    pos = await _pos_health(session, tenant_id, window_start)
+    pos = await _pos_diagnostics(session, tenant_id, window_start)
     consumption = await _consumption(
         session, tenant_id, item_id, item.inventory_mode, window_start, timezone_name
     )
+    # Consumption floor honesty: label observed usage as a MINIMUM when coverage
+    # is below 100% (unmapped sales may include this ingredient).
+    eff = pos["dimensions"]["mapping"]["effective_mapping_pct"]
+    consumption["coverage"] = {
+        "effective_mapping_pct": eff,
+        "is_floor": eff is None or _d(eff) < Decimal("100"),
+        "note_code": "OBSERVED_USAGE_IS_MINIMUM_UNMAPPED_SALES",
+    }
     contributors = await _contributors(
         session, tenant_id, item_id, item.inventory_mode, window_start
     )
     reasons = await _reasons(session, tenant_id, item_id, window_start, pos, contributors)
-    cost = await _cost(session, tenant_id, item_id, can_view_cost)
+    cost = await _cost(session, tenant_id, item_id, can_view_aggregated_cost)
 
     return {
         "snapshot": {"as_of": as_of.isoformat(), "isolation": "repeatable_read"},

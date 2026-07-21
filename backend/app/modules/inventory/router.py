@@ -462,12 +462,17 @@ async def list_inventory_items(
                                           ('receive','transfer_in','count_adjust','opening_balance')
                                ), 0)
                              - (COALESCE((
-                                   SELECT SUM(ABS(m.delta))
+                                   -- Canonical signal behavior (MUST match on_hand()):
+                                   -- signed SUM(delta) over sale_signal AND
+                                   -- sale_signal_reversal. The old SUM(ABS(delta))
+                                   -- over sale_signal ONLY ignored refund reversals,
+                                   -- understating on-hand after a refund.
+                                   SELECT SUM(m.delta)
                                      FROM inventory_movements m
                                     WHERE m.tenant_id         = ii.tenant_id
                                       AND m.inventory_item_id = ii.id
                                       AND m.recorded_at       > ii.last_count_at
-                                      AND m.movement_type     = 'sale_signal'
+                                      AND m.movement_type IN ('sale_signal', 'sale_signal_reversal')
                                ), 0)
                                * COALESCE((
                                    SELECT yf.yield_factor

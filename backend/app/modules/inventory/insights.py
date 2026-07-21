@@ -204,6 +204,12 @@ async def _ledger(
 # 'quiet' (e.g. a closed restaurant) — NOT broken.
 _PROCESSING_LEASE_SECONDS = 300
 _EVENT_QUIET_HOURS = 24
+# Reconciliation freshness is derived from the ACTUAL worker schedule
+# (reconciliation_worker.INTERVAL_SECONDS = 900s / 15 min) plus a grace multiple —
+# NOT the loose event-quiet horizon. A poll older than a few scheduled intervals
+# is 'stale', not 'recent'.
+_RECON_INTERVAL_SECONDS = 900
+_RECON_GRACE_INTERVALS = 3  # 3 missed cycles ⇒ 45 min ⇒ stale
 
 # Eligible sale line = one the production depletion rules SHOULD have depleted:
 # order locked + payment PAID/PARTIALLY_REFUNDED, line not voided, not refunded.
@@ -258,17 +264,19 @@ def _pct(num: int, den: int) -> str | None:
 
 
 def _stage_status(*, denominator: int, passed: int, failed: int, pending: int, unknown: int) -> str:
-    """Evidence-only stage status. 'ok' requires that EVERY denominator row has
-    positive evidence of passing (passed == denominator). Pending rows → in
-    progress; unaccounted rows → unknown. Never inferred by subtracting failures."""
+    """Evidence-only stage status, reported at the WORST severity present so a
+    known failure is NEVER hidden by pending/unknown rows. Severity order:
+    failures > unknown > in_progress > ok. 'ok' requires positive evidence that
+    EVERY denominator row passed (passed == denominator) — never inferred by
+    subtracting failures. All co-occurring counts are kept on the dimension."""
     if denominator == 0:
         return "unavailable"
-    if pending > 0:
-        return "in_progress"
-    if unknown > 0:
-        return "unknown"
     if failed > 0:
         return "failures"
+    if unknown > 0:
+        return "unknown"
+    if pending > 0:
+        return "in_progress"
     return "ok" if passed == denominator else "unknown"
 
 
@@ -379,18 +387,20 @@ async def _pos_diagnostics(s: AsyncSession, tid: UUID, window_start: datetime) -
     # ── reconciliation_health: reported SEPARATELY; distinguishes never-run /
     #    recent / stale via the timestamp. NEVER a green 'healthy' badge — in A1
     #    it cannot certify completeness.
+    recon_stale_after_s = _RECON_INTERVAL_SECONDS * _RECON_GRACE_INTERVALS
     if not connected:
         recon_status = "unavailable"
     elif conn is None or conn["last_reconciliation_at"] is None:
         recon_status = "never_run"
     else:
-        age_h = (now - conn["last_reconciliation_at"]).total_seconds() / 3600
-        recon_status = "recent" if age_h <= _EVENT_QUIET_HOURS else "stale"
+        age_s = (now - conn["last_reconciliation_at"]).total_seconds()
+        recon_status = "recent" if age_s <= recon_stale_after_s else "stale"
     reconciliation_health = {
         "status": recon_status,  # unavailable | never_run | recent | stale
         "latest_background_reconciliation_check_at": (
             _iso(conn["last_reconciliation_at"]) if conn is not None else None
         ),
+        "stale_after_seconds": recon_stale_after_s,
         "certifies_completeness": False,
     }
 
@@ -480,6 +490,9 @@ async def _pos_diagnostics(s: AsyncSession, tid: UUID, window_start: datetime) -
 
     # Recipe stage (denominator = eligible).
     recipe_unknown = eligible - recipe_pass - recipe_fail - pending_lines
+    # Historical window coverage (frozen sale outcomes) is kept SEPARATE from the
+    # current catalog mapping (finding 3): fixing a recipe today changes future
+    # sales, never these frozen historical rows.
     recipe_mapping = {
         "status": _stage_status(
             denominator=eligible,
@@ -488,13 +501,16 @@ async def _pos_diagnostics(s: AsyncSession, tid: UUID, window_start: datetime) -
             pending=pending_lines,
             unknown=recipe_unknown,
         ),
-        "eligible_sale_line_count": eligible,
-        "with_recipe_count": recipe_pass,
-        "coverage_pct": _pct(recipe_pass, eligible),
-        "no_recipe_count": no_recipe,
-        "invalid_recipe_count": invalid_recipe,
-        "pending_count": pending_lines,
-        "unknown_count": recipe_unknown,
+        "historical_window": {
+            "eligible_sale_line_count": eligible,
+            "with_recipe_count": recipe_pass,
+            "coverage_pct": _pct(recipe_pass, eligible),
+            "no_recipe_count": no_recipe,
+            "invalid_recipe_count": invalid_recipe,
+            "pending_count": pending_lines,
+            "unknown_count": recipe_unknown,
+            "note": "frozen sale outcomes — unchanged by later recipe fixes",
+        },
     }
     # Conversion stage (denominator = recipe_pass; pending already excluded).
     conversion_unknown = recipe_pass - conversion_pass - missing_conversion
@@ -545,11 +561,16 @@ async def _pos_diagnostics(s: AsyncSession, tid: UUID, window_start: datetime) -
         e2e_effective = line_pct  # revenue N/A → line authoritative
     else:
         e2e_effective = str(min(_d(line_pct), _d(rev_pct)))
+    # Severity order (finding 1): a known failure is never hidden by pending —
+    # failures > in_progress > complete/none/partial.
+    total_failures = no_recipe + invalid_recipe + missing_conversion + computation_error
     end_to_end_coverage = {
         "scope": "tenant",
         "status": (
             "unavailable"
             if eligible == 0
+            else "failures"
+            if total_failures > 0
             else "in_progress"
             if pending_lines > 0
             else "complete"
@@ -558,6 +579,8 @@ async def _pos_diagnostics(s: AsyncSession, tid: UUID, window_start: datetime) -
             if depleted == 0
             else "partial"
         ),
+        "failure_count": total_failures,
+        "pending_line_count": pending_lines,
         "eligible_sale_line_count": eligible,
         "depleted_sale_line_count": depleted,
         "line_coverage_pct": line_pct,
@@ -589,8 +612,11 @@ async def _pos_diagnostics(s: AsyncSession, tid: UUID, window_start: datetime) -
         .mappings()
         .one()
     )
-    recipe_mapping["menu_items_mapped"] = int(menu["mapped"])
-    recipe_mapping["menu_items_unmapped"] = int(menu["unmapped"])
+    recipe_mapping["current_catalog"] = {
+        "menu_items_mapped": int(menu["mapped"]),
+        "menu_items_unmapped": int(menu["unmapped"]),
+        "note": "current catalog state — does not retroactively fix historical sales",
+    }
 
     affected = await _affected_menu_items(s, tid, window_start)
 
@@ -976,7 +1002,7 @@ async def _reasons(
         reasons.append(
             {
                 "code": "UNMAPPED_SOLD_ITEMS",
-                "unmapped_menu_items": recipe["menu_items_unmapped"],
+                "unmapped_menu_items": recipe["current_catalog"]["menu_items_unmapped"],
                 "effective_coverage_pct": eff,
                 "source": "pos",
                 "drill": {"type": "recipe", "destination": "/onboarding/recipes"},
@@ -1150,15 +1176,19 @@ async def build_item_insights(
     consumption = await _consumption(
         session, tenant_id, item_id, item.inventory_mode, window_start, timezone_name
     )
-    # ONE consumption confidence object (finding 5). Because provider completeness
-    # is unproven in A1, observed consumption is ALWAYS a floor — even at 100%
-    # mapping — and the reasons say exactly why. This never contradicts itself.
+    # ONE consumption confidence object. It is a TENANT-WIDE PROXY (finding 4):
+    # tenant end-to-end coverage bounds this item's completeness from below but
+    # can never PROVE this ingredient's completeness — so scope is tenant_proxy
+    # and ingredient_level_completeness stays 'unproven'. Because provider
+    # completeness is unproven in A1, observed consumption is ALWAYS a floor.
     eff = pos["dimensions"]["end_to_end_coverage"]["effective_coverage_pct"]
     conf_reasons = [{"code": "PROVIDER_COMPLETENESS_UNPROVEN"}]
     if eff is None or _d(eff) < Decimal("100"):
-        conf_reasons.append({"code": "MAPPING_INCOMPLETE", "effective_coverage_pct": eff})
+        conf_reasons.append({"code": "TENANT_COVERAGE_INCOMPLETE", "effective_coverage_pct": eff})
     consumption["confidence"] = {
         "status": "floor",  # unavailable only when there is nothing observed at all
+        "scope": "tenant_proxy",
+        "ingredient_level_completeness": "unproven",
         "effective_coverage_pct": eff,
         "reasons": conf_reasons,
     }

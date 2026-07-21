@@ -27,6 +27,7 @@ from app.modules.inventory.idempotency import (
     store_response,
 )
 from app.modules.inventory.insights import ItemNotFound, build_item_insights
+from app.modules.inventory.insights_schemas import InsightsResponse
 from app.modules.inventory.item_resolver import UnitTypeConflict
 from app.modules.inventory.schemas import (
     CountEventCreate,
@@ -594,14 +595,14 @@ def _resolve_timezone(raw: str | None) -> tuple[str, str]:
     return "UTC", "fallback"
 
 
-@router.get("/items/{item_id}/insights")
+@router.get("/items/{item_id}/insights", response_model=InsightsResponse)
 async def item_insights(
     item_id: UUID,
     window: str = "14d",
     target_cover_days: int | None = None,
     db: AsyncSession = Depends(_get_insights_session),
     principal: Principal = Depends(get_principal),
-) -> JSONResponse:
+) -> Any:
     tenant_id = UUID(principal.tenant_id)
     if window not in _INSIGHTS_WINDOWS:
         raise HTTPException(
@@ -651,4 +652,5 @@ async def item_insights(
         raise HTTPException(
             status_code=404, detail={"code": "ITEM_NOT_FOUND", "message": "Item not found."}
         ) from None
-    return JSONResponse(payload)
+    # Validated + serialized through the typed response contract (enums enforced).
+    return payload

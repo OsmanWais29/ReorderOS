@@ -286,8 +286,8 @@ async def test_pos_diagnostics_dimensions_and_mapping_ratios(db: Any) -> None:
     assert dims["processing"]["status"] == "backlogged"  # 1 pending event
     assert dims["processing"]["pending_event_count"] == 1
     assert dims["event_activity"]["latest_sales_data_received_at"] is not None
-    assert dims["recipe_mapping"]["menu_items_mapped"] == 1
-    assert dims["recipe_mapping"]["menu_items_unmapped"] == 1
+    assert dims["recipe_mapping"]["current_catalog"]["menu_items_mapped"] == 1
+    assert dims["recipe_mapping"]["current_catalog"]["menu_items_unmapped"] == 1
     # eligible = 2 lines (both PAID/locked/not-refunded); 1 depleted → e2e 50.0.
     # eligible rev 13800, depleted 10000 → 72.5. effective = min = 50.0.
     e2e = dims["end_to_end_coverage"]
@@ -296,12 +296,12 @@ async def test_pos_diagnostics_dimensions_and_mapping_ratios(db: Any) -> None:
     assert e2e["line_coverage_pct"] == "50.0"
     assert e2e["revenue_coverage_pct"] == "72.5"
     assert e2e["effective_coverage_pct"] == "50.0"
-    assert e2e["status"] == "partial"
+    assert e2e["status"] == "failures"  # a known no_recipe failure outranks coverage level
     assert e2e["reason_breakdown"]["NO_RECIPE"] == 1
     # The unmapped line is a RECIPE failure — recipe_mapping shows it, and
     # conversion/depletion are NOT blamed.
     assert dims["recipe_mapping"]["status"] == "failures"
-    assert dims["recipe_mapping"]["no_recipe_count"] == 1
+    assert dims["recipe_mapping"]["historical_window"]["no_recipe_count"] == 1
     assert dims["completeness"]["status"] == "unproven"
     assert dims["forecast_eligibility"]["status"] == "blocked"
     codes = {b["code"] for b in dims["forecast_eligibility"]["blockers"]}
@@ -336,7 +336,7 @@ async def test_consumption_single_confidence_object(db: Any) -> None:
     assert conf["status"] == "floor"
     codes = {r["code"] for r in conf["reasons"]}
     assert "PROVIDER_COMPLETENESS_UNPROVEN" in codes
-    assert "MAPPING_INCOMPLETE" in codes
+    assert "TENANT_COVERAGE_INCOMPLETE" in codes
     # No legacy duplicate indicators remain.
     assert "coverage" not in out["consumption"]
     assert "floor" not in out["consumption"]["summary"]
@@ -685,8 +685,8 @@ async def test_conversion_failure_not_called_unmapped(db: Any) -> None:
     )
     dims = (await _insights(db, s["tid"], s["item"]))["pos"]["dimensions"]
     # recipe_mapping does NOT blame this line (it HAS a recipe).
-    assert dims["recipe_mapping"]["no_recipe_count"] == 0
-    assert dims["recipe_mapping"]["invalid_recipe_count"] == 0
+    assert dims["recipe_mapping"]["historical_window"]["no_recipe_count"] == 0
+    assert dims["recipe_mapping"]["historical_window"]["invalid_recipe_count"] == 0
     # conversion_coverage owns the failure.
     assert dims["conversion_coverage"]["status"] == "failures"
     assert dims["conversion_coverage"]["missing_conversion_count"] == 1
@@ -914,7 +914,7 @@ async def test_pending_line_never_reports_ok(db: Any) -> None:
     tid, item = await _seed_one_line(db, status="pending", reason=None)
     dims = (await _insights(db, tid, item))["pos"]["dimensions"]
     assert dims["recipe_mapping"]["status"] == "in_progress"  # not ok
-    assert dims["recipe_mapping"]["pending_count"] == 1
+    assert dims["recipe_mapping"]["historical_window"]["pending_count"] == 1
     assert dims["conversion_coverage"]["status"] == "unavailable"  # nothing evaluated
     assert dims["depletion_execution"]["status"] == "unavailable"
     assert dims["end_to_end_coverage"]["status"] == "in_progress"
@@ -928,7 +928,7 @@ async def test_unknown_reason_line_yields_unknown_stage(db: Any) -> None:
     tid, item = await _seed_one_line(db, status="failed", reason="sale_ineligible")
     dims = (await _insights(db, tid, item))["pos"]["dimensions"]
     assert dims["recipe_mapping"]["status"] == "unknown"
-    assert dims["recipe_mapping"]["unknown_count"] == 1
+    assert dims["recipe_mapping"]["historical_window"]["unknown_count"] == 1
 
 
 # ── Finding 2: zero/negative revenue ─────────────────────────────────────────
@@ -1244,7 +1244,146 @@ async def test_production_path_missing_conversion_is_conversion_failure(db: Any)
 
     dims = (await _insights(db, tid, item))["pos"]["dimensions"]
     # The recipe EXISTED — recipe stage passes; the CONVERSION stage owns the fail.
-    assert dims["recipe_mapping"]["no_recipe_count"] == 0
+    assert dims["recipe_mapping"]["historical_window"]["no_recipe_count"] == 0
     assert dims["conversion_coverage"]["status"] == "failures"
     assert dims["conversion_coverage"]["missing_conversion_count"] == 1
     assert dims["depletion_execution"]["status"] == "unavailable"
+
+
+# ── Finding 1: severity — failures never hidden by pending/unknown ───────────
+
+
+async def _seed_lines(db: Any, lines: list[tuple[str, str | None]]) -> tuple[uuid.UUID, uuid.UUID]:
+    """Tenant + item + active connection + one order + N eligible sale lines with
+    the given (depletion_status, depletion_reason) each."""
+    now = datetime.now(UTC)
+    tid = uuid.uuid4()
+    await db.execute(
+        text("INSERT INTO tenants (id, slug, name) VALUES (:id,:s,'MIX')"),
+        {"id": tid, "s": f"mix-{tid.hex[:8]}"},
+    )
+    unit = await _scalar(
+        db,
+        "INSERT INTO units_of_measure (tenant_id, name, abbreviation, unit_type) "
+        "VALUES (:t,'ea','ea','count') RETURNING id",
+        t=tid,
+    )
+    item = await _scalar(
+        db,
+        "INSERT INTO inventory_items (tenant_id, name, inventory_mode, storage_unit_id, "
+        "recipe_unit_id) VALUES (:t,'Oil','recipe_deducted',:u,:u) RETURNING id",
+        t=tid,
+        u=unit,
+    )
+    cid = uuid.uuid4()
+    await db.execute(
+        text(
+            "INSERT INTO tenant_pos_connections (connection_id, tenant_id, vendor, merchant_id, "
+            "environment, state, access_token_enc, access_token_expires_at, refresh_token_enc, "
+            "refresh_token_expires_at, last_reconciliation_at, updated_at) "
+            "VALUES (:c,:t,'clover',:m,'sandbox','active','x',:e,'y',:e,:lr,:lr)"
+        ),
+        {
+            "c": cid,
+            "t": tid,
+            "m": f"M-{tid.hex[:8]}",
+            "e": now + timedelta(days=30),
+            "lr": now - timedelta(minutes=3),
+        },
+    )
+    ib = uuid.uuid4()
+    await db.execute(
+        text(
+            "INSERT INTO pos_event_inbox (inbox_id, tenant_id, connection_id, vendor, "
+            "vendor_event_id, vendor_object_type, vendor_event_type, vendor_ts, raw_payload, state, "
+            "received_at, processed_at) VALUES (:id,:t,:c,'clover','E','O','CREATE',1,'{}',"
+            "'processed',:r,:r)"
+        ),
+        {"id": ib, "t": tid, "c": cid, "r": now - timedelta(days=2)},
+    )
+    order = await _scalar(
+        db,
+        "INSERT INTO orders (id, tenant_id, pos_event_inbox_id, clover_order_id, state, "
+        "payment_state, closed_at, processed_at) VALUES (:id,:t,:ib,'O','locked','PAID',:c,:c) "
+        "RETURNING id",
+        id=uuid.uuid4(),
+        t=tid,
+        ib=ib,
+        c=now - timedelta(days=2),
+    )
+    for i, (status, reason) in enumerate(lines):
+        await db.execute(
+            text(
+                "INSERT INTO sale_line_items (id, tenant_id, order_id, clover_line_item_id, "
+                "name_at_sale, quantity, price_cents_at_sale, net_revenue_cents, depletion_status, "
+                "depletion_reason) VALUES (:id,:t,:o,:cl,'W',1,1000,1000,:st,:rs)"
+            ),
+            {"id": uuid.uuid4(), "t": tid, "o": order, "cl": f"L{i}", "st": status, "rs": reason},
+        )
+    return tid, item
+
+
+async def test_failure_and_pending_reports_failures(db: Any) -> None:
+    # Finding 1: a failed line + a pending line → 'failures' (failures outrank
+    # in_progress), and BOTH counts are retained.
+    tid, item = await _seed_lines(db, [("unmapped", "no_recipe"), ("pending", None)])
+    dims = (await _insights(db, tid, item))["pos"]["dimensions"]
+    rm = dims["recipe_mapping"]
+    assert rm["status"] == "failures"
+    assert rm["historical_window"]["no_recipe_count"] == 1
+    assert rm["historical_window"]["pending_count"] == 1  # count kept, not hidden
+    e2e = dims["end_to_end_coverage"]
+    assert e2e["status"] == "failures"  # not in_progress
+    assert e2e["failure_count"] == 1
+    assert e2e["pending_line_count"] == 1
+
+
+async def test_failure_and_unknown_reports_failures(db: Any) -> None:
+    tid, item = await _seed_lines(
+        db,
+        [("unmapped", "no_recipe"), ("failed", "sale_ineligible")],  # sale_ineligible = unknown
+    )
+    rm = (await _insights(db, tid, item))["pos"]["dimensions"]["recipe_mapping"]
+    assert rm["status"] == "failures"  # failures outrank unknown
+    assert rm["historical_window"]["no_recipe_count"] == 1
+    assert rm["historical_window"]["unknown_count"] == 1
+
+
+# ── Finding 3: historical vs current catalog separated ───────────────────────
+
+
+async def test_historical_and_current_catalog_separated(db: Any) -> None:
+    s = await _seed_mode_a(db)
+    rm = (await _insights(db, s["tid"], s["item"]))["pos"]["dimensions"]["recipe_mapping"]
+    assert "historical_window" in rm
+    assert "current_catalog" in rm
+    # Frozen historical outcome vs live catalog — never mixed unlabeled.
+    assert rm["historical_window"]["no_recipe_count"] == 1
+    assert rm["current_catalog"]["menu_items_mapped"] == 1
+    assert rm["current_catalog"]["menu_items_unmapped"] == 1
+
+
+# ── Finding 4: consumption confidence is a tenant proxy, not ingredient-level ─
+
+
+async def test_consumption_confidence_is_tenant_proxy(db: Any) -> None:
+    s = await _seed_mode_a(db)
+    conf = (await _insights(db, s["tid"], s["item"]))["consumption"]["confidence"]
+    assert conf["scope"] == "tenant_proxy"
+    assert conf["ingredient_level_completeness"] == "unproven"
+
+
+# ── Finding 5: reconciliation freshness from the worker schedule ─────────────
+
+
+async def test_reconciliation_stale_uses_schedule_threshold(db: Any) -> None:
+    # A check 20 hours old must be 'stale' (schedule is 15 min + grace), never
+    # 'recent' as it would be under the loose 24h event-quiet threshold.
+    tid, item = await _seed_lines(db, [("depleted", None)])
+    await db.execute(
+        text("UPDATE tenant_pos_connections SET last_reconciliation_at = :ts WHERE tenant_id = :t"),
+        {"ts": datetime.now(UTC) - timedelta(hours=20), "t": tid},
+    )
+    rh = (await _insights(db, tid, item))["pos"]["dimensions"]["reconciliation_health"]
+    assert rh["status"] == "stale"
+    assert rh["stale_after_seconds"] == 2700  # 15 min x 3 grace

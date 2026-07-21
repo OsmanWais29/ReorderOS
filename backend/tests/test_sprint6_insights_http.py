@@ -167,3 +167,65 @@ async def test_scenario_target_cover_days_echoed() -> None:
         ro = r.json()["reorder"]
         assert ro["target_cover_days"] == 10
         assert ro["target_source"] == "scenario"
+
+
+async def test_openapi_documents_full_insights_contract() -> None:
+    # Finding 2: the OpenAPI schema must describe the typed insights payload with
+    # its status/scope/blocker enums — not merely prove the URL exists.
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        spec = (await c.get("/api/v1/openapi.json")).json()
+
+    schemas = spec["components"]["schemas"]
+    assert "InsightsResponse" in schemas
+    # The endpoint's 200 response references the model.
+    path = spec["paths"]["/api/v1/inventory/items/{item_id}/insights"]["get"]
+    ref = path["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    assert ref.endswith("/InsightsResponse")
+
+    # Enum surfaces are documented (spot-check the load-bearing ones). Pydantic
+    # inlines Literals as nested "enum" arrays or single-value "const", so walk
+    # the whole spec.
+    all_enum_values: set[str] = set()
+
+    def _walk(node: object) -> None:
+        if isinstance(node, dict):
+            if isinstance(node.get("enum"), list):
+                all_enum_values.update(str(x) for x in node["enum"])
+            if "const" in node:
+                all_enum_values.add(str(node["const"]))
+            for v in node.values():
+                _walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                _walk(v)
+
+    _walk(spec)
+    # Stage, blocker, e2e, confidence, ledger enums present somewhere in the spec.
+    for v in (
+        "in_progress",
+        "failures",
+        "unknown",  # stage statuses
+        "END_TO_END_COVERAGE_INCOMPLETE",
+        "COMPLETENESS_UNPROVEN",  # blockers
+        "DATA_INCONSISTENT",
+        "RECONCILIATION_UNAVAILABLE",  # ledger states
+        "tenant",
+        "tenant_proxy",
+        "NOT_YET_CERTIFIED",
+    ):
+        assert v in all_enum_values, f"enum value {v!r} missing from OpenAPI"
+
+    # The response model names the major sections.
+    props = set(schemas["InsightsResponse"]["properties"].keys())
+    assert {
+        "snapshot",
+        "item",
+        "ledger",
+        "pos",
+        "consumption",
+        "forecast",
+        "reorder",
+        "cost",
+    } <= props

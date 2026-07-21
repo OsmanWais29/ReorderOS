@@ -1387,3 +1387,125 @@ async def test_reconciliation_stale_uses_schedule_threshold(db: Any) -> None:
     rh = (await _insights(db, tid, item))["pos"]["dimensions"]["reconciliation_health"]
     assert rh["status"] == "stale"
     assert rh["stale_after_seconds"] == 2700  # 15 min x 3 grace
+
+
+# ── Finding 1/2: the typed contract holds across ALL states ──────────────────
+
+
+async def test_full_payload_validates_against_contract_all_states(db: Any) -> None:
+    from app.modules.inventory.insights_schemas import InsightsResponse
+
+    # Mode A (rich), Mode B, disconnected, zero-eligible, pending, production-path.
+    s = await _seed_mode_a(db)
+    InsightsResponse.model_validate(await _insights(db, s["tid"], s["item"]))
+
+    # Mode B
+    tidb = uuid.uuid4()
+    await db.execute(
+        text("INSERT INTO tenants (id, slug, name) VALUES (:id,:s,'CVB')"),
+        {"id": tidb, "s": f"cvb-{tidb.hex[:8]}"},
+    )
+    unit = await _scalar(
+        db,
+        "INSERT INTO units_of_measure (tenant_id, name, abbreviation, unit_type) "
+        "VALUES (:t,'ea','ea','count') RETURNING id",
+        t=tidb,
+    )
+    itemb = await _scalar(
+        db,
+        "INSERT INTO inventory_items (tenant_id, name, inventory_mode, storage_unit_id, "
+        "recipe_unit_id, count_cadence_days, count_grace_days, last_count_at, last_count_quantity) "
+        "VALUES (:t,'Beans','count_anchored',:u,:u,7,9,:lca,200) RETURNING id",
+        t=tidb,
+        u=unit,
+        lca=datetime.now(UTC) - timedelta(days=6),
+    )
+    InsightsResponse.model_validate(await _insights(db, tidb, itemb))
+
+    # Disconnected + zero eligible + pending line + unknown reason
+    tid_d, item_d = await _seed_pos(db, conn_state="revoked", inbox=[("processed", 5, True)])
+    InsightsResponse.model_validate(await _insights(db, tid_d, item_d))
+    tid_p, item_p = await _seed_one_line(db, status="pending", reason=None)
+    InsightsResponse.model_validate(await _insights(db, tid_p, item_p))
+    tid_u, item_u = await _seed_one_line(db, status="failed", reason="sale_ineligible")
+    InsightsResponse.model_validate(await _insights(db, tid_u, item_u))
+
+
+def test_contract_rejects_malformed_payloads() -> None:
+    """Finding 2: representative malformed payloads MUST fail validation —
+    proving the contract actually constrains nested evidence, not just the URL."""
+
+    from pydantic import ValidationError
+
+    from app.modules.inventory.insights_schemas import (
+        Blocker,
+        ConsumptionConfidence,
+        Cost,
+        Dimensions,
+        E2EDim,
+        InsightsResponse,
+        Reason,
+    )
+
+    # A bad blocker code is rejected (enum enforced).
+    with pytest.raises(ValidationError):
+        Blocker.model_validate({"code": "NOT_A_REAL_BLOCKER"})
+    # An unknown extra key on a stable structure is rejected (extra=forbid).
+    with pytest.raises(ValidationError):
+        E2EDim.model_validate(
+            {
+                "scope": "tenant",
+                "status": "complete",
+                "failure_count": 0,
+                "pending_line_count": 0,
+                "eligible_sale_line_count": 1,
+                "depleted_sale_line_count": 1,
+                "line_coverage_pct": "100.0",
+                "eligible_net_revenue_cents": 1,
+                "depleted_net_revenue_cents": 1,
+                "revenue_coverage_pct": "100.0",
+                "revenue_coverage_applicable": True,
+                "effective_coverage_pct": "100.0",
+                "reason_breakdown": {
+                    "NO_RECIPE": 0,
+                    "INVALID_RECIPE": 0,
+                    "MISSING_CONVERSION": 0,
+                    "DEPLETION_FAILED": 0,
+                    "PROCESSING_PENDING": 0,
+                },
+                "SURPRISE": 1,
+            },
+        )
+    # A confidence object claiming ingredient-level proof outside the enum fails.
+    with pytest.raises(ValidationError):
+        ConsumptionConfidence.model_validate(
+            {
+                "status": "floor",
+                "scope": "tenant_proxy",
+                "ingredient_level_completeness": "definitely_complete",
+                "effective_coverage_pct": None,
+                "reasons": [],
+            }
+        )
+    # A reason with an unknown evidence field fails (evidence is enumerated).
+    with pytest.raises(ValidationError):
+        Reason.model_validate({"code": "POS_DISCONNECTED", "source": "pos", "made_up_evidence": 1})
+    # Cost missing the required 'available' fails.
+    with pytest.raises(ValidationError):
+        Cost.model_validate({"latest_unit_cost_cents_exact": "120.0000"})
+    # Dimensions missing a whole dimension fails.
+    with pytest.raises(ValidationError):
+        Dimensions.model_validate(
+            {"connection": {"status": "connected", "provider": "clover", "state": "active"}}
+        )
+    # A wrong ledger state enum on the full response fails.
+    good_ledger = {
+        "mode": "recipe_deducted",
+        "anchor_basis": "ledger_sum",
+        "reconciled": True,
+        "state": "BOGUS_STATE",
+        "rows": [],
+        "current_on_hand": "1",
+    }
+    with pytest.raises(ValidationError):
+        InsightsResponse.model_validate({"ledger": good_ledger})  # also missing sections

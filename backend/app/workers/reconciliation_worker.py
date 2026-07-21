@@ -16,11 +16,14 @@ import signal
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.modules.pos.reconciliation import ReconciliationService
+from app.modules.pos.schedule import RECONCILIATION_INTERVAL_SECONDS
 from app.modules.pos.token_refresh import refresh_expiring_tokens
 
 log = get_logger(__name__)
 
-INTERVAL_SECONDS = 900  # 15 minutes
+# Re-exported for the runner; the canonical value lives in pos.schedule so
+# insights freshness stays derived from the same cadence.
+INTERVAL_SECONDS = RECONCILIATION_INTERVAL_SECONDS
 
 
 async def _main() -> None:

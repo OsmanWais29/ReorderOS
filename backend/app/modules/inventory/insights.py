@@ -33,6 +33,7 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.inventory.balance_projection import balance_before_mode_a, current_balance
+from app.modules.pos.schedule import RECONCILIATION_STALE_AFTER_SECONDS
 
 WINDOW_DAYS = {"7d": 7, "14d": 14, "30d": 30}
 
@@ -204,12 +205,8 @@ async def _ledger(
 # 'quiet' (e.g. a closed restaurant) — NOT broken.
 _PROCESSING_LEASE_SECONDS = 300
 _EVENT_QUIET_HOURS = 24
-# Reconciliation freshness is derived from the ACTUAL worker schedule
-# (reconciliation_worker.INTERVAL_SECONDS = 900s / 15 min) plus a grace multiple —
-# NOT the loose event-quiet horizon. A poll older than a few scheduled intervals
-# is 'stale', not 'recent'.
-_RECON_INTERVAL_SECONDS = 900
-_RECON_GRACE_INTERVALS = 3  # 3 missed cycles ⇒ 45 min ⇒ stale
+# Reconciliation freshness is derived from the ACTUAL worker schedule (shared
+# constant, imported below) — NOT the loose event-quiet horizon.
 
 # Eligible sale line = one the production depletion rules SHOULD have depleted:
 # order locked + payment PAID/PARTIALLY_REFUNDED, line not voided, not refunded.
@@ -387,7 +384,7 @@ async def _pos_diagnostics(s: AsyncSession, tid: UUID, window_start: datetime) -
     # ── reconciliation_health: reported SEPARATELY; distinguishes never-run /
     #    recent / stale via the timestamp. NEVER a green 'healthy' badge — in A1
     #    it cannot certify completeness.
-    recon_stale_after_s = _RECON_INTERVAL_SECONDS * _RECON_GRACE_INTERVALS
+    recon_stale_after_s = RECONCILIATION_STALE_AFTER_SECONDS
     if not connected:
         recon_status = "unavailable"
     elif conn is None or conn["last_reconciliation_at"] is None:

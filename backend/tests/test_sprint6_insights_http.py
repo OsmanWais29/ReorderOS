@@ -184,48 +184,66 @@ async def test_openapi_documents_full_insights_contract() -> None:
     ref = path["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
     assert ref.endswith("/InsightsResponse")
 
-    # Enum surfaces are documented (spot-check the load-bearing ones). Pydantic
-    # inlines Literals as nested "enum" arrays or single-value "const", so walk
-    # the whole spec.
-    all_enum_values: set[str] = set()
+    # ── Resolve $refs starting AT InsightsResponse and assert specific property
+    #    paths — an enum from an unrelated endpoint can no longer satisfy this.
+    def _deref(node: dict) -> dict:
+        seen = 0
+        while "$ref" in node and seen < 10:
+            node = schemas[node["$ref"].split("/")[-1]]
+            seen += 1
+        return node
 
-    def _walk(node: object) -> None:
-        if isinstance(node, dict):
-            if isinstance(node.get("enum"), list):
-                all_enum_values.update(str(x) for x in node["enum"])
-            if "const" in node:
-                all_enum_values.add(str(node["const"]))
-            for v in node.values():
-                _walk(v)
-        elif isinstance(node, list):
-            for v in node:
-                _walk(v)
+    def _prop(model_name: str, prop: str) -> dict:
+        return _deref(schemas[model_name]["properties"][prop])
 
-    _walk(spec)
-    # Stage, blocker, e2e, confidence, ledger enums present somewhere in the spec.
-    for v in (
-        "in_progress",
-        "failures",
-        "unknown",  # stage statuses
-        "END_TO_END_COVERAGE_INCOMPLETE",
-        "COMPLETENESS_UNPROVEN",  # blockers
-        "DATA_INCONSISTENT",
-        "RECONCILIATION_UNAVAILABLE",  # ledger states
-        "tenant",
-        "tenant_proxy",
-        "NOT_YET_CERTIFIED",
-    ):
-        assert v in all_enum_values, f"enum value {v!r} missing from OpenAPI"
+    def _enum_of(model_name: str, prop: str) -> set[str]:
+        node = _prop(model_name, prop)
+        vals: set[str] = set()
+        # Literal → 'enum' (multi) or 'const' (single); unions render under anyOf.
+        for cand in [node, *node.get("anyOf", [])]:
+            if isinstance(cand.get("enum"), list):
+                vals |= {str(x) for x in cand["enum"]}
+            if "const" in cand:
+                vals.add(str(cand["const"]))
+        return vals
 
-    # The response model names the major sections.
+    # The response names the major sections…
     props = set(schemas["InsightsResponse"]["properties"].keys())
     assert {
         "snapshot",
+        "window",
         "item",
         "ledger",
         "pos",
         "consumption",
+        "contributors",
+        "reasons",
         "forecast",
         "reorder",
         "cost",
     } <= props
+
+    # …and the load-bearing enums are reachable at their EXACT property paths.
+    assert {"OK", "DATA_INCONSISTENT", "RECONCILIATION_UNAVAILABLE"} <= _enum_of("Ledger", "state")
+    assert {"unknown", "out", "low", "ok"} <= _enum_of("ItemState", "status")
+    assert {"unavailable", "failures", "in_progress", "ok"} <= _enum_of(
+        "ConversionCoverageDim", "status"
+    )
+    assert {"failures", "in_progress", "complete", "partial"} <= _enum_of("E2EDim", "status")
+    assert _enum_of("E2EDim", "scope") == {"tenant"}
+    assert _enum_of("ConsumptionConfidence", "scope") == {"tenant_proxy"}
+    assert {"unproven", "proven"} <= _enum_of(
+        "ConsumptionConfidence", "ingredient_level_completeness"
+    )
+    assert {"never_run", "recent", "stale", "unavailable"} <= _enum_of("ReconHealthDim", "status")
+    # Blocker codes documented on the Blocker model itself.
+    assert {
+        "END_TO_END_COVERAGE_INCOMPLETE",
+        "COMPLETENESS_UNPROVEN",
+        "PENDING_EVENTS",
+        "PROCESSING_EVENTS",
+        "FAILED_EVENTS",
+    } <= _enum_of("Blocker", "code")
+    # forecast_eligibility.blockers items reference the Blocker model.
+    fe_blockers = _prop("ForecastEligDim", "blockers")
+    assert fe_blockers["items"]["$ref"].endswith("/Blocker")

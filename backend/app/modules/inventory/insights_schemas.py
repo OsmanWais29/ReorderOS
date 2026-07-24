@@ -23,7 +23,10 @@ ConnectionStatus = Literal["connected", "error", "disconnected"]
 EventActivityStatus = Literal["unavailable", "none", "quiet", "active"]
 ReconStatus = Literal["unavailable", "never_run", "recent", "stale"]
 ProcessingStatus = Literal["unavailable", "stalled", "backlogged", "current"]
-E2EStatus = Literal["unavailable", "failures", "in_progress", "complete", "none", "partial"]
+E2EStatus = Literal[
+    "unavailable", "data_inconsistent", "failures", "unknown",
+    "in_progress", "complete", "none", "partial",
+]
 CompletenessStatus = Literal["unproven"]
 ForecastEligStatus = Literal["blocked", "eligible"]
 LedgerState = Literal["OK", "DATA_INCONSISTENT", "RECONCILIATION_UNAVAILABLE"]
@@ -235,6 +238,7 @@ class ReasonBreakdown(BaseModel):
     MISSING_CONVERSION: int
     DEPLETION_FAILED: int
     PROCESSING_PENDING: int
+    UNKNOWN: int
 
 
 class E2EDim(BaseModel):
@@ -242,6 +246,7 @@ class E2EDim(BaseModel):
     scope: Scope
     status: E2EStatus
     failure_count: int
+    unknown_line_count: int
     pending_line_count: int
     eligible_sale_line_count: int
     depleted_sale_line_count: int

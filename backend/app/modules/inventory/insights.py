@@ -558,16 +558,25 @@ async def _pos_diagnostics(s: AsyncSession, tid: UUID, window_start: datetime) -
         e2e_effective = line_pct  # revenue N/A → line authoritative
     else:
         e2e_effective = str(min(_d(line_pct), _d(rev_pct)))
-    # Severity order (finding 1): a known failure is never hidden by pending —
-    # failures > in_progress > complete/none/partial.
+    # Severity order: a known failure is never hidden by pending, and an
+    # UNKNOWN (unclassified) line is never hidden by a coverage badge —
+    # failures > unknown > in_progress > complete/none/partial. The eligible
+    # set partitions EXACTLY into depleted + failures + pending + unknown, so
+    # unknown is the honest remainder; a negative remainder is impossible under
+    # disjoint counting and is surfaced as data_inconsistent rather than hidden.
     total_failures = no_recipe + invalid_recipe + missing_conversion + computation_error
+    unknown_lines = eligible - depleted - total_failures - pending_lines
     end_to_end_coverage = {
         "scope": "tenant",
         "status": (
             "unavailable"
             if eligible == 0
+            else "data_inconsistent"
+            if unknown_lines < 0
             else "failures"
             if total_failures > 0
+            else "unknown"
+            if unknown_lines > 0
             else "in_progress"
             if pending_lines > 0
             else "complete"
@@ -577,6 +586,7 @@ async def _pos_diagnostics(s: AsyncSession, tid: UUID, window_start: datetime) -
             else "partial"
         ),
         "failure_count": total_failures,
+        "unknown_line_count": unknown_lines,
         "pending_line_count": pending_lines,
         "eligible_sale_line_count": eligible,
         "depleted_sale_line_count": depleted,
@@ -592,6 +602,7 @@ async def _pos_diagnostics(s: AsyncSession, tid: UUID, window_start: datetime) -
             "MISSING_CONVERSION": missing_conversion,
             "DEPLETION_FAILED": computation_error,
             "PROCESSING_PENDING": pending_lines,
+            "UNKNOWN": unknown_lines,
         },
     }
 

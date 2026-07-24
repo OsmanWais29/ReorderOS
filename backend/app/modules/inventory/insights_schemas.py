@@ -24,8 +24,14 @@ EventActivityStatus = Literal["unavailable", "none", "quiet", "active"]
 ReconStatus = Literal["unavailable", "never_run", "recent", "stale"]
 ProcessingStatus = Literal["unavailable", "stalled", "backlogged", "current"]
 E2EStatus = Literal[
-    "unavailable", "data_inconsistent", "failures", "unknown",
-    "in_progress", "complete", "none", "partial",
+    "unavailable",
+    "data_inconsistent",
+    "failures",
+    "unknown",
+    "in_progress",
+    "complete",
+    "none",
+    "partial",
 ]
 CompletenessStatus = Literal["unproven"]
 ForecastEligStatus = Literal["blocked", "eligible"]

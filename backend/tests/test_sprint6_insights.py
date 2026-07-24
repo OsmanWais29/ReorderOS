@@ -320,34 +320,75 @@ async def _seed_e2e_lines(db: Any, specs: list[tuple[str, str | None, int]]) -> 
     lines. Each spec = (depletion_status, depletion_reason, net_revenue_cents)."""
     now = datetime.now(UTC)
     tid = uuid.uuid4()
-    await db.execute(text("INSERT INTO tenants (id, slug, name) VALUES (:id,:s,'E2E')"),
-                     {"id": tid, "s": f"e2e-{tid.hex[:8]}"})
-    unit = await _scalar(db, "INSERT INTO units_of_measure (tenant_id,name,abbreviation,unit_type) "
-                         "VALUES (:t,'ea','ea','count') RETURNING id", t=tid)
-    item = await _scalar(db, "INSERT INTO inventory_items (tenant_id,name,inventory_mode,"
-                         "storage_unit_id,recipe_unit_id) VALUES (:t,'X','recipe_deducted',:u,:u) "
-                         "RETURNING id", t=tid, u=unit)
-    conn = await _scalar(db, "INSERT INTO tenant_pos_connections (connection_id,tenant_id,vendor,"
+    await db.execute(
+        text("INSERT INTO tenants (id, slug, name) VALUES (:id,:s,'E2E')"),
+        {"id": tid, "s": f"e2e-{tid.hex[:8]}"},
+    )
+    unit = await _scalar(
+        db,
+        "INSERT INTO units_of_measure (tenant_id,name,abbreviation,unit_type) "
+        "VALUES (:t,'ea','ea','count') RETURNING id",
+        t=tid,
+    )
+    item = await _scalar(
+        db,
+        "INSERT INTO inventory_items (tenant_id,name,inventory_mode,"
+        "storage_unit_id,recipe_unit_id) VALUES (:t,'X','recipe_deducted',:u,:u) "
+        "RETURNING id",
+        t=tid,
+        u=unit,
+    )
+    conn = await _scalar(
+        db,
+        "INSERT INTO tenant_pos_connections (connection_id,tenant_id,vendor,"
         "merchant_id,environment,state,access_token_enc,access_token_expires_at,refresh_token_enc,"
         "refresh_token_expires_at,last_reconciliation_at,updated_at) "
         "VALUES (:c,:t,'clover',:m,'sandbox','active','x',:e,'y',:e,:lr,:lr) RETURNING connection_id",
-        c=uuid.uuid4(), t=tid, m=f"M-{tid.hex[:10]}", lr=now - timedelta(minutes=5),
-        e=now + timedelta(days=30))
-    ib = await _scalar(db, "INSERT INTO pos_event_inbox (inbox_id,tenant_id,connection_id,vendor,"
+        c=uuid.uuid4(),
+        t=tid,
+        m=f"M-{tid.hex[:10]}",
+        lr=now - timedelta(minutes=5),
+        e=now + timedelta(days=30),
+    )
+    ib = await _scalar(
+        db,
+        "INSERT INTO pos_event_inbox (inbox_id,tenant_id,connection_id,vendor,"
         "vendor_event_id,vendor_object_type,vendor_event_type,vendor_ts,raw_payload,state,"
         "received_at,processed_at) VALUES (:i,:t,:c,'clover','E1','O','CREATE',1,:p,'processed',:r,:r) "
-        "RETURNING inbox_id", i=uuid.uuid4(), t=tid, c=conn, p=json.dumps({}),
-        r=now - timedelta(days=2))
-    order = await _scalar(db, "INSERT INTO orders (id,tenant_id,pos_event_inbox_id,clover_order_id,"
+        "RETURNING inbox_id",
+        i=uuid.uuid4(),
+        t=tid,
+        c=conn,
+        p=json.dumps({}),
+        r=now - timedelta(days=2),
+    )
+    order = await _scalar(
+        db,
+        "INSERT INTO orders (id,tenant_id,pos_event_inbox_id,clover_order_id,"
         "state,payment_state,closed_at,processed_at) VALUES (:id,:t,:ib,'CO1','locked','PAID',:c,:c) "
-        "RETURNING id", id=uuid.uuid4(), t=tid, ib=ib, c=now - timedelta(days=2))
+        "RETURNING id",
+        id=uuid.uuid4(),
+        t=tid,
+        ib=ib,
+        c=now - timedelta(days=2),
+    )
     for n, (ds, dr, rev) in enumerate(specs):
-        await db.execute(text(
-            "INSERT INTO sale_line_items (id,tenant_id,order_id,clover_line_item_id,name_at_sale,"
-            "quantity,price_cents_at_sale,net_revenue_cents,depletion_status,depletion_reason) "
-            "VALUES (:id,:t,:o,:cli,'L',1,:rev,:rev,:ds,:dr)"),
-            {"id": uuid.uuid4(), "t": tid, "o": order, "cli": f"L{n}", "rev": rev,
-             "ds": ds, "dr": dr})
+        await db.execute(
+            text(
+                "INSERT INTO sale_line_items (id,tenant_id,order_id,clover_line_item_id,name_at_sale,"
+                "quantity,price_cents_at_sale,net_revenue_cents,depletion_status,depletion_reason) "
+                "VALUES (:id,:t,:o,:cli,'L',1,:rev,:rev,:ds,:dr)"
+            ),
+            {
+                "id": uuid.uuid4(),
+                "t": tid,
+                "o": order,
+                "cli": f"L{n}",
+                "rev": rev,
+                "ds": ds,
+                "dr": dr,
+            },
+        )
     return {"tid": tid, "item": item}
 
 
@@ -358,19 +399,25 @@ def _e2e(out: dict[str, Any]) -> dict[str, Any]:
 async def test_e2e_unknown_only_surfaces_unknown(db: Any) -> None:
     # 2 eligible lines with an unclassified reason (sale_ineligible) → 'unknown',
     # NOT 'none'/'partial'. The regression: unknown rows were previously invisible.
-    s = await _seed_e2e_lines(db, [("failed", "sale_ineligible", 100),
-                                    ("failed", "sale_ineligible", 100)])
+    s = await _seed_e2e_lines(
+        db, [("failed", "sale_ineligible", 100), ("failed", "sale_ineligible", 100)]
+    )
     e = _e2e(await _insights(db, s["tid"], s["item"]))
     assert e["status"] == "unknown"
     assert e["unknown_line_count"] == 2
     assert e["reason_breakdown"]["UNKNOWN"] == 2
-    assert (e["depleted_sale_line_count"] + e["failure_count"]
-            + e["pending_line_count"] + e["unknown_line_count"]) == e["eligible_sale_line_count"]
+    assert (
+        e["depleted_sale_line_count"]
+        + e["failure_count"]
+        + e["pending_line_count"]
+        + e["unknown_line_count"]
+    ) == e["eligible_sale_line_count"]
 
 
 async def test_e2e_unknown_plus_pending_is_unknown(db: Any) -> None:
-    s = await _seed_e2e_lines(db, [("depleted", None, 100), ("pending", None, 100),
-                                    ("failed", "sale_ineligible", 100)])
+    s = await _seed_e2e_lines(
+        db, [("depleted", None, 100), ("pending", None, 100), ("failed", "sale_ineligible", 100)]
+    )
     e = _e2e(await _insights(db, s["tid"], s["item"]))
     assert e["status"] == "unknown"  # unknown outranks in_progress
     assert e["unknown_line_count"] == 1
@@ -378,15 +425,26 @@ async def test_e2e_unknown_plus_pending_is_unknown(db: Any) -> None:
 
 
 async def test_e2e_failure_outranks_unknown(db: Any) -> None:
-    s = await _seed_e2e_lines(db, [("depleted", None, 100), ("unmapped", "no_recipe", 100),
-                                    ("pending", None, 100), ("failed", "sale_ineligible", 100)])
+    s = await _seed_e2e_lines(
+        db,
+        [
+            ("depleted", None, 100),
+            ("unmapped", "no_recipe", 100),
+            ("pending", None, 100),
+            ("failed", "sale_ineligible", 100),
+        ],
+    )
     e = _e2e(await _insights(db, s["tid"], s["item"]))
     assert e["status"] == "failures"  # failures still dominate
     assert e["failure_count"] == 1
     assert e["unknown_line_count"] == 1
     assert e["pending_line_count"] == 1
-    assert (e["depleted_sale_line_count"] + e["failure_count"]
-            + e["pending_line_count"] + e["unknown_line_count"]) == 4
+    assert (
+        e["depleted_sale_line_count"]
+        + e["failure_count"]
+        + e["pending_line_count"]
+        + e["unknown_line_count"]
+    ) == 4
 
 
 async def test_e2e_complete_partition_has_zero_unknown(db: Any) -> None:

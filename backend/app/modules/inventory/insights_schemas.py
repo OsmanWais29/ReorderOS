@@ -64,6 +64,7 @@ ReasonCode = Literal[
     "MANUAL_ADJUSTMENT",
     "RECIPE_COVERAGE_FAILURES",
     "UNKNOWN_SALE_LINES",
+    "POS_PARTITION_DATA_INCONSISTENT",
     "POS_DISCONNECTED",
     "POS_BACKLOG",
     "DEPLETION_FAILURES",
@@ -141,7 +142,7 @@ class LedgerRow(BaseModel):
     model_config = _Forbid
     kind: LedgerRowKind
     quantity: str | None
-    events: int
+    events: NonNegInt
 
 
 class Ledger(BaseModel):
@@ -180,7 +181,7 @@ class ReconHealthDim(BaseModel):
     model_config = _Forbid
     status: ReconStatus
     latest_background_reconciliation_check_at: str | None
-    stale_after_seconds: int
+    stale_after_seconds: NonNegInt
     certifies_completeness: Literal[False]
 
 
@@ -211,8 +212,8 @@ class HistoricalWindow(BaseModel):
 
 class CurrentCatalog(BaseModel):
     model_config = _Forbid
-    menu_items_mapped: int
-    menu_items_unmapped: int
+    menu_items_mapped: NonNegInt
+    menu_items_unmapped: NonNegInt
     note: str
 
 
@@ -278,7 +279,7 @@ class AffectedItem(BaseModel):
     model_config = _Forbid
     menu_item_id: str | None
     menu_item: str | None
-    affected_sale_line_count: int
+    affected_sale_line_count: NonNegInt
     units_sold: str | None
     revenue_cents: int
     reason_code: AffectedReasonCode
@@ -289,7 +290,7 @@ class AffectedMenuItems(BaseModel):
     model_config = _Forbid
     scope: Scope
     items: list[AffectedItem]
-    total_count: int
+    total_count: NonNegInt
     has_more: bool
 
 
@@ -304,7 +305,7 @@ class CompletenessDim(BaseModel):
 class Blocker(BaseModel):
     model_config = _Forbid
     code: BlockerCode
-    count: int | None = None
+    count: NonNegInt | None = None
     effective_pct: str | None = None
 
 
@@ -333,8 +334,8 @@ class Pos(BaseModel):
     model_config = _Forbid
     provider: str | None
     scope: Scope
-    orders_seen_in_window: int
-    eligible_orders_in_window: int
+    orders_seen_in_window: NonNegInt
+    eligible_orders_in_window: NonNegInt
     coverage_denominator: Literal["eligible_sale_lines"]
     dimensions: Dimensions
 
@@ -344,8 +345,8 @@ class DailyConsumption(BaseModel):
     model_config = _Forbid
     date: str
     consumed: str | None
-    orders: int
-    mapped_sale_lines: int
+    orders: NonNegInt
+    mapped_sale_lines: NonNegInt
     is_partial: bool
 
 
@@ -360,7 +361,7 @@ class ConsumptionSummary(BaseModel):
     basis: Literal["observed_day"]
     avg_per_observed_day: str | None
     peak_observed_day: str | None
-    observed_days: int
+    observed_days: NonNegInt
     trend: Trend
 
 
@@ -392,7 +393,7 @@ class Consumption(BaseModel):
 # ── contributors ─────────────────────────────────────────────────────────────
 class ContributorGroup(BaseModel):
     model_config = _Forbid
-    recipe_version: int | None
+    recipe_version: NonNegInt | None
     units_sold: str | None
     qty_per_sale: str | None
     consumed: str | None
@@ -421,7 +422,7 @@ class Reason(BaseModel):
     units_sold: str | None = None
     qty_per_sale: str | None = None
     total_consumed: str | None = None
-    days_since: int | None = None
+    days_since: NonNegInt | None = None
     delta: str | None = None
     at: str | None = None
     affected_sale_line_count: NonNegInt | None = None
@@ -430,6 +431,7 @@ class Reason(BaseModel):
     oldest_pending_at: str | None = None
     depletion_failure_count: NonNegInt | None = None
     unknown_line_count: NonNegInt | None = None
+    overlap_line_count: NonNegInt | None = None
 
 
 # ── forecast / reorder ───────────────────────────────────────────────────────
@@ -444,7 +446,7 @@ class Reorder(BaseModel):
     model_config = _Forbid
     mode: Literal["unavailable", "suggestion_only"]
     state: NotYetCertified
-    target_cover_days: int
+    target_cover_days: NonNegInt
     target_source: Literal["default", "scenario"]
     blockers: list[Blocker]
 

@@ -261,13 +261,16 @@ async def test_openapi_documents_full_insights_contract() -> None:
     # The neutral reason code + unknown reason are in the ReasonCode surface;
     # the old ambiguous code is gone; Reason counts are documented non-negative.
     reason_codes = _enum_of("Reason", "code")
-    assert {"RECIPE_COVERAGE_FAILURES", "UNKNOWN_SALE_LINES"} <= reason_codes
+    assert {
+        "RECIPE_COVERAGE_FAILURES",
+        "UNKNOWN_SALE_LINES",
+        "POS_PARTITION_DATA_INCONSISTENT",
+    } <= reason_codes
     assert "UNMAPPED_SOLD_ITEMS" not in reason_codes
     reason_props = schemas["Reason"]["properties"]
-    assert "unknown_line_count" in reason_props
-    assert _minimum(reason_props["unknown_line_count"]) == 0
-    assert "affected_sale_line_count" in reason_props
-    assert _minimum(reason_props["affected_sale_line_count"]) == 0
+    for cnt in ("unknown_line_count", "affected_sale_line_count", "overlap_line_count"):
+        assert cnt in reason_props, f"Reason.{cnt} missing"
+        assert _minimum(reason_props[cnt]) == 0, f"Reason.{cnt} lacks minimum 0"
     assert _enum_of("E2EDim", "scope") == {"tenant"}
     assert _enum_of("ConsumptionConfidence", "scope") == {"tenant_proxy"}
     assert {"unproven", "proven"} <= _enum_of(

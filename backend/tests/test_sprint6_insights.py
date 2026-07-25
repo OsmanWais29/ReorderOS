@@ -498,6 +498,74 @@ def test_e2e_partition_pure_function() -> None:
     assert unknown >= 0 and overlap >= 0
 
 
+def test_pos_reasons_pure_function() -> None:
+    # _pos_reasons is pure; each reason carries ONLY measured counts and every
+    # payload is contract-valid. The overlap reason invents no cause.
+    import copy
+
+    from app.modules.inventory.insights import _pos_reasons
+    from app.modules.inventory.insights_schemas import Reason
+
+    base = {
+        "recipe_mapping": {"historical_window": {"no_recipe_count": 0, "invalid_recipe_count": 0}},
+        "end_to_end_coverage": {
+            "effective_coverage_pct": "100.0",
+            "unknown_line_count": 0,
+            "overlap_line_count": 0,
+        },
+        "connection": {"status": "connected"},
+        "processing": {"pending_event_count": 0, "oldest_pending_at": None},
+        "depletion_execution": {"depletion_failure_count": 0},
+    }
+
+    def dims(**mut: Any) -> dict[str, Any]:
+        d = copy.deepcopy(base)
+        for path, val in mut.items():
+            if path == "no_recipe":
+                d["recipe_mapping"]["historical_window"]["no_recipe_count"] = val
+            elif path == "invalid":
+                d["recipe_mapping"]["historical_window"]["invalid_recipe_count"] = val
+            elif path == "unknown":
+                d["end_to_end_coverage"]["unknown_line_count"] = val
+            elif path == "overlap":
+                d["end_to_end_coverage"]["overlap_line_count"] = val
+        return d
+
+    # clean → no pos reasons
+    assert _pos_reasons(dims()) == []
+
+    # overlap → neutral POS_PARTITION_DATA_INCONSISTENT with ONLY the count
+    r = _pos_reasons(dims(overlap=3))
+    pr = next(x for x in r if x["code"] == "POS_PARTITION_DATA_INCONSISTENT")
+    assert pr["overlap_line_count"] == 3
+    assert set(pr.keys()) == {
+        "code",
+        "overlap_line_count",
+        "source",
+        "drill",
+    }  # no fabricated cause
+
+    # unknown → UNKNOWN_SALE_LINES, NOT blamed on recipe coverage
+    ru = _pos_reasons(dims(unknown=2))
+    codes = {x["code"] for x in ru}
+    assert "UNKNOWN_SALE_LINES" in codes
+    assert "RECIPE_COVERAGE_FAILURES" not in codes
+
+    # recipe failures → historical affected count (no_recipe + invalid_recipe)
+    rc = next(
+        x
+        for x in _pos_reasons(dims(no_recipe=1, invalid=1))
+        if x["code"] == "RECIPE_COVERAGE_FAILURES"
+    )
+    assert rc["affected_sale_line_count"] == 2
+    assert "unmapped_menu_items" not in rc
+
+    # every emitted reason validates against the typed contract
+    for d in (dims(overlap=3), dims(unknown=2), dims(no_recipe=1, invalid=1)):
+        for reason in _pos_reasons(d):
+            Reason.model_validate(reason)
+
+
 async def test_status_reason_constraint_rejects_corrupt_row(db: Any) -> None:
     # The production constraint is what PREVENTS the corrupt combination that would
     # feed a negative residual. Prove it rejects (depleted + a failure reason)

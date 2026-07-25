@@ -311,6 +311,75 @@ def _e2e_partition(
     return status, unknown, overlap
 
 
+def _pos_reasons(dims: dict[str, Any]) -> list[dict[str, Any]]:
+    """PURE: the POS-derived customer reasons, from the diagnostics `dims` dict.
+    No I/O — unit-testable. Each reason carries ONLY measured counts; none invents
+    a root cause."""
+    out: list[dict[str, Any]] = []
+    recipe = dims["recipe_mapping"]
+    e2e = dims["end_to_end_coverage"]
+    hw = recipe["historical_window"]
+    # RECIPE_COVERAGE_FAILURES: NEUTRAL, historically-scoped — counts the HISTORICAL
+    # sold lines that failed recipe coverage (no_recipe + invalid_recipe) in the
+    # window. NOT current-catalog unmapped (kept separate under current_catalog),
+    # and never calls invalid recipes "unmapped". Fires only on real evidence.
+    recipe_failed_lines = hw["no_recipe_count"] + hw["invalid_recipe_count"]
+    if recipe_failed_lines > 0:
+        out.append(
+            {
+                "code": "RECIPE_COVERAGE_FAILURES",
+                "affected_sale_line_count": recipe_failed_lines,
+                "effective_coverage_pct": e2e["effective_coverage_pct"],
+                "source": "pos",
+                "drill": {"type": "recipe", "destination": "/onboarding/recipes"},
+            }
+        )
+    # UNKNOWN sale lines get their OWN reason — not blamed on recipe mapping.
+    if e2e["unknown_line_count"] > 0:
+        out.append(
+            {
+                "code": "UNKNOWN_SALE_LINES",
+                "unknown_line_count": e2e["unknown_line_count"],
+                "source": "pos",
+                "drill": None,
+            }
+        )
+    # A corrupt partition gets a neutral, cause-free reason (the count only), so the
+    # inconsistency is visible in the main reasons list — not just the forecast blocker.
+    if e2e["overlap_line_count"] > 0:
+        out.append(
+            {
+                "code": "POS_PARTITION_DATA_INCONSISTENT",
+                "overlap_line_count": e2e["overlap_line_count"],
+                "source": "pos",
+                "drill": None,
+            }
+        )
+    if dims["connection"]["status"] != "connected":
+        out.append({"code": "POS_DISCONNECTED", "source": "pos", "drill": None})
+    if dims["processing"]["pending_event_count"] > 0:
+        out.append(
+            {
+                "code": "POS_BACKLOG",
+                "pending_event_count": dims["processing"]["pending_event_count"],
+                "oldest_pending_at": dims["processing"]["oldest_pending_at"],
+                "source": "pos",
+                "drill": None,
+            }
+        )
+    dep_fail = dims["depletion_execution"]["depletion_failure_count"]
+    if dep_fail > 0:
+        out.append(
+            {
+                "code": "DEPLETION_FAILURES",
+                "depletion_failure_count": dep_fail,
+                "source": "pos",
+                "drill": None,
+            }
+        )
+    return out
+
+
 async def _pos_diagnostics(s: AsyncSession, tid: UUID, window_start: datetime) -> dict[str, Any]:
     """POS health as INDEPENDENT, evidence-aware dimensions — never one 'healthy'
     boolean, and never 'ok' without positive per-row evidence. Everything here is
@@ -1031,63 +1100,7 @@ async def _reasons(
             }
         )
 
-    dims = pos["dimensions"]
-    recipe = dims["recipe_mapping"]
-    processing = dims["processing"]
-    connection = dims["connection"]
-    e2e = dims["end_to_end_coverage"]
-    eff = e2e["effective_coverage_pct"]
-    hw = recipe["historical_window"]
-    # RECIPE_COVERAGE_FAILURES is a NEUTRAL, historically-scoped reason: it counts
-    # the HISTORICAL sold lines that failed recipe coverage (no_recipe + invalid_recipe)
-    # in this window — NOT the current catalog's unmapped items (a different, current
-    # measurement kept separate under recipe_mapping.current_catalog) and NOT a claim
-    # that invalid recipes are "unmapped". It fires only on real recipe-coverage
-    # evidence — never merely because coverage < 100 (which can also be pending,
-    # conversion/depletion failures, or UNKNOWN lines).
-    recipe_failed_lines = hw["no_recipe_count"] + hw["invalid_recipe_count"]
-    if recipe_failed_lines > 0:
-        reasons.append(
-            {
-                "code": "RECIPE_COVERAGE_FAILURES",
-                "affected_sale_line_count": recipe_failed_lines,
-                "effective_coverage_pct": eff,
-                "source": "pos",
-                "drill": {"type": "recipe", "destination": "/onboarding/recipes"},
-            }
-        )
-    # UNKNOWN sale lines get their OWN reason — not blamed on recipe mapping.
-    if e2e["unknown_line_count"] > 0:
-        reasons.append(
-            {
-                "code": "UNKNOWN_SALE_LINES",
-                "unknown_line_count": e2e["unknown_line_count"],
-                "source": "pos",
-                "drill": None,
-            }
-        )
-    if connection["status"] != "connected":
-        reasons.append({"code": "POS_DISCONNECTED", "source": "pos", "drill": None})
-    if processing["pending_event_count"] > 0:
-        reasons.append(
-            {
-                "code": "POS_BACKLOG",
-                "pending_event_count": processing["pending_event_count"],
-                "oldest_pending_at": processing["oldest_pending_at"],
-                "source": "pos",
-                "drill": None,
-            }
-        )
-    dep_fail = dims["depletion_execution"]["depletion_failure_count"]
-    if dep_fail > 0:
-        reasons.append(
-            {
-                "code": "DEPLETION_FAILURES",
-                "depletion_failure_count": dep_fail,
-                "source": "pos",
-                "drill": None,
-            }
-        )
+    reasons.extend(_pos_reasons(pos["dimensions"]))
     return reasons
 
 

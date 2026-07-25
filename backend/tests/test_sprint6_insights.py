@@ -463,61 +463,92 @@ async def test_e2e_zero_denominator_unavailable(db: Any) -> None:
     assert e["eligible_sale_line_count"] == 0
 
 
-async def test_e2e_data_inconsistent_never_exposes_negative_count(db: Any) -> None:
-    # Drop the status/reason CHECK so a corrupt double-counted row can exist
-    # (depleted AND computation_error → counted in depleted AND failures), then
-    # prove the API surfaces data_inconsistent with a POSITIVE overlap and NO
-    # negative counts anywhere. (DDL rolls back with the test transaction.)
-    await db.execute(
-        text(
-            "ALTER TABLE sale_line_items DROP CONSTRAINT IF EXISTS depletion_status_reason_consistency"
-        )
+def test_e2e_partition_pure_function() -> None:
+    # The partition/status selection is a PURE function — the corrupt (negative
+    # residual) branch is tested here directly, WITHOUT mutating the DB schema.
+    from app.modules.inventory.insights import _e2e_partition
+
+    # normal partitions
+    assert _e2e_partition(
+        eligible=0, depleted=0, total_failures=0, pending=0, effective_pct=None
+    ) == ("unavailable", 0, 0)
+    assert _e2e_partition(
+        eligible=2, depleted=2, total_failures=0, pending=0, effective_pct="100.0"
+    ) == ("complete", 0, 0)
+    assert _e2e_partition(
+        eligible=2, depleted=0, total_failures=0, pending=0, effective_pct="0.0"
+    ) == ("unknown", 2, 0)  # remainder = unknown
+    assert _e2e_partition(
+        eligible=3, depleted=1, total_failures=0, pending=1, effective_pct="33.3"
+    ) == ("unknown", 1, 0)  # unknown > pending
+    assert _e2e_partition(
+        eligible=4, depleted=1, total_failures=1, pending=1, effective_pct="25.0"
+    ) == ("failures", 1, 0)  # failures dominate
+    assert _e2e_partition(
+        eligible=2, depleted=0, total_failures=0, pending=2, effective_pct="0.0"
+    ) == ("in_progress", 0, 0)
+    # CORRUPT: double-counted row (depleted AND a failure) → residual = -1.
+    status, unknown, overlap = _e2e_partition(
+        eligible=1, depleted=1, total_failures=1, pending=0, effective_pct=None
     )
-    s = await _seed_e2e_lines(db, [("depleted", "computation_error", 100)])
-    e = _e2e(await _insights(db, s["tid"], s["item"]))
-    assert e["status"] == "data_inconsistent"
-    assert e["overlap_line_count"] == 1
-    assert e["unknown_line_count"] == 0  # remainder clamped, never negative
-    assert e["reason_breakdown"]["UNKNOWN"] == 0
-    for k in (
-        "failure_count",
-        "unknown_line_count",
-        "overlap_line_count",
-        "pending_line_count",
-        "eligible_sale_line_count",
-        "depleted_sale_line_count",
-    ):
-        assert e[k] >= 0, f"{k} is negative"
+    assert status == "data_inconsistent"
+    assert overlap == 1
+    assert unknown == 0  # clamped — never negative
+    # No input can ever produce a negative reported count.
+    assert unknown >= 0 and overlap >= 0
 
 
-async def test_unknown_lines_get_own_reason_not_unmapped(db: Any) -> None:
-    # Unknown-only tenant: UNKNOWN_SALE_LINES fires; UNMAPPED_SOLD_ITEMS must NOT
-    # (no no_recipe/invalid_recipe evidence — attributing it to mapping is fabricated).
+async def test_status_reason_constraint_rejects_corrupt_row(db: Any) -> None:
+    # The production constraint is what PREVENTS the corrupt combination that would
+    # feed a negative residual. Prove it rejects (depleted + a failure reason)
+    # rather than dropping the constraint elsewhere.
+    from asyncpg.exceptions import CheckViolationError
+    from sqlalchemy.exc import IntegrityError
+
+    s = await _seed_e2e_lines(db, [])  # tenant + order, no lines
+    order = await _scalar(db, "SELECT id FROM orders WHERE tenant_id=:t LIMIT 1", t=s["tid"])
+    with pytest.raises((IntegrityError, CheckViolationError)):
+        await db.execute(
+            text(
+                "INSERT INTO sale_line_items (id,tenant_id,order_id,clover_line_item_id,"
+                "name_at_sale,quantity,price_cents_at_sale,net_revenue_cents,"
+                "depletion_status,depletion_reason) "
+                "VALUES (:id,:t,:o,'BAD','L',1,0,0,'depleted','computation_error')"
+            ),
+            {"id": uuid.uuid4(), "t": s["tid"], "o": order},
+        )
+
+
+async def test_unknown_lines_get_own_reason_not_recipe_coverage(db: Any) -> None:
+    # Unknown-only tenant: UNKNOWN_SALE_LINES fires; RECIPE_COVERAGE_FAILURES must
+    # NOT (no no_recipe/invalid_recipe evidence — attributing it to recipes is fabricated).
     s = await _seed_e2e_lines(
         db, [("failed", "sale_ineligible", 100), ("failed", "sale_ineligible", 100)]
     )
     out = await _insights(db, s["tid"], s["item"])
     codes = {r["code"] for r in out["reasons"]}
     assert "UNKNOWN_SALE_LINES" in codes
-    assert "UNMAPPED_SOLD_ITEMS" not in codes
+    assert "RECIPE_COVERAGE_FAILURES" not in codes
     ur = next(r for r in out["reasons"] if r["code"] == "UNKNOWN_SALE_LINES")
     assert ur["unknown_line_count"] == 2
 
 
-async def test_forecast_blockers_identify_unknown_and_inconsistent(db: Any) -> None:
+async def test_recipe_coverage_failures_reason_is_historical_line_count(db: Any) -> None:
+    # A no_recipe sold line → RECIPE_COVERAGE_FAILURES with the HISTORICAL affected
+    # line count (not current-catalog unmapped, not called "unmapped").
+    s = await _seed_e2e_lines(db, [("unmapped", "no_recipe", 100), ("depleted", None, 100)])
+    out = await _insights(db, s["tid"], s["item"])
+    r = next((x for x in out["reasons"] if x["code"] == "RECIPE_COVERAGE_FAILURES"), None)
+    assert r is not None
+    assert r["affected_sale_line_count"] == 1
+    assert "unmapped_menu_items" not in r
+
+
+async def test_forecast_blocker_identifies_unknown(db: Any) -> None:
     s = await _seed_e2e_lines(db, [("failed", "sale_ineligible", 100)])
     out = await _insights(db, s["tid"], s["item"])
     codes = {b["code"] for b in out["pos"]["dimensions"]["forecast_eligibility"]["blockers"]}
     assert "UNKNOWN_SALE_LINES" in codes
-    await db.execute(
-        text(
-            "ALTER TABLE sale_line_items DROP CONSTRAINT IF EXISTS depletion_status_reason_consistency"
-        )
-    )
-    s2 = await _seed_e2e_lines(db, [("depleted", "computation_error", 100)])
-    out2 = await _insights(db, s2["tid"], s2["item"])
-    codes2 = {b["code"] for b in out2["pos"]["dimensions"]["forecast_eligibility"]["blockers"]}
-    assert "POS_PARTITION_DATA_INCONSISTENT" in codes2
 
 
 async def test_affected_menu_items_ids_and_truncation(db: Any) -> None:
@@ -585,7 +616,7 @@ async def test_deterministic_reasons(db: Any) -> None:
     assert "TOP_MENU_CONSUMER" in codes
     assert "NO_RECENT_RECEIPT" in codes  # last receive was 10 days ago
     assert "MANUAL_ADJUSTMENT" in codes  # count_adjust -1 in window
-    assert "UNMAPPED_SOLD_ITEMS" in codes  # coverage < 100
+    assert "RECIPE_COVERAGE_FAILURES" in codes  # a no_recipe sold line in window
     # No holidays/weather/promo/supplier-delay ever.
     assert not any(
         x in json.dumps(out["reasons"]).lower()

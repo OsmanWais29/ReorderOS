@@ -11,11 +11,14 @@ still individually enumerated (no open `dict[str, Any]`).
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 _Forbid = ConfigDict(extra="forbid")
+# A non-negative integer count. Applied to every stable diagnostic count field so
+# a corrupt/negative partition can never be presented as a plausible count.
+NonNegInt = Annotated[int, Field(ge=0)]
 
 # ── enums ─────────────────────────────────────────────────────────────────────
 StageStatus = Literal["unavailable", "failures", "unknown", "in_progress", "ok"]
@@ -59,7 +62,7 @@ ReasonCode = Literal[
     "TOP_MENU_CONSUMER",
     "NO_RECENT_RECEIPT",
     "MANUAL_ADJUSTMENT",
-    "UNMAPPED_SOLD_ITEMS",
+    "RECIPE_COVERAGE_FAILURES",
     "UNKNOWN_SALE_LINES",
     "POS_DISCONNECTED",
     "POS_BACKLOG",
@@ -185,24 +188,24 @@ class ProcessingDim(BaseModel):
     model_config = _Forbid
     status: ProcessingStatus
     latest_sales_data_processed_at: str | None
-    pending_event_count: int
-    processing_event_count: int
-    failed_event_count: int
-    permanently_failed_event_count: int
+    pending_event_count: NonNegInt
+    processing_event_count: NonNegInt
+    failed_event_count: NonNegInt
+    permanently_failed_event_count: NonNegInt
     oldest_pending_at: str | None
     oldest_processing_at: str | None
-    historical_unresolved_event_count: int
+    historical_unresolved_event_count: NonNegInt
 
 
 class HistoricalWindow(BaseModel):
     model_config = _Forbid
-    eligible_sale_line_count: int
-    with_recipe_count: int
+    eligible_sale_line_count: NonNegInt
+    with_recipe_count: NonNegInt
     coverage_pct: str | None
-    no_recipe_count: int
-    invalid_recipe_count: int
-    pending_count: int
-    unknown_count: int
+    no_recipe_count: NonNegInt
+    invalid_recipe_count: NonNegInt
+    pending_count: NonNegInt
+    unknown_count: NonNegInt
     note: str
 
 
@@ -223,45 +226,45 @@ class RecipeMappingDim(BaseModel):
 class ConversionCoverageDim(BaseModel):
     model_config = _Forbid
     status: StageStatus
-    with_recipe_count: int
-    converted_count: int
+    with_recipe_count: NonNegInt
+    converted_count: NonNegInt
     coverage_pct: str | None
-    missing_conversion_count: int
-    unknown_count: int
+    missing_conversion_count: NonNegInt
+    unknown_count: NonNegInt
 
 
 class DepletionExecutionDim(BaseModel):
     model_config = _Forbid
     status: StageStatus
-    convertible_count: int
-    depleted_count: int
+    convertible_count: NonNegInt
+    depleted_count: NonNegInt
     coverage_pct: str | None
-    depletion_failure_count: int
-    unknown_count: int
+    depletion_failure_count: NonNegInt
+    unknown_count: NonNegInt
 
 
 class ReasonBreakdown(BaseModel):
     model_config = _Forbid
-    NO_RECIPE: int = Field(ge=0)
-    INVALID_RECIPE: int = Field(ge=0)
-    MISSING_CONVERSION: int = Field(ge=0)
-    DEPLETION_FAILED: int = Field(ge=0)
-    PROCESSING_PENDING: int = Field(ge=0)
-    UNKNOWN: int = Field(ge=0)
+    NO_RECIPE: NonNegInt
+    INVALID_RECIPE: NonNegInt
+    MISSING_CONVERSION: NonNegInt
+    DEPLETION_FAILED: NonNegInt
+    PROCESSING_PENDING: NonNegInt
+    UNKNOWN: NonNegInt
 
 
 class E2EDim(BaseModel):
     model_config = _Forbid
     scope: Scope
     status: E2EStatus
-    failure_count: int = Field(ge=0)
+    failure_count: NonNegInt
     # unknown = honest remainder (never negative); overlap > 0 ONLY when the
     # partition is impossible (double-counted rows) → status data_inconsistent.
-    unknown_line_count: int = Field(ge=0)
-    overlap_line_count: int = Field(ge=0)
-    pending_line_count: int = Field(ge=0)
-    eligible_sale_line_count: int = Field(ge=0)
-    depleted_sale_line_count: int = Field(ge=0)
+    unknown_line_count: NonNegInt
+    overlap_line_count: NonNegInt
+    pending_line_count: NonNegInt
+    eligible_sale_line_count: NonNegInt
+    depleted_sale_line_count: NonNegInt
     line_coverage_pct: str | None
     eligible_net_revenue_cents: int
     depleted_net_revenue_cents: int
@@ -421,12 +424,12 @@ class Reason(BaseModel):
     days_since: int | None = None
     delta: str | None = None
     at: str | None = None
-    unmapped_menu_items: int | None = None
+    affected_sale_line_count: NonNegInt | None = None
     effective_coverage_pct: str | None = None
-    pending_event_count: int | None = None
+    pending_event_count: NonNegInt | None = None
     oldest_pending_at: str | None = None
-    depletion_failure_count: int | None = None
-    unknown_line_count: int | None = None
+    depletion_failure_count: NonNegInt | None = None
+    unknown_line_count: NonNegInt | None = None
 
 
 # ── forecast / reorder ───────────────────────────────────────────────────────

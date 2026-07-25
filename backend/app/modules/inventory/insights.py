@@ -277,6 +277,40 @@ def _stage_status(*, denominator: int, passed: int, failed: int, pending: int, u
     return "ok" if passed == denominator else "unknown"
 
 
+def _e2e_partition(
+    *, eligible: int, depleted: int, total_failures: int, pending: int, effective_pct: str | None
+) -> tuple[str, int, int]:
+    """PURE: end-to-end (status, unknown_line_count, overlap_line_count).
+
+    The eligible set partitions into depleted + failures + pending + unknown.
+    `residual` is the unknown remainder; a NEGATIVE residual is impossible under
+    disjoint counting (the status/reason CHECK guarantees each row lands in one
+    bucket) and means the partition is corrupt — surfaced via a POSITIVE
+    `overlap` and status `data_inconsistent`. Both counts are always >= 0.
+    Severity: unavailable > data_inconsistent > failures > unknown > in_progress
+    > complete/none/partial. No I/O — unit-testable in isolation."""
+    residual = eligible - depleted - total_failures - pending
+    unknown = max(residual, 0)
+    overlap = max(-residual, 0)
+    if eligible == 0:
+        status = "unavailable"
+    elif overlap > 0:
+        status = "data_inconsistent"
+    elif total_failures > 0:
+        status = "failures"
+    elif unknown > 0:
+        status = "unknown"
+    elif pending > 0:
+        status = "in_progress"
+    elif effective_pct is not None and _d(effective_pct) >= Decimal("100"):
+        status = "complete"
+    elif depleted == 0:
+        status = "none"
+    else:
+        status = "partial"
+    return status, unknown, overlap
+
+
 async def _pos_diagnostics(s: AsyncSession, tid: UUID, window_start: datetime) -> dict[str, Any]:
     """POS health as INDEPENDENT, evidence-aware dimensions — never one 'healthy'
     boolean, and never 'ok' without positive per-row evidence. Everything here is
@@ -565,33 +599,18 @@ async def _pos_diagnostics(s: AsyncSession, tid: UUID, window_start: datetime) -
     # unknown is the honest remainder; a negative remainder is impossible under
     # disjoint counting and is surfaced as data_inconsistent rather than hidden.
     total_failures = no_recipe + invalid_recipe + missing_conversion + computation_error
-    # The eligible set partitions into depleted + failures + pending + unknown.
-    # residual is the unknown remainder; a NEGATIVE residual is impossible under
-    # disjoint counting (the status/reason CHECK guarantees each row lands in one
-    # bucket) and means the partition is corrupt — surfaced as data_inconsistent
-    # via a POSITIVE overlap_line_count. Counts are never negative.
-    residual = eligible - depleted - total_failures - pending_lines
-    unknown_lines = max(residual, 0)
-    overlap_lines = max(-residual, 0)
+    # Partition + status via the pure helper (unit-tested, incl. the corrupt/
+    # negative-residual branch) — counts here can never go negative.
+    e2e_status, unknown_lines, overlap_lines = _e2e_partition(
+        eligible=eligible,
+        depleted=depleted,
+        total_failures=total_failures,
+        pending=pending_lines,
+        effective_pct=e2e_effective,
+    )
     end_to_end_coverage = {
         "scope": "tenant",
-        "status": (
-            "unavailable"
-            if eligible == 0
-            else "data_inconsistent"
-            if overlap_lines > 0
-            else "failures"
-            if total_failures > 0
-            else "unknown"
-            if unknown_lines > 0
-            else "in_progress"
-            if pending_lines > 0
-            else "complete"
-            if (e2e_effective is not None and _d(e2e_effective) >= Decimal("100"))
-            else "none"
-            if depleted == 0
-            else "partial"
-        ),
+        "status": e2e_status,
         "failure_count": total_failures,
         "unknown_line_count": unknown_lines,
         "overlap_line_count": overlap_lines,
@@ -1019,16 +1038,19 @@ async def _reasons(
     e2e = dims["end_to_end_coverage"]
     eff = e2e["effective_coverage_pct"]
     hw = recipe["historical_window"]
-    # UNMAPPED_SOLD_ITEMS only when there is ACTUAL recipe-mapping-failure evidence
-    # (no_recipe / invalid_recipe on sold lines) — never merely because coverage < 100,
-    # which can also be caused by pending, conversion/depletion failures, or UNKNOWN
-    # lines. Attributing those to "unmapped recipes" would be a fabricated explanation.
+    # RECIPE_COVERAGE_FAILURES is a NEUTRAL, historically-scoped reason: it counts
+    # the HISTORICAL sold lines that failed recipe coverage (no_recipe + invalid_recipe)
+    # in this window — NOT the current catalog's unmapped items (a different, current
+    # measurement kept separate under recipe_mapping.current_catalog) and NOT a claim
+    # that invalid recipes are "unmapped". It fires only on real recipe-coverage
+    # evidence — never merely because coverage < 100 (which can also be pending,
+    # conversion/depletion failures, or UNKNOWN lines).
     recipe_failed_lines = hw["no_recipe_count"] + hw["invalid_recipe_count"]
     if recipe_failed_lines > 0:
         reasons.append(
             {
-                "code": "UNMAPPED_SOLD_ITEMS",
-                "unmapped_menu_items": recipe["current_catalog"]["menu_items_unmapped"],
+                "code": "RECIPE_COVERAGE_FAILURES",
+                "affected_sale_line_count": recipe_failed_lines,
                 "effective_coverage_pct": eff,
                 "source": "pos",
                 "drill": {"type": "recipe", "destination": "/onboarding/recipes"},

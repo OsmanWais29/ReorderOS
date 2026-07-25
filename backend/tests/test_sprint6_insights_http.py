@@ -232,17 +232,42 @@ async def test_openapi_documents_full_insights_contract() -> None:
     assert {"failures", "in_progress", "complete", "partial"} <= _enum_of("E2EDim", "status")
     # e2e must document the UNKNOWN partition + the data-inconsistency status.
     assert {"unknown", "data_inconsistent"} <= _enum_of("E2EDim", "status")
+
+    def _minimum(node: dict) -> int | None:
+        # ge=0 renders as {minimum:0}; optional (int|None) nests it under anyOf.
+        for cand in [node, *node.get("anyOf", [])]:
+            if "minimum" in cand:
+                return cand["minimum"]
+        return None
+
     e2e_props = schemas["E2EDim"]["properties"]
+    e2e_required = set(schemas["E2EDim"].get("required", []))
     assert "unknown_line_count" in e2e_props
     assert "overlap_line_count" in e2e_props
-    assert {"unknown_line_count", "overlap_line_count"} <= set(
-        schemas["E2EDim"].get("required", [])
-    )
+    # Every E2E count field is required and documented non-negative.
+    for cnt in (
+        "failure_count",
+        "unknown_line_count",
+        "overlap_line_count",
+        "pending_line_count",
+        "eligible_sale_line_count",
+        "depleted_sale_line_count",
+    ):
+        assert cnt in e2e_required, f"{cnt} not required"
+        assert _minimum(e2e_props[cnt]) == 0, f"{cnt} lacks minimum 0"
     assert "UNKNOWN" in schemas["ReasonBreakdown"]["properties"]
     assert "UNKNOWN" in schemas["ReasonBreakdown"].get("required", [])
-    # Non-negative constraint documented on the count fields.
-    assert e2e_props["unknown_line_count"].get("minimum") == 0
-    assert schemas["ReasonBreakdown"]["properties"]["UNKNOWN"].get("minimum") == 0
+    assert _minimum(schemas["ReasonBreakdown"]["properties"]["UNKNOWN"]) == 0
+    # The neutral reason code + unknown reason are in the ReasonCode surface;
+    # the old ambiguous code is gone; Reason counts are documented non-negative.
+    reason_codes = _enum_of("Reason", "code")
+    assert {"RECIPE_COVERAGE_FAILURES", "UNKNOWN_SALE_LINES"} <= reason_codes
+    assert "UNMAPPED_SOLD_ITEMS" not in reason_codes
+    reason_props = schemas["Reason"]["properties"]
+    assert "unknown_line_count" in reason_props
+    assert _minimum(reason_props["unknown_line_count"]) == 0
+    assert "affected_sale_line_count" in reason_props
+    assert _minimum(reason_props["affected_sale_line_count"]) == 0
     assert _enum_of("E2EDim", "scope") == {"tenant"}
     assert _enum_of("ConsumptionConfidence", "scope") == {"tenant_proxy"}
     assert {"unproven", "proven"} <= _enum_of(

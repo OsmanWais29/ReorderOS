@@ -463,6 +463,63 @@ async def test_e2e_zero_denominator_unavailable(db: Any) -> None:
     assert e["eligible_sale_line_count"] == 0
 
 
+async def test_e2e_data_inconsistent_never_exposes_negative_count(db: Any) -> None:
+    # Drop the status/reason CHECK so a corrupt double-counted row can exist
+    # (depleted AND computation_error → counted in depleted AND failures), then
+    # prove the API surfaces data_inconsistent with a POSITIVE overlap and NO
+    # negative counts anywhere. (DDL rolls back with the test transaction.)
+    await db.execute(
+        text(
+            "ALTER TABLE sale_line_items DROP CONSTRAINT IF EXISTS depletion_status_reason_consistency"
+        )
+    )
+    s = await _seed_e2e_lines(db, [("depleted", "computation_error", 100)])
+    e = _e2e(await _insights(db, s["tid"], s["item"]))
+    assert e["status"] == "data_inconsistent"
+    assert e["overlap_line_count"] == 1
+    assert e["unknown_line_count"] == 0  # remainder clamped, never negative
+    assert e["reason_breakdown"]["UNKNOWN"] == 0
+    for k in (
+        "failure_count",
+        "unknown_line_count",
+        "overlap_line_count",
+        "pending_line_count",
+        "eligible_sale_line_count",
+        "depleted_sale_line_count",
+    ):
+        assert e[k] >= 0, f"{k} is negative"
+
+
+async def test_unknown_lines_get_own_reason_not_unmapped(db: Any) -> None:
+    # Unknown-only tenant: UNKNOWN_SALE_LINES fires; UNMAPPED_SOLD_ITEMS must NOT
+    # (no no_recipe/invalid_recipe evidence — attributing it to mapping is fabricated).
+    s = await _seed_e2e_lines(
+        db, [("failed", "sale_ineligible", 100), ("failed", "sale_ineligible", 100)]
+    )
+    out = await _insights(db, s["tid"], s["item"])
+    codes = {r["code"] for r in out["reasons"]}
+    assert "UNKNOWN_SALE_LINES" in codes
+    assert "UNMAPPED_SOLD_ITEMS" not in codes
+    ur = next(r for r in out["reasons"] if r["code"] == "UNKNOWN_SALE_LINES")
+    assert ur["unknown_line_count"] == 2
+
+
+async def test_forecast_blockers_identify_unknown_and_inconsistent(db: Any) -> None:
+    s = await _seed_e2e_lines(db, [("failed", "sale_ineligible", 100)])
+    out = await _insights(db, s["tid"], s["item"])
+    codes = {b["code"] for b in out["pos"]["dimensions"]["forecast_eligibility"]["blockers"]}
+    assert "UNKNOWN_SALE_LINES" in codes
+    await db.execute(
+        text(
+            "ALTER TABLE sale_line_items DROP CONSTRAINT IF EXISTS depletion_status_reason_consistency"
+        )
+    )
+    s2 = await _seed_e2e_lines(db, [("depleted", "computation_error", 100)])
+    out2 = await _insights(db, s2["tid"], s2["item"])
+    codes2 = {b["code"] for b in out2["pos"]["dimensions"]["forecast_eligibility"]["blockers"]}
+    assert "POS_PARTITION_DATA_INCONSISTENT" in codes2
+
+
 async def test_affected_menu_items_ids_and_truncation(db: Any) -> None:
     s = await _seed_mode_a(db)
     out = await _insights(db, s["tid"], s["item"])
@@ -1608,6 +1665,8 @@ def test_contract_rejects_malformed_payloads() -> None:
                 "scope": "tenant",
                 "status": "complete",
                 "failure_count": 0,
+                "unknown_line_count": 0,
+                "overlap_line_count": 0,
                 "pending_line_count": 0,
                 "eligible_sale_line_count": 1,
                 "depleted_sale_line_count": 1,
@@ -1623,8 +1682,38 @@ def test_contract_rejects_malformed_payloads() -> None:
                     "MISSING_CONVERSION": 0,
                     "DEPLETION_FAILED": 0,
                     "PROCESSING_PENDING": 0,
+                    "UNKNOWN": 0,
                 },
+                # SURPRISE is the ONLY defect — all required fields above are valid.
                 "SURPRISE": 1,
+            },
+        )
+    # A negative count is rejected (Field(ge=0) on all count fields).
+    with pytest.raises(ValidationError):
+        E2EDim.model_validate(
+            {
+                "scope": "tenant",
+                "status": "data_inconsistent",
+                "failure_count": 0,
+                "unknown_line_count": -1,
+                "overlap_line_count": 0,
+                "pending_line_count": 0,
+                "eligible_sale_line_count": 0,
+                "depleted_sale_line_count": 1,
+                "line_coverage_pct": None,
+                "eligible_net_revenue_cents": 0,
+                "depleted_net_revenue_cents": 0,
+                "revenue_coverage_pct": None,
+                "revenue_coverage_applicable": False,
+                "effective_coverage_pct": None,
+                "reason_breakdown": {
+                    "NO_RECIPE": 0,
+                    "INVALID_RECIPE": 0,
+                    "MISSING_CONVERSION": 0,
+                    "DEPLETION_FAILED": 0,
+                    "PROCESSING_PENDING": 0,
+                    "UNKNOWN": 0,
+                },
             },
         )
     # A confidence object claiming ingredient-level proof outside the enum fails.

@@ -565,14 +565,21 @@ async def _pos_diagnostics(s: AsyncSession, tid: UUID, window_start: datetime) -
     # unknown is the honest remainder; a negative remainder is impossible under
     # disjoint counting and is surfaced as data_inconsistent rather than hidden.
     total_failures = no_recipe + invalid_recipe + missing_conversion + computation_error
-    unknown_lines = eligible - depleted - total_failures - pending_lines
+    # The eligible set partitions into depleted + failures + pending + unknown.
+    # residual is the unknown remainder; a NEGATIVE residual is impossible under
+    # disjoint counting (the status/reason CHECK guarantees each row lands in one
+    # bucket) and means the partition is corrupt — surfaced as data_inconsistent
+    # via a POSITIVE overlap_line_count. Counts are never negative.
+    residual = eligible - depleted - total_failures - pending_lines
+    unknown_lines = max(residual, 0)
+    overlap_lines = max(-residual, 0)
     end_to_end_coverage = {
         "scope": "tenant",
         "status": (
             "unavailable"
             if eligible == 0
             else "data_inconsistent"
-            if unknown_lines < 0
+            if overlap_lines > 0
             else "failures"
             if total_failures > 0
             else "unknown"
@@ -587,6 +594,7 @@ async def _pos_diagnostics(s: AsyncSession, tid: UUID, window_start: datetime) -
         ),
         "failure_count": total_failures,
         "unknown_line_count": unknown_lines,
+        "overlap_line_count": overlap_lines,
         "pending_line_count": pending_lines,
         "eligible_sale_line_count": eligible,
         "depleted_sale_line_count": depleted,
@@ -659,6 +667,10 @@ async def _pos_diagnostics(s: AsyncSession, tid: UUID, window_start: datetime) -
         blockers.append({"code": "CONVERSION_FAILURES", "count": missing_conversion})
     if computation_error > 0 or invalid_recipe > 0:
         blockers.append({"code": "DEPLETION_FAILURES", "count": computation_error + invalid_recipe})
+    if unknown_lines > 0:
+        blockers.append({"code": "UNKNOWN_SALE_LINES", "count": unknown_lines})
+    if overlap_lines > 0:
+        blockers.append({"code": "POS_PARTITION_DATA_INCONSISTENT", "count": overlap_lines})
     blockers.append({"code": "COMPLETENESS_UNPROVEN"})  # unconditional A1 gate
     forecast_eligibility = {"status": "blocked", "blockers": blockers}
 
@@ -1006,7 +1018,13 @@ async def _reasons(
     connection = dims["connection"]
     e2e = dims["end_to_end_coverage"]
     eff = e2e["effective_coverage_pct"]
-    if eff is not None and _d(eff) < 100:
+    hw = recipe["historical_window"]
+    # UNMAPPED_SOLD_ITEMS only when there is ACTUAL recipe-mapping-failure evidence
+    # (no_recipe / invalid_recipe on sold lines) — never merely because coverage < 100,
+    # which can also be caused by pending, conversion/depletion failures, or UNKNOWN
+    # lines. Attributing those to "unmapped recipes" would be a fabricated explanation.
+    recipe_failed_lines = hw["no_recipe_count"] + hw["invalid_recipe_count"]
+    if recipe_failed_lines > 0:
         reasons.append(
             {
                 "code": "UNMAPPED_SOLD_ITEMS",
@@ -1014,6 +1032,16 @@ async def _reasons(
                 "effective_coverage_pct": eff,
                 "source": "pos",
                 "drill": {"type": "recipe", "destination": "/onboarding/recipes"},
+            }
+        )
+    # UNKNOWN sale lines get their OWN reason — not blamed on recipe mapping.
+    if e2e["unknown_line_count"] > 0:
+        reasons.append(
+            {
+                "code": "UNKNOWN_SALE_LINES",
+                "unknown_line_count": e2e["unknown_line_count"],
+                "source": "pos",
+                "drill": None,
             }
         )
     if connection["status"] != "connected":

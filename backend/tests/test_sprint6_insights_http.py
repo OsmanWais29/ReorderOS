@@ -230,6 +230,19 @@ async def test_openapi_documents_full_insights_contract() -> None:
         "ConversionCoverageDim", "status"
     )
     assert {"failures", "in_progress", "complete", "partial"} <= _enum_of("E2EDim", "status")
+    # e2e must document the UNKNOWN partition + the data-inconsistency status.
+    assert {"unknown", "data_inconsistent"} <= _enum_of("E2EDim", "status")
+    e2e_props = schemas["E2EDim"]["properties"]
+    assert "unknown_line_count" in e2e_props
+    assert "overlap_line_count" in e2e_props
+    assert {"unknown_line_count", "overlap_line_count"} <= set(
+        schemas["E2EDim"].get("required", [])
+    )
+    assert "UNKNOWN" in schemas["ReasonBreakdown"]["properties"]
+    assert "UNKNOWN" in schemas["ReasonBreakdown"].get("required", [])
+    # Non-negative constraint documented on the count fields.
+    assert e2e_props["unknown_line_count"].get("minimum") == 0
+    assert schemas["ReasonBreakdown"]["properties"]["UNKNOWN"].get("minimum") == 0
     assert _enum_of("E2EDim", "scope") == {"tenant"}
     assert _enum_of("ConsumptionConfidence", "scope") == {"tenant_proxy"}
     assert {"unproven", "proven"} <= _enum_of(
@@ -243,6 +256,8 @@ async def test_openapi_documents_full_insights_contract() -> None:
         "PENDING_EVENTS",
         "PROCESSING_EVENTS",
         "FAILED_EVENTS",
+        "UNKNOWN_SALE_LINES",
+        "POS_PARTITION_DATA_INCONSISTENT",
     } <= _enum_of("Blocker", "code")
     # forecast_eligibility.blockers items reference the Blocker model.
     fe_blockers = _prop("ForecastEligDim", "blockers")

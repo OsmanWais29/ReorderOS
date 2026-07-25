@@ -60,6 +60,7 @@ ReasonCode = Literal[
     "NO_RECENT_RECEIPT",
     "MANUAL_ADJUSTMENT",
     "UNMAPPED_SOLD_ITEMS",
+    "UNKNOWN_SALE_LINES",
     "POS_DISCONNECTED",
     "POS_BACKLOG",
     "DEPLETION_FAILURES",
@@ -76,6 +77,8 @@ BlockerCode = Literal[
     "END_TO_END_COVERAGE_INCOMPLETE",
     "CONVERSION_FAILURES",
     "DEPLETION_FAILURES",
+    "UNKNOWN_SALE_LINES",
+    "POS_PARTITION_DATA_INCONSISTENT",
     "COMPLETENESS_UNPROVEN",
     "NOT_YET_CERTIFIED",
 ]
@@ -239,23 +242,26 @@ class DepletionExecutionDim(BaseModel):
 
 class ReasonBreakdown(BaseModel):
     model_config = _Forbid
-    NO_RECIPE: int
-    INVALID_RECIPE: int
-    MISSING_CONVERSION: int
-    DEPLETION_FAILED: int
-    PROCESSING_PENDING: int
-    UNKNOWN: int
+    NO_RECIPE: int = Field(ge=0)
+    INVALID_RECIPE: int = Field(ge=0)
+    MISSING_CONVERSION: int = Field(ge=0)
+    DEPLETION_FAILED: int = Field(ge=0)
+    PROCESSING_PENDING: int = Field(ge=0)
+    UNKNOWN: int = Field(ge=0)
 
 
 class E2EDim(BaseModel):
     model_config = _Forbid
     scope: Scope
     status: E2EStatus
-    failure_count: int
-    unknown_line_count: int
-    pending_line_count: int
-    eligible_sale_line_count: int
-    depleted_sale_line_count: int
+    failure_count: int = Field(ge=0)
+    # unknown = honest remainder (never negative); overlap > 0 ONLY when the
+    # partition is impossible (double-counted rows) → status data_inconsistent.
+    unknown_line_count: int = Field(ge=0)
+    overlap_line_count: int = Field(ge=0)
+    pending_line_count: int = Field(ge=0)
+    eligible_sale_line_count: int = Field(ge=0)
+    depleted_sale_line_count: int = Field(ge=0)
     line_coverage_pct: str | None
     eligible_net_revenue_cents: int
     depleted_net_revenue_cents: int
@@ -420,6 +426,7 @@ class Reason(BaseModel):
     pending_event_count: int | None = None
     oldest_pending_at: str | None = None
     depletion_failure_count: int | None = None
+    unknown_line_count: int | None = None
 
 
 # ── forecast / reorder ───────────────────────────────────────────────────────

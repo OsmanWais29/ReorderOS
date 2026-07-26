@@ -7,10 +7,18 @@ against hand-frozen expectations. Run inside the deployed image on staging:
     cd /srv && ALLOW_STAGING_CERT=1 python3 -m scripts.staging_cert.pos_diagnostics_cert
 
 Safeguards:
-  * _guard() refuses to run unless ALLOW_STAGING_CERT=1 (set only on staging) and
-    no production marker is present — it MUST NEVER run against production.
-  * every tenant created is deleted (CASCADE) in a finally block — staging is
-    left clean whether the run passes, fails, or raises.
+  * _guard() proves the ACTUAL target: it refuses unless ALLOW_STAGING_CERT=1 AND
+    the runtime service DB matches the committed non-secret staging fingerprint
+    (an allowlist) — production and any unknown DB therefore refuse.
+  * check_privileges() proves the fixture role can INSERT+DELETE every write table
+    BEFORE any write; the run refuses rather than partially mutating the DB. The
+    staging fixture role is the DB superuser (doadmin); it is safe ONLY because the
+    guard guarantees the target is the disposable staging DB and cleanup verifies
+    zero fixture rows survive.
+  * _cleanup() (finally) deletes tenant-scoped rows from every tenant_id BASE TABLE
+    (most tenant FKs are NO ACTION, not CASCADE) with FK triggers disabled for the
+    txn, then INDEPENDENTLY verifies zero created tenants remain. Any survivor forces
+    a non-zero exit even if every assertion passed.
   * no secret/token is printed; the process exits non-zero on ANY failed invariant.
 
 Independence discipline: does NOT import or call _pos_diagnostics, _stage_status,
@@ -33,7 +41,6 @@ import json
 import os
 import sys
 import uuid
-from datetime import UTC
 from decimal import Decimal
 
 from httpx import ASGITransport, AsyncClient
@@ -43,28 +50,65 @@ from app.core.security import Principal, get_principal
 from app.core.service_db import get_service_sessionmaker
 from app.main import create_app
 from app.modules.inventory.depletion import handler  # the pipeline UNDER TEST
+from scripts.staging_cert.guard import db_fingerprint, guard_decision  # pure target guard
 
-UTC = UTC
 RUN = uuid.uuid4().hex[:8]
 EV: dict = {"run": RUN, "scenarios": {}, "errors": []}
 # Every tenant this run creates — deleted (CASCADE) in the finally block so the
 # staging DB is left clean whether the run passes, fails, or raises.
-CREATED_TENANTS: list[str] = []
+CREATED_TENANTS: list[str] = []  # recorded only after each tenant INSERT succeeds
+
+# Tables the harness writes — privilege must be proven before any write.
+_WRITE_TABLES = (
+    "tenants",
+    "users",
+    "user_tenants",
+    "units_of_measure",
+    "inventory_items",
+    "menu_items",
+    "recipes",
+    "recipe_versions",
+    "recipe_ingredients",
+    "tenant_pos_connections",
+    "pos_event_inbox",
+    "orders",
+    "sale_line_items",
+    "inventory_movements",
+    "inventory_yield_factors",
+)
 
 
 def _guard() -> None:
-    """HARD staging-only gate. This script makes controlled writes and MUST NEVER
-    run against production. It refuses unless ALLOW_STAGING_CERT=1 is set (only on
-    staging) and the DB is not flagged as production. Never prints secrets."""
-    if os.environ.get("ALLOW_STAGING_CERT") != "1":
-        print(
-            "REFUSING: set ALLOW_STAGING_CERT=1 (staging only — NEVER production).",
-            file=sys.stderr,
-        )
+    """HARD staging-only gate. Refuses unless the human-intent flag is set AND the
+    runtime service DB is the allowlisted staging identity. Never prints secrets."""
+    from app.core.config import get_settings
+
+    url = get_settings().service_database_url or ""
+    ok, why = guard_decision(
+        allow_flag=os.environ.get("ALLOW_STAGING_CERT"), fingerprint=db_fingerprint(url)
+    )
+    if not ok:
+        print(f"REFUSING (staging-only cert): {why}", file=sys.stderr)
         sys.exit(2)
-    if os.environ.get("REORDEROS_PRODUCTION") == "1" or os.environ.get("IS_PRODUCTION") == "1":
-        print("REFUSING: production marker present.", file=sys.stderr)
-        sys.exit(2)
+
+
+async def check_privileges(session) -> list[str]:
+    """Return the list of missing write privileges (INSERT/DELETE on each write
+    table). Empty list = all present. Queried BEFORE any write so the run refuses
+    rather than partially mutating the DB."""
+    missing: list[str] = []
+    for t in _WRITE_TABLES:
+        row = (
+            await session.execute(
+                text("SELECT has_table_privilege(:t,'INSERT'), has_table_privilege(:t,'DELETE')"),
+                {"t": t},
+            )
+        ).first()
+        if not row[0]:
+            missing.append(f"{t}:INSERT")
+        if not row[1]:
+            missing.append(f"{t}:DELETE")
+    return missing
 
 
 SM = get_service_sessionmaker()
@@ -72,16 +116,15 @@ NOW_SALE = None  # set at runtime
 
 
 async def svc(tid, fn, uid=None, role="owner"):
-    async with SM() as s:
-        async with s.begin():
-            await s.execute(
-                text(
-                    "SELECT set_config('app.user_id',:u,true),set_config('app.tenant_id',:t,true),"
-                    "set_config('app.user_role',:r,true),set_config('app.rls_mode','',true)"
-                ),
-                {"u": str(uid or uuid.uuid4()), "t": str(tid), "r": role},
-            )
-            return await fn(s)
+    async with SM() as s, s.begin():
+        await s.execute(
+            text(
+                "SELECT set_config('app.user_id',:u,true),set_config('app.tenant_id',:t,true),"
+                "set_config('app.user_role',:r,true),set_config('app.rls_mode','',true)"
+            ),
+            {"u": str(uid or uuid.uuid4()), "t": str(tid), "r": role},
+        )
+        return await fn(s)
 
 
 APP = create_app()
@@ -110,11 +153,11 @@ def P(tid, role, uid):
 
 # ── seed primitives ──────────────────────────────────────────────────────────
 async def base(s, tid, slug, uid):
-    CREATED_TENANTS.append(str(tid))
     await s.execute(
         text("INSERT INTO tenants (id,name,slug) VALUES (:i,:n,:s)"),
         {"i": tid, "n": slug, "s": slug},
     )
+    CREATED_TENANTS.append(str(tid))  # recorded ONLY after the insert succeeds
     await s.execute(
         text(
             "INSERT INTO users (id,workos_id,email,email_verified) "
@@ -274,7 +317,7 @@ async def build_scenario(
 ):
     async def _seed(s):
         gu = await uom(s, tid, "g", "weight")
-        vu = await uom(s, tid, "ml", "volume")
+        await uom(s, tid, "ml", "volume")  # ml unit; recipe demands ml vs g storage
         probe = await item(s, tid, gu)
         it_g = probe
         it_ml = await item(s, tid, gu)  # storage g; recipe will demand ml -> missing conversion
@@ -328,7 +371,7 @@ async def build_scenario(
 
     probe, real, order_ev, cat_ev, hist = await svc(tid, _seed)
     # drive the REAL pipeline for real specs (each its own txn, like the worker)
-    for sli, k in real:
+    for sli, _k in real:
         await svc(
             tid,
             lambda s, _sli=sli: handler.process_line(
@@ -350,9 +393,19 @@ def dims(j):
 
 async def main():
     global NOW_SALE
-    async with SM() as s0:
-        async with s0.begin():
-            NOW_SALE = (await s0.execute(text("SELECT now()-interval '1 hour'"))).scalar_one()
+    async with SM() as s0, s0.begin():
+        # Prove write+delete privileges BEFORE any fixture write; refuse otherwise.
+        missing = await check_privileges(s0)
+        cu = (await s0.execute(text("SELECT current_user"))).scalar_one()
+        EV["db_role"] = cu
+        if missing:
+            EV["errors"].append(f"insufficient privileges as {cu}: {missing}")
+            EV["all_pass"] = False
+            print("===CERT_JSON_START===")
+            print(json.dumps(EV, indent=2, default=str))
+            print("===CERT_JSON_END===")
+            return
+        NOW_SALE = (await s0.execute(text("SELECT now()-interval '1 hour'"))).scalar_one()
     transport = ASGITransport(app=APP)
     async with AsyncClient(transport=transport, base_url="http://cert") as client:
         # Each scenario: (specs, frozen expected recipe_mapping partition+status, opts)
@@ -440,7 +493,7 @@ async def main():
         for name, sc in SCEN.items():
             try:
                 T, U = uuid.uuid4(), uuid.uuid4()
-                await svc(T, lambda s: base(s, T, f"{name}-{RUN}", U))
+                await svc(T, lambda s, _t=T, _n=name, _u=U: base(s, _t, f"{_n}-{RUN}", _u))
                 probe, *_ = await build_scenario(T, U, sc["specs"])
                 st, j = await api(
                     client, f"/api/v1/inventory/items/{probe}/insights?window=30d", P(T, "owner", U)
@@ -602,7 +655,7 @@ async def main():
         for name, sc in REV.items():
             try:
                 T, U = uuid.uuid4(), uuid.uuid4()
-                await svc(T, lambda s: base(s, T, f"{name}-{RUN}", U))
+                await svc(T, lambda s, _t=T, _n=name, _u=U: base(s, _t, f"{_n}-{RUN}", _u))
                 probe, *_ = await build_scenario(T, U, sc["specs"])
                 st, j = await api(
                     client, f"/api/v1/inventory/items/{probe}/insights?window=30d", P(T, "owner", U)
@@ -1111,31 +1164,75 @@ async def main():
     print("===CERT_JSON_END===")
 
 
-async def _cleanup() -> None:
-    """Deterministically remove every tenant this run created (CASCADE). Best-effort
-    per tenant so one failure doesn't strand the rest; leaves staging clean."""
-    if not CREATED_TENANTS:
-        return
-    deleted = 0
-    for tid in CREATED_TENANTS:
-        try:
-            async with SM() as s:
-                async with s.begin():
-                    await s.execute(text("SELECT set_config('app.tenant_id',:t,true)"), {"t": tid})
-                    await s.execute(text("DELETE FROM tenants WHERE id = :t"), {"t": tid})
-            deleted += 1
-        except Exception as exc:
-            print(f"CLEANUP WARN: tenant {tid[:8]}: {type(exc).__name__}", file=sys.stderr)
-    print(f"CLEANUP: removed {deleted}/{len(CREATED_TENANTS)} cert tenants", file=sys.stderr)
+async def _cleanup() -> bool:
+    """Deterministically remove every tenant this run created, then PROVE zero
+    remain via an independent query. Most tenant_id FKs are NO ACTION (not CASCADE),
+    so a bare DELETE FROM tenants fails — instead we delete tenant-scoped rows from
+    EVERY tenant_id table (discovered from information_schema, scoped strictly to our
+    own tenant ids) with FK triggers disabled for the txn (superuser, staging-only),
+    then the tenants and the run-tagged users. Returns True ONLY if none survive."""
+    ids = list(dict.fromkeys(CREATED_TENANTS))  # dedupe, preserve order
+    EV["cleanup"] = {"created": len(ids)}
+    if not ids:
+        EV["cleanup"]["remaining"] = 0
+        return True
+    async with SM() as s, s.begin():
+        # replica role disables FK/constraint triggers for THIS txn only, so deletes
+        # need not respect inter-table FK order. Requires superuser — which the
+        # staging fixture role (doadmin) is; the guard ensures the target is staging.
+        await s.execute(text("SET session_replication_role = replica"))
+        tenant_tables = (
+            (
+                await s.execute(
+                    text(
+                        "SELECT c.table_name FROM information_schema.columns c "
+                        "JOIN information_schema.tables t "
+                        "  ON t.table_schema=c.table_schema AND t.table_name=c.table_name "
+                        "WHERE c.table_schema='public' AND c.column_name='tenant_id' "
+                        "  AND t.table_type='BASE TABLE'"  # exclude views (e.g. vw_depletion_coverage)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for t in sorted(tenant_tables):
+            # table names come from the system catalog, not user input.
+            await s.execute(
+                text(f'DELETE FROM "{t}" WHERE tenant_id = ANY(CAST(:ids AS uuid[]))'),  # noqa: S608
+                {"ids": ids},
+            )
+        await s.execute(
+            text("DELETE FROM tenants WHERE id = ANY(CAST(:ids AS uuid[]))"), {"ids": ids}
+        )
+        await s.execute(text("DELETE FROM users WHERE workos_id LIKE :p"), {"p": f"w_{RUN}_%"})
+        await s.execute(text("SET session_replication_role = origin"))
+    # Independent verification on a fresh session — count survivors, not rowcounts.
+    async with SM() as s:
+        remaining = (
+            await s.execute(
+                text("SELECT count(*) FROM tenants WHERE id = ANY(CAST(:ids AS uuid[]))"),
+                {"ids": ids},
+            )
+        ).scalar_one()
+    EV["cleanup"]["remaining"] = int(remaining)
+    ok = int(remaining) == 0
+    print(
+        f"CLEANUP: {len(ids)} targeted, {remaining} remain -> {'clean' if ok else 'INCOMPLETE'}",
+        file=sys.stderr,
+    )
+    return ok
 
 
 async def _run() -> bool:
     _guard()
+    cleanup_ok = False
     try:
         await main()
     finally:
-        await _cleanup()
-    return bool(EV.get("all_pass"))
+        cleanup_ok = await _cleanup()
+    # Any incomplete cleanup forces a non-zero exit even if every assertion passed.
+    return bool(EV.get("all_pass")) and cleanup_ok
 
 
 if __name__ == "__main__":

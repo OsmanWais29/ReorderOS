@@ -23,7 +23,7 @@ def test_db_fingerprint_is_stable_and_credential_free() -> None:
     )
     # deterministic + independent of the driver prefix and (host/port/db only) creds
     assert a == b
-    assert len(a) == 16 and all(c in "0123456789abcdef" for c in a)
+    assert len(a) == 64 and all(c in "0123456789abcdef" for c in a)  # full SHA-256
     # different host or db → different fingerprint
     assert (
         db_fingerprint("postgresql://u:p@prod-db.example.ondigitalocean.com:25060/defaultdb") != a

@@ -54,8 +54,8 @@ from scripts.staging_cert.guard import db_fingerprint, guard_decision  # pure ta
 
 RUN = uuid.uuid4().hex[:8]
 EV: dict = {"run": RUN, "scenarios": {}, "errors": []}
-# Every tenant this run creates — deleted (CASCADE) in the finally block so the
-# staging DB is left clean whether the run passes, fails, or raises.
+# Every tenant this run creates — removed (tenant-scoped, all tables) in the
+# finally block so staging is left clean whether the run passes, fails, or raises.
 CREATED_TENANTS: list[str] = []  # recorded only after each tenant INSERT succeeds
 
 # Tables the harness writes — privilege must be proven before any write.
@@ -1176,12 +1176,9 @@ async def _cleanup() -> bool:
     if not ids:
         EV["cleanup"]["remaining"] = 0
         return True
-    async with SM() as s, s.begin():
-        # replica role disables FK/constraint triggers for THIS txn only, so deletes
-        # need not respect inter-table FK order. Requires superuser — which the
-        # staging fixture role (doadmin) is; the guard ensures the target is staging.
-        await s.execute(text("SET session_replication_role = replica"))
-        tenant_tables = (
+    # discover every tenant_id BASE TABLE once (excludes views like vw_depletion_coverage)
+    async with SM() as s:
+        tenant_tables = sorted(
             (
                 await s.execute(
                     text(
@@ -1189,14 +1186,19 @@ async def _cleanup() -> bool:
                         "JOIN information_schema.tables t "
                         "  ON t.table_schema=c.table_schema AND t.table_name=c.table_name "
                         "WHERE c.table_schema='public' AND c.column_name='tenant_id' "
-                        "  AND t.table_type='BASE TABLE'"  # exclude views (e.g. vw_depletion_coverage)
+                        "  AND t.table_type='BASE TABLE'"
                     )
                 )
             )
             .scalars()
             .all()
         )
-        for t in sorted(tenant_tables):
+    async with SM() as s, s.begin():
+        # SET LOCAL disables FK/constraint triggers for THIS TXN ONLY and auto-restores
+        # at commit/rollback — so the setting can never leak onto a pooled connection.
+        # Requires superuser (the guard confines the target to the staging DB).
+        await s.execute(text("SET LOCAL session_replication_role = replica"))
+        for t in tenant_tables:
             # table names come from the system catalog, not user input.
             await s.execute(
                 text(f'DELETE FROM "{t}" WHERE tenant_id = ANY(CAST(:ids AS uuid[]))'),  # noqa: S608
@@ -1206,19 +1208,37 @@ async def _cleanup() -> bool:
             text("DELETE FROM tenants WHERE id = ANY(CAST(:ids AS uuid[]))"), {"ids": ids}
         )
         await s.execute(text("DELETE FROM users WHERE workos_id LIKE :p"), {"p": f"w_{RUN}_%"})
-        await s.execute(text("SET session_replication_role = origin"))
-    # Independent verification on a fresh session — count survivors, not rowcounts.
+    # ── independent, EXHAUSTIVE verification on a fresh session ──
+    # Prove zero rows remain for the created tenant ids in EVERY tenant_id table,
+    # zero run-tagged users, and zero tenants. Any survivor OR an unqueryable table
+    # is a residual → the run fails. Each nonzero count is recorded in CERT_JSON.
+    residuals: dict[str, int | str] = {}
     async with SM() as s:
-        remaining = (
-            await s.execute(
-                text("SELECT count(*) FROM tenants WHERE id = ANY(CAST(:ids AS uuid[]))"),
-                {"ids": ids},
-            )
-        ).scalar_one()
-    EV["cleanup"]["remaining"] = int(remaining)
-    ok = int(remaining) == 0
+        for t in [*tenant_tables, "tenants", "__users_run_tagged__"]:
+            try:
+                if t == "tenants":
+                    q = text("SELECT count(*) FROM tenants WHERE id = ANY(CAST(:ids AS uuid[]))")
+                    params: dict = {"ids": ids}
+                elif t == "__users_run_tagged__":
+                    q = text("SELECT count(*) FROM users WHERE workos_id LIKE :p")
+                    params = {"p": f"w_{RUN}_%"}
+                else:
+                    # table name from the system catalog, not user input.
+                    q = text(
+                        f'SELECT count(*) FROM "{t}" WHERE tenant_id = ANY(CAST(:ids AS uuid[]))'  # noqa: S608
+                    )
+                    params = {"ids": ids}
+                n = int((await s.execute(q, params)).scalar_one())
+                if n:
+                    residuals[t] = n
+            except Exception as exc:  # an unqueryable table is itself a residual failure
+                residuals[t] = f"query_error:{type(exc).__name__}"
+    EV["cleanup"]["tables_checked"] = len(tenant_tables) + 2
+    EV["cleanup"]["residuals"] = residuals
+    ok = len(residuals) == 0
     print(
-        f"CLEANUP: {len(ids)} targeted, {remaining} remain -> {'clean' if ok else 'INCOMPLETE'}",
+        f"CLEANUP: {len(ids)} tenants across {len(tenant_tables)} tables -> "
+        f"{'clean' if ok else f'INCOMPLETE residuals={residuals}'}",
         file=sys.stderr,
     )
     return ok

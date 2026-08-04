@@ -137,38 +137,57 @@ async def test_receipts_flow_unaffected_when_disabled(clover_off: None) -> None:
 
 
 def _base_env(**overrides: str) -> dict[str, str]:
+    # A complete, ready `api` env with Clover/Postmark OFF. The migrate_job profile no
+    # longer gates Clover (it needs only DATABASE_URL after the Alembic/Settings decouple),
+    # so the Clover `when=CLOVER_ENABLED` gate is exercised against the api profile, which
+    # is the component that actually uses Clover.
     env = {
         "APP_ENV": "production",
         "DATABASE_URL": "postgresql+asyncpg://u:p@h/db",
         "SERVICE_DATABASE_URL": "postgresql+asyncpg://svc:p@h/db",
         "TOKEN_ENCRYPTION_KEY": "real-fernet-key-here",
+        "WORKOS_CLIENT_ID": "client_real_value",
+        "WORKOS_JWKS_URL": "https://api.workos.com/sso/jwks/client_real",
+        "WORKOS_ISSUER": "https://api.workos.com/user_management/client_real",
+        "WORKOS_SECRET_KEY": "sk_real_value_9f8e",
+        "DO_SPACES_ENDPOINT": "https://nyc3.digitaloceanspaces.com",
+        "DO_SPACES_REGION": "nyc3",
+        "DO_SPACES_BUCKET": "reorderos",
+        "DO_SPACES_KEY": "spaces-key-real",
+        "DO_SPACES_SECRET": "spaces-secret-real",
+        # api consumes Anthropic directly (recipes suggestion endpoint) — in the profile
+        # since the component-requirements trace.
+        "ANTHROPIC_API_KEY": "anthropic-key-real",
     }
     env.update(overrides)
     return env
 
 
 def test_env_check_skips_clover_when_disabled() -> None:
-    r = check_env("migrate_job", _base_env(CLOVER_ENABLED="false"))
+    r = check_env("api", _base_env(CLOVER_ENABLED="false"))
     assert r.ready, r.failures  # no Clover keys demanded
-    r2 = check_env("migrate_job", _base_env())  # unset gate == disabled
-    assert r2.ready
+    r2 = check_env("api", _base_env())  # unset gate == disabled
+    assert r2.ready, r2.failures
 
 
 def test_env_check_requires_clover_when_enabled() -> None:
-    r = check_env("migrate_job", _base_env(CLOVER_ENABLED="true"))
+    r = check_env("api", _base_env(CLOVER_ENABLED="true"))
     assert not r.ready
+    # api uses the full Clover triple; all three are required when enabled.
+    assert r.failures["CLOVER_APP_ID"] == "missing"
     assert r.failures["CLOVER_APP_SECRET"] == "missing"
     assert r.failures["CLOVER_WEBHOOK_AUTH_CODE"] == "missing"
 
     ok = check_env(
-        "migrate_job",
+        "api",
         _base_env(
             CLOVER_ENABLED="true",
+            CLOVER_APP_ID="clover-app-id-value",
             CLOVER_APP_SECRET="real-clover-secret-value",
             CLOVER_WEBHOOK_AUTH_CODE="real-webhook-auth-value",
         ),
     )
-    assert ok.ready
+    assert ok.ready, ok.failures
 
 
 # ── Clover workers: clean disabled exit ───────────────────────────────────────

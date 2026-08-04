@@ -42,9 +42,19 @@ async def _main() -> None:
             log.error("inbound_email_worker.env_not_ready", failures=report.failures)
             raise SystemExit(1)
         log.info("inbound_email_worker.env_ready")
+    # Gated on RESTRICTED_RUNTIME_ROLES_ENABLED (not APP_ENV): fail-closed
+    # service_worker assertion when the cutover flag is on; no-op otherwise.
+    from app.core.rls_assert import assert_service_pool_role_if_enabled
+
+    # Asserted role travels IN the `.starting` record — consumed by scripts/retire_verify.py.
+    service_user = await assert_service_pool_role_if_enabled()
 
     worker = InboundEmailWorker()
-    log.info("inbound_email_worker.starting")
+    log.info(
+        "inbound_email_worker.starting",
+        source_commit=os.environ.get("SOURCE_COMMIT", "unknown"),
+        service_user=service_user,
+    )
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 

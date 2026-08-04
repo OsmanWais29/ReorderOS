@@ -1,18 +1,57 @@
-# DigitalOcean App Platform spec for ReorderOS API.
+# DigitalOcean App Platform spec for ReorderOS PRODUCTION.
 #
-# First deploy:
-#   doctl apps create --spec .do/app.yaml
-# Subsequent deploys (also done by .github/workflows/deploy.yml):
-#   doctl apps update <APP_ID> --spec .do/app.yaml
+# ── WHAT THIS FILE IS (and is not) ─────────────────────────────────────────────
+# This is the repository's DECLARED production architecture. It is validated in CI
+# (.github/workflows/deploy.yml runs `doctl apps spec validate` and the deploy_verify
+# contract) but IT IS NOT APPLIED to the live app by any automation:
+#   - Repository-spec validation is NOT live-spec application. Nothing here (env keys,
+#     workers, flags) exists on the live app until someone runs an approved
+#     `doctl apps update <APP_ID> --spec .do/app.yaml` rollout.
+#   - TODAY the live app still has deploy_on_push=true: a push to main makes
+#     DigitalOcean itself deploy source under the CURRENT LIVE spec, NOT this file.
+#   - HARD PRE-MERGE GATE: before this code/workflow lineage reaches `main`, the LIVE
+#     production spec must be reconciled (deploy_on_push=false + SOURCE_COMMIT on api)
+#     in a separately approved session — otherwise DO's independent auto-deploy races
+#     the workflow and /version cannot prove the deployed SHA. After reconciliation the
+#     deploy workflow (create-deployment --update-sources, exact-ID wait, hard
+#     /version.commit == GITHUB_SHA equality) is the only deploy path, armed by the
+#     PROD_SPEC_RECONCILED repository variable; while unset the deploy job FAILS loudly.
+#   - Any future production spec update is a separately approved rollout with its own
+#     runbook. NO production cutover is part of the restricted-runtime-role PR.
 #
-# Prerequisites you must create in the DO console first:
-#   1. A Managed PostgreSQL 16 cluster named "reorderos-dev-pg" in tor1.
-#   2. A Spaces bucket named "reorderos-receipts" in nyc3 (Spaces is not
-#      available in tor1 — see docs/deploy-digitalocean.md).
-#   3. The Spaces access key + secret stored as secret env vars below.
+# ── STARTUP / MIGRATION CONTRACT (current production behavior, preserved) ──────
+# The api container uses the backend/Dockerfile DEFAULT command:
+#     alembic upgrade head && exec uvicorn …
+# i.e. the API migrates its own schema at boot using the bound admin DATABASE_URL, then
+# serves. There is deliberately NO PRE_DEPLOY migrate job here — the live app has none,
+# and this file must not depend on an architecture that no automation installs. If the
+# migration fails, the container exits and the deploy fails (previous deployment keeps
+# serving). app.main._assert_schema_at_head() additionally refuses to serve off-head.
+#
+# RESTRICTED_RUNTIME_ROLES_ENABLED=false: production stays on the bound (full-privilege)
+# database role. The restricted reorderos_app/service_worker cutover is staging-first
+# (.do/staging.app.yaml + docs/security/restricted-runtime-role-runbook.md) and reaches
+# production only via its own approved rollout.
+#
+# Prerequisites that must exist in the DO account (console-created):
+#   1. Managed PostgreSQL cluster "reorderos-dev-pg" in tor1.
+#   2. Spaces bucket "reorderos-receipts" in nyc3 (Spaces is not available in tor1).
+#   3. All `type: SECRET` values entered in the DO console — never committed here.
 
 name: reorderos-api
 region: tor1
+
+# App-level: feature flags shared by every component. They must match the committed
+# worker set below (scripts/deploy_verify.py enforces both directions).
+envs:
+  # Production runs the Clover POS integration → BOTH Clover workers are declared below.
+  - key: CLOVER_ENABLED
+    scope: RUN_TIME
+    value: "true"
+  # Fail-closed startup role assertions stay OFF in production (see header).
+  - key: RESTRICTED_RUNTIME_ROLES_ENABLED
+    scope: RUN_TIME
+    value: "false"
 
 services:
   - name: api
@@ -22,6 +61,8 @@ services:
       deploy_on_push: true
     source_dir: backend
     dockerfile_path: backend/Dockerfile
+    # NO run_command: uses the Dockerfile default (alembic upgrade head && exec uvicorn),
+    # which is the current production startup contract.
     http_port: 8080
     instance_count: 1
     instance_size_slug: basic-xxs
@@ -41,15 +82,23 @@ services:
       - key: APP_LOG_LEVEL
         scope: RUN_AND_BUILD_TIME
         value: INFO
-      # App Platform replaces ${reorderos-dev-pg.DATABASE_URL} with the live
-      # URL for the bound managed database below. Our Settings validator
-      # upgrades postgresql:// to postgresql+asyncpg:// at startup.
+      # Platform-derived git commit of the built image (App Platform substitutes this).
+      # Reported by /version so the deployed SHA is independently observable — never a
+      # manually-pasted literal.
+      - key: SOURCE_COMMIT
+        scope: RUN_TIME
+        value: ${_self.COMMIT_HASH}
+      # App Platform replaces ${reorderos-dev-pg.DATABASE_URL} with the live URL for the
+      # bound managed database below. Our Settings validator upgrades postgresql:// to
+      # postgresql+asyncpg:// at startup. PRODUCTION stays on this bound (full-privilege)
+      # DB — it does NOT cut over to the restricted reorderos_app role (that is a
+      # separate, staging-first, approved change).
       - key: DATABASE_URL
         scope: RUN_TIME
         value: ${reorderos-dev-pg.DATABASE_URL}
       # Sprint 2: WorkOS JWT validation.
       # client_id and JWKS URL are non-sensitive public identifiers — no need
-      # for SECRET type. DO_SPACES_KEY/SECRET are the only real secrets below.
+      # for SECRET type.
       - key: WORKOS_CLIENT_ID
         scope: RUN_TIME
         value: client_01KQT0CRCZP8W8AMAYE5Y1F9SP
@@ -118,6 +167,10 @@ services:
         scope: RUN_TIME
         type: SECRET
 
+# CLOVER_ENABLED=true requires BOTH Clover workers (inbox drain + reconciliation/token
+# refresh). Each worker's env must satisfy Settings' production fail-closed check
+# (TOKEN_ENCRYPTION_KEY, SERVICE_DATABASE_URL, WORKOS_CLIENT_ID, WORKOS_JWKS_URL, plus the
+# Clover triple while CLOVER_ENABLED=true) — a worker missing any of these cannot boot.
 workers:
   - name: inbox-worker
     github:
@@ -136,16 +189,84 @@ workers:
       - key: APP_LOG_LEVEL
         scope: RUN_AND_BUILD_TIME
         value: INFO
+      - key: SOURCE_COMMIT
+        scope: RUN_TIME
+        value: ${_self.COMMIT_HASH}
       - key: DATABASE_URL
         scope: RUN_TIME
         value: ${reorderos-dev-pg.DATABASE_URL}
       - key: SERVICE_DATABASE_URL
         scope: RUN_TIME
         type: SECRET
+      - key: WORKOS_CLIENT_ID
+        scope: RUN_TIME
+        value: client_01KQT0CRCZP8W8AMAYE5Y1F9SP
+      - key: WORKOS_JWKS_URL
+        scope: RUN_TIME
+        value: https://api.workos.com/sso/jwks/client_01KQT0CRCZP8W8AMAYE5Y1F9SP
+      - key: WORKOS_ISSUER
+        scope: RUN_TIME
+        value: https://api.workos.com/user_management/client_01KQT0CRCZP8W8AMAYE5Y1F9SP
       - key: CLOVER_APP_ID
         scope: RUN_TIME
         value: "DJFFAT14DS7QM"
       - key: CLOVER_APP_SECRET
+        scope: RUN_TIME
+        type: SECRET
+      - key: CLOVER_WEBHOOK_AUTH_CODE
+        scope: RUN_TIME
+        type: SECRET
+      - key: CLOVER_ENVIRONMENT
+        scope: RUN_TIME
+        value: sandbox
+      - key: CLOVER_API_BASE_URL
+        scope: RUN_TIME
+        value: https://apisandbox.dev.clover.com
+      - key: TOKEN_ENCRYPTION_KEY
+        scope: RUN_TIME
+        type: SECRET
+  - name: reconciliation-worker
+    github:
+      repo: OsmanWais29/ReorderOS
+      branch: main
+      deploy_on_push: true
+    source_dir: backend
+    dockerfile_path: backend/Dockerfile
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    run_command: python -m app.workers.reconciliation_worker
+    envs:
+      - key: APP_ENV
+        scope: RUN_AND_BUILD_TIME
+        value: production
+      - key: APP_LOG_LEVEL
+        scope: RUN_AND_BUILD_TIME
+        value: INFO
+      - key: SOURCE_COMMIT
+        scope: RUN_TIME
+        value: ${_self.COMMIT_HASH}
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: ${reorderos-dev-pg.DATABASE_URL}
+      - key: SERVICE_DATABASE_URL
+        scope: RUN_TIME
+        type: SECRET
+      - key: WORKOS_CLIENT_ID
+        scope: RUN_TIME
+        value: client_01KQT0CRCZP8W8AMAYE5Y1F9SP
+      - key: WORKOS_JWKS_URL
+        scope: RUN_TIME
+        value: https://api.workos.com/sso/jwks/client_01KQT0CRCZP8W8AMAYE5Y1F9SP
+      - key: WORKOS_ISSUER
+        scope: RUN_TIME
+        value: https://api.workos.com/user_management/client_01KQT0CRCZP8W8AMAYE5Y1F9SP
+      - key: CLOVER_APP_ID
+        scope: RUN_TIME
+        value: "DJFFAT14DS7QM"
+      - key: CLOVER_APP_SECRET
+        scope: RUN_TIME
+        type: SECRET
+      - key: CLOVER_WEBHOOK_AUTH_CODE
         scope: RUN_TIME
         type: SECRET
       - key: CLOVER_ENVIRONMENT

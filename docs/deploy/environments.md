@@ -3,6 +3,17 @@
 A deliberate separation so **production stays clean and easy to reason about**, and all risky
 first-time testing happens in **staging**.
 
+> **2026-07 update (restricted-runtime-role PR):** the "F1.3 secrets must reach EVERY
+> production process" rule below describes the **legacy** configuration profile, which is
+> exactly what production still runs (`RESTRICTED_RUNTIME_ROLES_ENABLED=false`, no
+> `APP_COMPONENT`). Environments that complete the staging-first cutover switch to
+> **per-component** requirement sets (`APP_COMPONENT` + `backend/app/core/
+> component_requirements.py`): each component then carries only the secrets its code
+> consumes, and the migrate job's effective secret set is exactly `{DATABASE_URL}`. See
+> `backend/docs/security/restricted-runtime-role-matrix.md` (dependency matrix) and the
+> runbook (DO NOT RUN) next to it. Nothing below changes for production until its own
+> approved cutover.
+
 ## The two environments
 
 | | **Production** | **Staging** |

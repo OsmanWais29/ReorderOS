@@ -1,23 +1,85 @@
-# DigitalOcean App Platform spec for ReorderOS STAGING — STRUCTURE ONLY (no secret values).
+# DigitalOcean App Platform spec for ReorderOS STAGING — restricted-runtime-role CANDIDATE.
+# STRUCTURE + NON-SECRET VALUES ONLY. Every `type: SECRET` env is declared with NO value —
+# the deployable, fully-populated spec is produced at cutover time by
+# `scripts/build_cutover_spec.py` (which carries live EV[...] refs only when their full
+# identity — component kind, name, key, scope — is unchanged, injects moved/new values
+# from mode-0600 local files, and ABORTS before apply if anything is unresolved).
+# This committed file is the SHAPE CONTRACT; it is never applied directly.
 #
-# All F1.3-required vars are APP-LEVEL so BOTH the api and the inbox-worker pass config validation.
-# Secrets are declared `type: SECRET` with NO value — set the 6 values in the DO CONSOLE after
-# applying (never in this file or in chat; the console keeps them out of the transcript).
+# COMPONENT PARITY: reconciled against the LIVE staging app (read-only inspection,
+# 2026-07-27). Live components: api, inbox-worker, receipt-extraction-worker,
+# inbound-email-worker, migrate (PRE_DEPLOY). ALL retained — the Sprint 6 receipt
+# pipeline (photo/PDF extraction + Postmark inbound email) keeps running through the
+# cutover. reconciliation-worker is ADDED (live staging lacks it; CLOVER_ENABLED=true
+# requires the full Clover pair — POS reconciliation + token refresh).
 #
-# Apply structure:
-#   doctl apps update 70e351c1-3c5f-4699-b85b-05a2346e7f84 --spec .do/staging.app.yaml
-# Then in the console set values (each at the ONE location shown below; just edit the empty value,
-# do NOT add new keys, or you recreate duplicates):
-#   App-Level:  DATABASE_URL, SERVICE_DATABASE_URL (both = doadmin), TOKEN_ENCRYPTION_KEY,
-#               CLOVER_APP_SECRET, CLOVER_WEBHOOK_AUTH_CODE   (Encrypt each)
-#   api:        WORKOS_SECRET_KEY                              (Encrypt)
+# ENV ARCHITECTURE (least-privilege, per app/core/component_requirements.py — every set
+# below is code-backed by the dependency trace in
+# backend/docs/security/restricted-runtime-role-matrix.md):
+#   - App-level: NON-SECRET configuration only. No secret is inherited by anything.
+#   - Each component declares APP_COMPONENT (selects its fail-closed requirement set)
+#     and exactly the secrets its code consumes — no more:
+#       api                      → request DSN (reorderos_app), service DSN, token key,
+#                                  WorkOS secret, Anthropic, Clover secret+webhook code,
+#                                  Spaces key/secret, Postmark Basic Auth pair
+#       inbox-worker             → service DSN, token key            (NO Clover creds:
+#                                  CLOVER_APP_SECRET's only consumer is the API OAuth
+#                                  exchange — pos/router.py)
+#       reconciliation-worker    → service DSN, token key            (CLOVER_APP_ID is
+#                                  app-level non-secret; refresh grant needs no secret)
+#       receipt-extraction-worker→ service DSN, Anthropic, Spaces key/secret
+#       inbound-email-worker     → service DSN only
+#       migrate (PRE_DEPLOY job) → DATABASE_URL (doadmin) ONLY — the job's effective
+#                                  secret set is exactly {DATABASE_URL}; it inherits no
+#                                  secret and gets NO SOURCE_COMMIT (job-level
+#                                  ${_self.COMMIT_HASH} support is unproven).
+#   - POSTMARK_INBOUND_ADDRESS is CONFIGURATION (not a credential): declared GENERAL
+#     with an empty value = carry-from-live marker for the builder (conflicting live
+#     values abort the build — never silently picked).
+#   - TOKEN_ENCRYPTION_KEY_PREVIOUS is not declared here (optional: a fresh environment
+#     must not require it). BUT if the LIVE app carries it (key rotation in progress),
+#     the builder MUST preserve it on every token-decrypting component (api,
+#     inbox-worker, reconciliation-worker) or ABORT — losing it could make existing
+#     OAuth-token ciphertext undecryptable. Retirement is a separate procedure needing
+#     independent proof that no ciphertext still requires the key.
+#
+# RESTRICTED-ROLE CUTOVER (what changes vs live):
+#   1. RESTRICTED_RUNTIME_ROLES_ENABLED=true → fail-closed startup role assertions
+#      (api request pool must be reorderos_app; every service pool service_worker),
+#      and APP_COMPONENT becomes mandatory per component (no legacy fallback).
+#   2. api gets a Uvicorn-only run_command OVERRIDE (the Dockerfile default runs
+#      `alembic upgrade head` first, which the non-CREATE reorderos_app role cannot).
+#      Migrations run ONLY in the migrate PRE_DEPLOY job, as doadmin.
+#   3. All secrets move to component scope (live keeps most app-level) — every moved
+#      secret therefore requires its mode-0600 value file at build time; only
+#      identity-unchanged EV refs (e.g. api WORKOS_SECRET_KEY) are carried.
+#   4. deploy_on_push=false on all components DURING the cutover (live is true) so a
+#      branch push cannot race the procedure; restoring true afterwards is a later,
+#      explicit founder decision.
+#
+# DO NOT APPLY THIS FILE. The only apply path is the runbook's Phase C:
+#   backend/docs/security/restricted-runtime-role-runbook.md  (status: DO NOT RUN)
 
 name: reorderos-staging
 region: tor1
 
+# ── App-level: NON-SECRET configuration only (inherited by all components) ──
 envs:
   - { key: APP_ENV, scope: RUN_AND_BUILD_TIME, value: production }
   - { key: APP_LOG_LEVEL, scope: RUN_AND_BUILD_TIME, value: INFO }
+  # THE CUTOVER FLAG: startup role assertions + mandatory APP_COMPONENT when true.
+  - { key: RESTRICTED_RUNTIME_ROLES_ENABLED, scope: RUN_TIME, value: "true" }
+  # THE EXPECTED SERVICE ROLE — single source of truth consumed by the runtime assertion
+  # (Settings.service_role_name), the cutover builder, and deploy_verify. The committed
+  # value is the standard cutover ("service_worker"); Phase B-alt builds an EFFECTIVE
+  # spec where scripts/build_cutover_spec.py --service-role service_worker_vN substitutes
+  # the versioned name — validated (pattern + DSN-username agreement) by
+  # `deploy_verify --cutover`, never hand-edited.
+  - { key: SERVICE_ROLE_NAME, scope: RUN_TIME, value: "service_worker" }
+  # Feature flags MUST match the worker set below (scripts/deploy_verify.py enforces
+  # both directions; a present-but-disabled worker fails the whole DO deploy).
+  - { key: CLOVER_ENABLED, scope: RUN_TIME, value: "true" }
+  - { key: POSTMARK_INBOUND_ENABLED, scope: RUN_TIME, value: "true" }
   - { key: CLOVER_APP_ID, scope: RUN_TIME, value: "DJFFAT14DS7QM" }
   - { key: CLOVER_ENVIRONMENT, scope: RUN_TIME, value: sandbox }
   - { key: CLOVER_API_BASE_URL, scope: RUN_TIME, value: https://apisandbox.dev.clover.com }
@@ -25,22 +87,43 @@ envs:
   - { key: WORKOS_JWKS_URL, scope: RUN_TIME, value: https://api.workos.com/sso/jwks/client_01KQT0CRCZP8W8AMAYE5Y1F9SP }
   - { key: WORKOS_ISSUER, scope: RUN_TIME, value: https://api.workos.com/user_management/client_01KQT0CRCZP8W8AMAYE5Y1F9SP }
   - { key: WORKOS_VERIFY_AUDIENCE, scope: RUN_TIME, value: "false" }
-  # ── secrets (app-level → inherited by api AND worker). NO values here — set in console. ──
-  - { key: DATABASE_URL, scope: RUN_TIME, type: SECRET }
-  - { key: SERVICE_DATABASE_URL, scope: RUN_TIME, type: SECRET }
-  - { key: TOKEN_ENCRYPTION_KEY, scope: RUN_TIME, type: SECRET }
-  # CLOVER_APP_SECRET + CLOVER_WEBHOOK_AUTH_CODE are NOT app-level: their app-level entries went
-  # into a dangling state (showed SET but didn't inject). Declared per-component below instead
-  # (component-level is the proven-to-inject path — the api booted with component secrets).
+  - { key: DO_SPACES_ENDPOINT, scope: RUN_TIME, value: https://tor1.digitaloceanspaces.com }
+  - { key: DO_SPACES_REGION, scope: RUN_TIME, value: tor1 }
+  - { key: DO_SPACES_BUCKET, scope: RUN_TIME, value: reorderos-staging-receipts }
+
+# Migrations run HERE (PRE_DEPLOY) as doadmin — NOT in the api (Uvicorn-only run_command
+# below). If this job fails, the deploy aborts and the previous deployment keeps serving.
+# Alembic is decoupled from Settings, so this job needs ONLY DATABASE_URL.
+jobs:
+  - name: migrate
+    kind: PRE_DEPLOY
+    github:
+      repo: OsmanWais29/ReorderOS
+      branch: sprint-6-stock-insights-api
+      deploy_on_push: false
+    source_dir: backend
+    dockerfile_path: backend/Dockerfile
+    instance_size_slug: basic-xxs
+    run_command: python -m app.ops.env_check --profile migrate_job && alembic upgrade head
+    envs:
+      - { key: APP_COMPONENT, scope: RUN_TIME, value: migrate_job }
+      # doadmin DSN (DDL-capable). The job's ONLY secret; nothing is inherited.
+      # NO SOURCE_COMMIT here — job-level ${_self.COMMIT_HASH} support is unproven.
+      - { key: DATABASE_URL, scope: RUN_TIME, type: SECRET }
 
 services:
   - name: api
     github:
       repo: OsmanWais29/ReorderOS
-      branch: sprint-5-recipe-depletion
-      deploy_on_push: true
+      branch: sprint-6-stock-insights-api
+      deploy_on_push: false
     source_dir: backend
     dockerfile_path: backend/Dockerfile
+    # CUTOVER OVERRIDE: Uvicorn only — no alembic. The Dockerfile default CMD (which
+    # production keeps) migrates first; reorderos_app has no CREATE, so that step must
+    # not run here. Schema currency stays fail-closed via app.main._assert_schema_at_head
+    # (SELECT on alembic_version, granted to app_user by migration 0035).
+    run_command: uvicorn app.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips='*'
     http_port: 8080
     instance_count: 1
     instance_size_slug: basic-xxs
@@ -54,29 +137,97 @@ services:
     routes:
       - path: /
     envs:
+      - { key: APP_COMPONENT, scope: RUN_TIME, value: api }
+      # Platform-derived build commit (App Platform substitutes). /version reports it.
+      - { key: SOURCE_COMMIT, scope: RUN_TIME, value: "${_self.COMMIT_HASH}" }
+      # Request pool = restricted reorderos_app DSN; service pool = service_worker DSN.
+      - { key: DATABASE_URL, scope: RUN_TIME, type: SECRET }
+      - { key: SERVICE_DATABASE_URL, scope: RUN_TIME, type: SECRET }
+      - { key: TOKEN_ENCRYPTION_KEY, scope: RUN_TIME, type: SECRET }
+      - { key: WORKOS_SECRET_KEY, scope: RUN_TIME, type: SECRET }
+      - { key: ANTHROPIC_API_KEY, scope: RUN_TIME, type: SECRET }
+      - { key: CLOVER_APP_SECRET, scope: RUN_TIME, type: SECRET }
+      - { key: CLOVER_WEBHOOK_AUTH_CODE, scope: RUN_TIME, type: SECRET }
+      - { key: DO_SPACES_KEY, scope: RUN_TIME, type: SECRET }
+      - { key: DO_SPACES_SECRET, scope: RUN_TIME, type: SECRET }
+      - { key: POSTMARK_WEBHOOK_USER, scope: RUN_TIME, type: SECRET }
+      - { key: POSTMARK_WEBHOOK_PASSWORD, scope: RUN_TIME, type: SECRET }
+      # Configuration (not a credential). Empty value = carry-from-live: the builder
+      # copies the live value; --cutover validation then requires it nonempty.
+      - { key: POSTMARK_INBOUND_ADDRESS, scope: RUN_TIME, value: "" }
       - { key: CLOVER_OAUTH_BASE_URL, scope: RUN_TIME, value: https://sandbox.dev.clover.com }
       - { key: CLOVER_OAUTH_CALLBACK_URL, scope: RUN_TIME, value: https://reorderos-staging-3ez2g.ondigitalocean.app/api/v1/pos/clover/callback }
       - { key: CLOVER_POST_CONNECT_REDIRECT, scope: RUN_TIME, value: http://localhost:8081/onboarding/found-summary }
       - { key: CORS_ORIGINS, scope: RUN_TIME, value: '["http://localhost:8081"]' }
-      - { key: WORKOS_SECRET_KEY, scope: RUN_TIME, type: SECRET }
-      - { key: CLOVER_APP_SECRET, scope: RUN_TIME, type: SECRET }
-      - { key: CLOVER_WEBHOOK_AUTH_CODE, scope: RUN_TIME, type: SECRET }
 
+# Worker presence matches the feature flags above (enforced by scripts/deploy_verify.py).
+# Each worker declares APP_COMPONENT + SOURCE_COMMIT + exactly its own secrets.
 workers:
   - name: inbox-worker
     github:
       repo: OsmanWais29/ReorderOS
-      branch: sprint-5-recipe-depletion
-      deploy_on_push: true
+      branch: sprint-6-stock-insights-api
+      deploy_on_push: false
     source_dir: backend
     dockerfile_path: backend/Dockerfile
     instance_count: 1
     instance_size_slug: basic-xxs
     run_command: python -m app.workers.inbox_worker
     envs:
-      # Per-component (not app-level — see note above). Worker needs both for F1.3.
-      - { key: CLOVER_APP_SECRET, scope: RUN_TIME, type: SECRET }
-      - { key: CLOVER_WEBHOOK_AUTH_CODE, scope: RUN_TIME, type: SECRET }
+      - { key: APP_COMPONENT, scope: RUN_TIME, value: inbox_worker }
+      - { key: SOURCE_COMMIT, scope: RUN_TIME, value: "${_self.COMMIT_HASH}" }
+      - { key: SERVICE_DATABASE_URL, scope: RUN_TIME, type: SECRET }
+      - { key: TOKEN_ENCRYPTION_KEY, scope: RUN_TIME, type: SECRET }
+  # ADDED vs live staging: Clover POS reconciliation + token refresh (Clover pair rule).
+  - name: reconciliation-worker
+    github:
+      repo: OsmanWais29/ReorderOS
+      branch: sprint-6-stock-insights-api
+      deploy_on_push: false
+    source_dir: backend
+    dockerfile_path: backend/Dockerfile
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    run_command: python -m app.workers.reconciliation_worker
+    envs:
+      - { key: APP_COMPONENT, scope: RUN_TIME, value: reconciliation_worker }
+      - { key: SOURCE_COMMIT, scope: RUN_TIME, value: "${_self.COMMIT_HASH}" }
+      - { key: SERVICE_DATABASE_URL, scope: RUN_TIME, type: SECRET }
+      - { key: TOKEN_ENCRYPTION_KEY, scope: RUN_TIME, type: SECRET }
+  # RETAINED from live: receipt photo/PDF → line extraction (Anthropic + Spaces).
+  - name: receipt-extraction-worker
+    github:
+      repo: OsmanWais29/ReorderOS
+      branch: sprint-6-stock-insights-api
+      deploy_on_push: false
+    source_dir: backend
+    dockerfile_path: backend/Dockerfile
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    run_command: python -m app.workers.receipt_extraction_worker
+    envs:
+      - { key: APP_COMPONENT, scope: RUN_TIME, value: receipt_extraction_worker }
+      - { key: SOURCE_COMMIT, scope: RUN_TIME, value: "${_self.COMMIT_HASH}" }
+      - { key: SERVICE_DATABASE_URL, scope: RUN_TIME, type: SECRET }
+      - { key: ANTHROPIC_API_KEY, scope: RUN_TIME, type: SECRET }
+      - { key: DO_SPACES_KEY, scope: RUN_TIME, type: SECRET }
+      - { key: DO_SPACES_SECRET, scope: RUN_TIME, type: SECRET }
+  # RETAINED from live: Postmark inbound email fan-out (service DSN only — no Spaces,
+  # no Anthropic, no token decryption; the webhook uploaded the bytes).
+  - name: inbound-email-worker
+    github:
+      repo: OsmanWais29/ReorderOS
+      branch: sprint-6-stock-insights-api
+      deploy_on_push: false
+    source_dir: backend
+    dockerfile_path: backend/Dockerfile
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    run_command: python -m app.workers.inbound_email_worker
+    envs:
+      - { key: APP_COMPONENT, scope: RUN_TIME, value: inbound_email_worker }
+      - { key: SOURCE_COMMIT, scope: RUN_TIME, value: "${_self.COMMIT_HASH}" }
+      - { key: SERVICE_DATABASE_URL, scope: RUN_TIME, type: SECRET }
 
 databases:
   - name: reorderos-staging-pg

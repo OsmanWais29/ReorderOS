@@ -24,6 +24,30 @@ async def test_version(client: AsyncClient) -> None:
     body = r.json()
     assert "version" in body
     assert isinstance(body["version"], str)
+    # commit is always present; "unknown" when SOURCE_COMMIT is unset.
+    assert "commit" in body
+
+
+async def test_version_reports_source_commit(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The deployed SHA must be observable per-component for the cutover verification —
+    DigitalOcean exposes no per-component commit, so /version reports SOURCE_COMMIT."""
+    monkeypatch.setenv("SOURCE_COMMIT", "abc123def456")
+    r = await client.get("/version")
+    assert r.status_code == 200
+    assert r.json()["commit"] == "abc123def456"
+
+
+async def test_health_and_version_routes_are_at_root_not_api_v1() -> None:
+    """ROUTE CONTRACT (Finding 4A): readiness/version live at ROOT, NOT under /api/v1 — the
+    DO health_check.http_path and the runbook curl both target /health/ready. Fails if the
+    prefix drifts."""
+    from app.main import create_app
+
+    paths = set(create_app().openapi()["paths"])
+    assert "/health/ready" in paths and "/health/live" in paths and "/version" in paths
+    assert "/api/v1/health/ready" not in paths
 
 
 async def test_ready_degraded_when_db_down(client: AsyncClient) -> None:

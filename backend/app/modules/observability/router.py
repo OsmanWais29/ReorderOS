@@ -63,4 +63,9 @@ async def storage_ready() -> dict[str, Any]:
 
 @router.get("/version", summary="Build info")
 async def version() -> dict[str, str]:
-    return {"version": __version__}
+    """Version + the git commit this process was built from (SOURCE_COMMIT, injected by the
+    deploy). Makes the deployed SHA observable per-component for the cutover verification
+    (DigitalOcean's deployment API exposes no per-component commit). 'unknown' if unset."""
+    import os
+
+    return {"version": __version__, "commit": os.environ.get("SOURCE_COMMIT", "unknown")}

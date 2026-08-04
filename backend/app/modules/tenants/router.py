@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict
 
 from app.core.database import get_session
+from app.core.rls import set_identity_read_context
 from app.core.security import Identity, get_identity
 from app.modules.auth.repo import get_user_by_workos_id
 from app.modules.tenants.models import Tenant
@@ -42,5 +43,7 @@ async def list_tenants(
     user = await get_user_by_workos_id(db, identity.workos_id)
     if user is None:
         return []
+    # Identity-read context before listing memberships (membership-aware policy).
+    await set_identity_read_context(db, str(user.id))
     tenants = await list_tenants_for_user(db, user.id)
     return [TenantOut.from_orm(t) for t in tenants]

@@ -103,6 +103,12 @@ async def create_count_event(
     )
     await db.commit()
 
+    # SET LOCAL RLS context reverts on commit — re-establish it before ANY further
+    # tenant-scoped DB op (the read below + the idempotency write). Under the
+    # non-bypassrls request role this is mandatory: an empty app.tenant_id would make
+    # the FORCE-RLS read match 0 rows (500) and block the store_response WITH CHECK.
+    await set_rls_context(db, principal)
+
     # fetch the persisted row's created_at for the response
     row = await db.execute(
         text("SELECT created_at FROM inventory_count_events WHERE id = :id"),
@@ -233,6 +239,9 @@ async def create_opening_balance(
     }
 
     if idem_key:
+        # SET LOCAL RLS context reverted on the commit above; re-establish before the
+        # idempotency write so its WITH CHECK passes under the non-bypassrls request role.
+        await set_rls_context(db, principal)
         await store_response(
             db, tenant_id=tenant_id, key=idem_key, response_status=201, response_body=response_data
         )
@@ -261,6 +270,9 @@ async def create_receipt_endpoint(
         received_at=body.received_at,
     )
     await db.commit()
+    # SET LOCAL RLS context reverted on commit — re-establish before the read-back so it
+    # matches the just-inserted row under the non-bypassrls request role (else 0 rows → 500).
+    await set_rls_context(db, principal)
     row = await db.execute(
         text("SELECT id, commit_state, received_at, notes FROM receipts WHERE id = :id"),
         {"id": rid},

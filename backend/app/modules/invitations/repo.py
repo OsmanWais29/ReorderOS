@@ -7,7 +7,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.rls import set_accept_invite_context
@@ -99,6 +99,16 @@ async def accept_invitation(
     )
     user: User = await upsert_user(session, fake_identity)
 
+    # Now that the invitee's user id is known, bind app.user_id to it so the
+    # membership INSERT ... RETURNING below is readable via the narrow
+    # `user_id = app.user_id` arm of user_tenant_select — no unconditional
+    # bootstrap carve-out (which would expose every tenant's memberships while
+    # accept_invite mode is live). user_tenant_insert's WITH CHECK still keys on
+    # rls_mode='accept_invite'.
+    await session.execute(
+        text("SELECT set_config('app.user_id', :uid, true)"), {"uid": str(user.id)}
+    )
+
     # Insert membership.
     role: Role = inv.role  # type: ignore[assignment]
     membership = UserTenant(
@@ -108,7 +118,7 @@ async def accept_invitation(
         active=True,
     )
     session.add(membership)
-    await session.flush()
+    await session.flush()  # INSERT ... RETURNING, visible via user_id = app.user_id
     return membership
 
 

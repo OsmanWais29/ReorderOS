@@ -49,6 +49,25 @@ async def set_identity_context(session: AsyncSession, user_id: str) -> None:
     )
 
 
+async def set_identity_read_context(session: AsyncSession, user_id: str) -> None:
+    """Identity-only READ context: sets ONLY app.user_id and clears tenant/role/mode.
+
+    Distinct from set_identity_context (which sets rls_mode='register' and must NOT be
+    reused for normal reads). Used to resolve the caller's principal and to list their
+    memberships BEFORE a tenant is chosen — the membership-aware policies key on
+    app.user_id. SET LOCAL, so it resets at txn end; re-establish it after any commit."""
+    await session.execute(
+        text(
+            "SELECT set_config('app.user_id', :uid, true),"
+            "       set_config('app.tenant_id', '', true),"
+            "       set_config('app.user_role', '', true),"
+            "       set_config('app.rls_mode', '', true),"
+            "       set_config('app.invite_email', '', true)"  # clear stale bootstrap state
+        ),
+        {"uid": user_id},
+    )
+
+
 async def set_accept_invite_context(session: AsyncSession, *, email: str) -> None:
     """Invite-accept bootstrap context — allows reading invite by email."""
     await session.execute(

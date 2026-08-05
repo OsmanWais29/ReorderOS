@@ -18,6 +18,8 @@
 #     PROD_SPEC_RECONCILED repository variable; while unset the deploy job FAILS loudly.
 #   - Any future production spec update is a separately approved rollout with its own
 #     runbook. NO production cutover is part of the restricted-runtime-role PR.
+#   - This committed spec declares deploy_on_push=false on every component (FAIL-SAFE):
+#     if anyone ever applies this file, it cannot re-arm DO's independent auto-deploy.
 #
 # ── STARTUP / MIGRATION CONTRACT (current production behavior, preserved) ──────
 # The api container uses the backend/Dockerfile DEFAULT command:
@@ -58,7 +60,7 @@ services:
     github:
       repo: OsmanWais29/ReorderOS
       branch: main
-      deploy_on_push: true
+      deploy_on_push: false
     source_dir: backend
     dockerfile_path: backend/Dockerfile
     # NO run_command: uses the Dockerfile default (alembic upgrade head && exec uvicorn),
@@ -176,7 +178,7 @@ workers:
     github:
       repo: OsmanWais29/ReorderOS
       branch: main
-      deploy_on_push: true
+      deploy_on_push: false
     source_dir: backend
     dockerfile_path: backend/Dockerfile
     instance_count: 1
@@ -229,7 +231,7 @@ workers:
     github:
       repo: OsmanWais29/ReorderOS
       branch: main
-      deploy_on_push: true
+      deploy_on_push: false
     source_dir: backend
     dockerfile_path: backend/Dockerfile
     instance_count: 1

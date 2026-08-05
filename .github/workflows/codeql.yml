@@ -15,7 +15,9 @@ on:
   push:
     branches: [ "main" ]
   pull_request:
-    branches: [ "main" ]
+    # main plus the two active Sprint 6 integration branches, so security-focused PRs
+    # (e.g. the restricted-runtime-role PR) get CodeQL before their lineage reaches main.
+    branches: [ "main", "sprint-6-stock-insights-api", "sprint-6-postmark-inbound" ]
   schedule:
     - cron: '37 13 * * 0'
 

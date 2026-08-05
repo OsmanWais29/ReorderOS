@@ -32,8 +32,17 @@ CLI (run from backend/: `"$PY" -m scripts.deploy_verify …`):
   "$PY" -m scripts.deploy_verify <spec.yaml>                      → exit 0 clean / 1 errors
   "$PY" -m scripts.deploy_verify --select-deployment BEFORE AFTER → print the single new id
       (BEFORE/AFTER are files of deployment ids, one per line) / exit 1 unless exactly one
-Never prints secret values (and rule 3 means committed specs carry none).
-"""
+  "$PY" -m scripts.deploy_verify --cutover BUILT CANDIDATE LIVE [ROLE] → exit 0/1
+
+SAFE DIAGNOSTIC BOUNDARY: the validator functions return detailed error strings for
+programmatic use (tests, runbook tooling reading return values), and those strings echo
+input-derived text — component names, env keys, role values. The CLI therefore NEVER
+prints them: spec-validation failures are reported only as fixed diagnostic codes
+(SOURCE_COMMIT_BINDING, WORKER_PRESENCE, SECRET_VALUE_PRESENT, DUPLICATE_ENV,
+CUTOVER_CONTRACT) with a failure count and fixed remediation text. No spec value, env
+key, component name, role, caller-supplied filename, or exception text ever reaches
+stdout/stderr. For detail, call the validators from Python and inspect the returned
+lists."""
 
 from __future__ import annotations
 
@@ -210,6 +219,54 @@ def validate_spec(spec: dict[str, Any]) -> list[str]:
         + validate_no_secret_values(spec)
         + validate_no_duplicate_envs(spec)
     )
+
+
+# ── safe diagnostic boundary (CLI) ────────────────────────────────────────────
+# Validator error strings echo input-derived text (component names, env keys, role
+# values) and MUST NOT reach stdout/stderr/logs/annotations. The CLI emits only these
+# fixed codes + counts + fixed remediation text. Everything below is a compile-time
+# literal — never derived from the spec under validation.
+_SPEC_CHECKS: tuple[tuple[str, Any, str], ...] = (
+    (
+        "SOURCE_COMMIT_BINDING",
+        validate_source_commit_bindings,
+        "bind SOURCE_COMMIT to the platform placeholder ${_self.COMMIT_HASH} at "
+        "component level on every service and worker (never app-level, never a literal)",
+    ),
+    (
+        "WORKER_PRESENCE",
+        validate_worker_presence,
+        "align worker components with the declared feature set in both directions "
+        "(Clover pair, Postmark inbound, receipt extraction)",
+    ),
+    (
+        "SECRET_VALUE_PRESENT",
+        validate_no_secret_values,
+        "remove every value from 'type: SECRET' envs in the committed spec "
+        "(secret values are console-only; committed specs declare the key only)",
+    ),
+    (
+        "DUPLICATE_ENV",
+        validate_no_duplicate_envs,
+        "declare each env key exactly once, in exactly one scope "
+        "(no app-level/component shadowing, no repeats within one env list)",
+    ),
+)
+_CUTOVER_REMEDIATION = (
+    "the built spec violates the cutover shape/role contract; re-run the builder and "
+    "inspect validate_cutover() from Python for detail (its return value is not printed)"
+)
+
+
+def summarize_spec_failures(spec: dict[str, Any]) -> list[tuple[str, int, str]]:
+    """(code, failure_count, fixed_remediation) per failing category — the CLI's only
+    view of validation failures. Contains no input-derived text by construction."""
+    out: list[tuple[str, int, str]] = []
+    for code, validator, remediation in _SPEC_CHECKS:
+        count = len(validator(spec))
+        if count:
+            out.append((code, count, remediation))
+    return out
 
 
 # The ONLY env addition the builder may make beyond the candidate shape: preserving an
@@ -679,24 +736,33 @@ def main(argv: list[str] | None = None) -> int:
         errors = validate_cutover(
             load_spec(args[1]), load_spec(args[2]), load_spec(args[3]), selected_role
         )
-        for e in errors:
-            print(f"deploy_verify FAIL: {e}", file=sys.stderr)
+        # Safe diagnostic boundary: raw cutover errors echo spec-derived text and are
+        # never printed — only the fixed code, the count, and fixed remediation.
         if errors:
+            print(
+                f"deploy_verify FAIL [CUTOVER_CONTRACT]: {len(errors)} failure(s) — "
+                f"{_CUTOVER_REMEDIATION}",
+                file=sys.stderr,
+            )
             print(
                 f"deploy_verify --cutover: {len(errors)} problem(s) — do NOT apply",
                 file=sys.stderr,
             )
             return 1
-        print(f"deploy_verify --cutover OK: {args[1]} matches {args[2]} and is fully resolved")
+        print("deploy_verify --cutover OK: built spec matches the candidate and is fully resolved")
         return 0
     spec = load_spec(args[0])
-    errors = validate_spec(spec)
-    for e in errors:
-        print(f"deploy_verify FAIL: {e}", file=sys.stderr)
-    if errors:
-        print(f"deploy_verify: {len(errors)} problem(s) in {args[0]}", file=sys.stderr)
+    # Safe diagnostic boundary: raw validator errors echo spec-derived text and are
+    # never printed — only fixed category codes, per-category counts, and fixed
+    # remediation text.
+    failures = summarize_spec_failures(spec)
+    for code, count, remediation in failures:
+        print(f"deploy_verify FAIL [{code}]: {count} failure(s) — {remediation}", file=sys.stderr)
+    if failures:
+        total = sum(count for _, count, _ in failures)
+        print(f"deploy_verify: {total} problem(s) in the given spec", file=sys.stderr)
         return 1
-    print(f"deploy_verify OK: {args[0]}")
+    print("deploy_verify OK")
     return 0
 
 

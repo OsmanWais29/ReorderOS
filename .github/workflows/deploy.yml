@@ -17,6 +17,11 @@
 
 name: deploy-digitalocean
 
+# Least-privilege token: no permissions by default; each job declares exactly what it
+# needs. validate only reads the repo; deploy talks to DigitalOcean via secrets and
+# never touches the repository, so its GITHUB_TOKEN gets nothing.
+permissions: {}
+
 on:
   push:
     branches: [main]
@@ -35,6 +40,8 @@ jobs:
     name: validate committed spec
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,6 +72,7 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions: {}
     steps:
       - name: Require live-spec reconciliation (fail loudly, never silently green)
         run: |

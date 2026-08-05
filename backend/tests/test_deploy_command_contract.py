@@ -509,3 +509,33 @@ def test_select_deployment_cli_contract(tmp_path: pathlib.Path) -> None:
 
     many = run("dep-1\n", "dep-1\ndep-2\ndep-3\n")
     assert many.returncode == 1 and "exactly one" in many.stderr
+
+
+# ── deploy workflow: least-privilege GITHUB_TOKEN contract ────────────────────
+_DEPLOY_WORKFLOW = pathlib.Path(_BACKEND, "..", ".github", "workflows", "deploy.yml")
+
+
+def test_deploy_workflow_permissions_are_least_privilege() -> None:
+    """The GITHUB_TOKEN is stripped to the minimum: empty workflow default, validate gets
+    exactly contents:read (it checks out the repo), deploy gets NOTHING (it acts on
+    DigitalOcean via its own secrets and never touches the repository). No job — present
+    or future — may receive a write permission."""
+    wf = yaml.safe_load(_DEPLOY_WORKFLOW.read_text())
+
+    assert wf.get("permissions") == {}, (
+        "workflow-level default must be an explicit empty permissions map"
+    )
+
+    jobs = wf["jobs"]
+    assert jobs["validate"].get("permissions") == {"contents": "read"}, (
+        "validate must have exactly contents: read"
+    )
+    assert jobs["deploy"].get("permissions") == {}, (
+        "deploy must have an explicit empty permissions map"
+    )
+
+    for name, job in jobs.items():
+        perms = job.get("permissions")
+        assert isinstance(perms, dict), f"job {name!r} must declare an explicit permissions map"
+        granted = {str(v) for v in perms.values()}
+        assert "write" not in granted and "write-all" not in granted, (name, perms)

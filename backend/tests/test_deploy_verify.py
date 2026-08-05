@@ -9,6 +9,8 @@ validator — both of them, production included (no partial validation)."""
 from __future__ import annotations
 
 import os
+import pathlib
+from typing import Any
 
 import pytest
 
@@ -342,3 +344,200 @@ def test_staging_spec_missing_extraction_worker_fails() -> None:
     spec["workers"] = [w for w in spec["workers"] if w["name"] != "receipt-extraction-worker"]
     errs = validate_spec(spec)
     assert any("receipt-extraction-worker" in e for e in errs), errs
+
+
+# ── safe diagnostic boundary: the CLI must NEVER leak input-derived text ──────
+# Validator functions return detailed strings for programmatic use; the CLI reports
+# only fixed diagnostic codes + counts + fixed remediation. These tests poison every
+# input-derived channel (component names, env keys, secret values, filenames, the
+# service-role argument) and prove nothing poisoned reaches stdout or stderr.
+_POISON = "sk_live_SHOULD_NEVER_APPEAR"
+
+
+def _poisoned_spec() -> dict[str, Any]:
+    """Invalid spec whose VALIDATOR ERROR STRINGS are guaranteed to carry the poison via
+    component name, env key, and secret value — and to fail three distinct categories
+    (SOURCE_COMMIT_BINDING, SECRET_VALUE_PRESENT, DUPLICATE_ENV)."""
+    return {
+        "services": [
+            {
+                "name": _POISON,
+                "envs": [
+                    {"key": _POISON, "type": "SECRET", "value": _POISON},
+                    {"key": _POISON, "type": "SECRET", "value": _POISON},
+                ],
+            }
+        ],
+    }
+
+
+def test_poison_reaches_internal_validator_errors() -> None:
+    """Precondition for the no-leak tests: the poison DOES appear in the returned
+    validation errors (otherwise the CLI tests below would be vacuous)."""
+    errs = validate_spec(_poisoned_spec())
+    assert errs, "poisoned spec must be invalid"
+    assert _POISON in " ".join(errs)
+
+
+def test_cli_validate_never_leaks_poison(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Poisoned spec + poisoned FILENAME → exit 1, fixed codes + counts on stderr,
+    and the poison in NEITHER stdout NOR stderr."""
+    import yaml
+
+    from scripts.deploy_verify import main
+
+    spec_path = tmp_path / f"{_POISON}.yaml"
+    spec_path.write_text(yaml.safe_dump(_poisoned_spec()))
+    rc = main([str(spec_path)])
+    out = capsys.readouterr()
+    assert rc == 1
+    assert _POISON not in out.out
+    assert _POISON not in out.err
+    assert str(spec_path) not in out.out and str(spec_path) not in out.err
+    for code in ("SOURCE_COMMIT_BINDING", "SECRET_VALUE_PRESENT", "DUPLICATE_ENV"):
+        assert f"deploy_verify FAIL [{code}]:" in out.err, out.err
+        assert "failure(s)" in out.err
+
+
+def test_cli_validate_counts_match_validators(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The per-category counts the CLI prints are the validators' actual counts."""
+    import yaml
+
+    from scripts.deploy_verify import (
+        main,
+        validate_no_duplicate_envs,
+        validate_no_secret_values,
+        validate_source_commit_bindings,
+    )
+
+    spec = _poisoned_spec()
+    spec_path = tmp_path / "spec.yaml"
+    spec_path.write_text(yaml.safe_dump(spec))
+    assert main([str(spec_path)]) == 1
+    err = capsys.readouterr().err
+    expected = {
+        "SOURCE_COMMIT_BINDING": len(validate_source_commit_bindings(spec)),
+        "SECRET_VALUE_PRESENT": len(validate_no_secret_values(spec)),
+        "DUPLICATE_ENV": len(validate_no_duplicate_envs(spec)),
+    }
+    for code, count in expected.items():
+        assert f"deploy_verify FAIL [{code}]: {count} failure(s)" in err, err
+
+
+def test_cli_validate_real_specs_exit_zero(capsys: pytest.CaptureFixture[str]) -> None:
+    """Valid (real, committed) specs still exit 0 — and print no caller filename."""
+    from scripts.deploy_verify import main
+
+    for spec_name in ("app.yaml", "staging.app.yaml"):
+        path = os.path.join(_DO_DIR, spec_name)
+        assert main([path]) == 0
+        out = capsys.readouterr()
+        assert "deploy_verify OK" in out.out
+        assert out.err == ""
+        assert path not in out.out
+
+
+def _minimal_cutover_pair() -> tuple[dict[str, Any], dict[str, Any]]:
+    """(candidate, built) that PASS validate_cutover against an empty live spec."""
+    spec = {
+        "name": "reorderos",
+        "services": [
+            {
+                "name": "api",
+                "envs": [{"key": "SOURCE_COMMIT", "value": "${_self.COMMIT_HASH}"}],
+            }
+        ],
+    }
+    import copy
+
+    return spec, copy.deepcopy(spec)
+
+
+def test_cli_cutover_never_leaks_poison(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Poisoned cutover input (unexpected env key, drifted component name, poisoned
+    filenames) → exit 1, fixed CUTOVER_CONTRACT code + count on stderr, poison in
+    NEITHER stream. Also proves the poison IS in the internal cutover errors first."""
+    import yaml
+
+    from scripts.deploy_verify import main, validate_cutover
+
+    candidate, built = _minimal_cutover_pair()
+    built["services"][0]["envs"].append({"key": _POISON, "value": _POISON})
+    built["workers"] = [{"name": _POISON, "envs": []}]
+    internal = validate_cutover(built, candidate, {})
+    assert internal and _POISON in " ".join(internal)
+
+    built_path = tmp_path / f"built-{_POISON}.yaml"
+    cand_path = tmp_path / "candidate.yaml"
+    live_path = tmp_path / "live.yaml"
+    built_path.write_text(yaml.safe_dump(built))
+    cand_path.write_text(yaml.safe_dump(candidate))
+    live_path.write_text(yaml.safe_dump({}))
+    rc = main(["--cutover", str(built_path), str(cand_path), str(live_path)])
+    out = capsys.readouterr()
+    assert rc == 1
+    assert _POISON not in out.out
+    assert _POISON not in out.err
+    assert f"deploy_verify FAIL [CUTOVER_CONTRACT]: {len(internal)} failure(s)" in out.err
+    assert "do NOT apply" in out.err
+
+
+def test_cli_cutover_never_leaks_poisoned_role_argument(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A poisoned SERVICE_ROLE argument lands in the internal error text but must not
+    reach either stream."""
+    import yaml
+
+    from scripts.deploy_verify import main, validate_cutover
+
+    candidate, built = _minimal_cutover_pair()
+    assert _POISON in " ".join(validate_cutover(built, candidate, {}, _POISON))
+    for name, doc in (("built.yaml", built), ("candidate.yaml", candidate), ("live.yaml", {})):
+        (tmp_path / name).write_text(yaml.safe_dump(doc))
+    rc = main(
+        [
+            "--cutover",
+            str(tmp_path / "built.yaml"),
+            str(tmp_path / "candidate.yaml"),
+            str(tmp_path / "live.yaml"),
+            _POISON,
+        ]
+    )
+    out = capsys.readouterr()
+    assert rc == 1
+    assert _POISON not in out.out
+    assert _POISON not in out.err
+    assert "deploy_verify FAIL [CUTOVER_CONTRACT]: 1 failure(s)" in out.err
+
+
+def test_cli_cutover_valid_exits_zero(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A clean built/candidate/live triple still exits 0 with the fixed OK line."""
+    import yaml
+
+    from scripts.deploy_verify import main
+
+    candidate, built = _minimal_cutover_pair()
+    for name, doc in (("built.yaml", built), ("candidate.yaml", candidate), ("live.yaml", {})):
+        (tmp_path / name).write_text(yaml.safe_dump(doc))
+    rc = main(
+        [
+            "--cutover",
+            str(tmp_path / "built.yaml"),
+            str(tmp_path / "candidate.yaml"),
+            str(tmp_path / "live.yaml"),
+        ]
+    )
+    out = capsys.readouterr()
+    assert rc == 0
+    assert "deploy_verify --cutover OK" in out.out
+    assert str(tmp_path) not in out.out
+    assert out.err == ""

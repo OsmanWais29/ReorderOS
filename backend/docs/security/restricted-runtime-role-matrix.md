@@ -80,9 +80,18 @@ NOT VERIFIED** — the DO `reorderos_app` LOGIN role does not exist until the ru
 | `service_worker` | yes | **false** | **false** | yes | Worker path (`SERVICE_DATABASE_URL`) — cross-tenant jobs | Migration `0006`; password rotated out-of-band |
 | `doadmin` | yes | false¹ | **true** | yes | Cut-over env: migrations only (staging `migrate` PRE_DEPLOY job). Production (flag `false`): still ALL pools — its current, unchanged state | DigitalOcean managed cluster |
 
-¹ On DO managed PG `doadmin` is not a true superuser (cannot `SET session_replication_role`)
-but **owns the tables and has `rolbypassrls = TRUE`** — which is exactly why it must not
-be a runtime connection role in a cut-over environment.
+¹ On DO managed PG `doadmin` is not a true superuser (cannot `SET session_replication_role`;
+proven live 2026-08-17: `rolsuper=False, rolcreaterole=True`) but **owns the tables and has
+`rolbypassrls = TRUE`** — which is exactly why it must not be a runtime connection role in a
+cut-over environment. Consequence for provisioning — the precise PostgreSQL rule: changing
+`SUPERUSER` always requires a true superuser (even the no-op `NOSUPERUSER` spelling — the
+observed live B1 failure), while changing `REPLICATION` or `BYPASSRLS` additionally requires
+an administrator that itself HOLDS that attribute; which attributes a managed provider's
+administrator holds is not portable. `scripts/role_admin.py` therefore never sends any of
+those three clauses: they are **verify-only, fail-closed** (an enabled one aborts with zero
+mutation and needs deliberate true-superuser / provider-support remediation), and
+`role_admin capability <role>` is the read-only proof the administrator holds ADMIN OPTION
+on the role before B1/B2 touch it.
 
 **Memberships [LOCAL]:** `reorderos_app` → member of `app_user`. `service_worker`
 is **not** a member of `app_user` (its grants are direct and deliberately narrower on the

@@ -13,12 +13,28 @@ Safety contract:
   - Password comes from $PW (a hidden `read -s`), validated as ^[0-9a-f]{64}$ before use.
     asyncpg cannot parametrize DDL, so the password is interpolated — the strict hex regex
     is what makes that injection-safe (no quotes/backslashes/spaces possible).
-  - Every mutating command (provision-app / provision-worker / rotate) runs its ALTERs and
-    membership normalization inside ONE transaction: a failure in ANY step (including
-    membership revocation) rolls back the whole change — no partially-mutated login role.
-  - Attributes are NORMALIZED, not assumed: NOSUPERUSER NOBYPASSRLS NOCREATEDB
-    NOCREATEROLE NOREPLICATION INHERIT on every run, and the EXACT direct-membership set
-    is enforced (unexpected memberships revoked; ADMIN OPTION stripped).
+  - Managed-PG reality (DigitalOcean): the effective administrator (doadmin) is NOT a
+    PostgreSQL superuser (rolsuper=False, rolcreaterole=True, rolbypassrls=True).
+    Precise PostgreSQL rule: changing SUPERUSER always requires a true superuser (even
+    the no-op NOSUPERUSER spelling — the live B1 failure, DO managed PG 17.10,
+    2026-08-17); changing REPLICATION or BYPASSRLS additionally requires an
+    administrator that itself HOLDS the attribute. What a provider's admin holds is
+    not portable, so ReorderOS deliberately treats all three as VERIFY-ONLY: read from
+    pg_roles and required False BEFORE any mutation, fail-closed. They are never sent
+    in ALTER and never silently preserved; remediation of an enabled one needs a true
+    superuser or the database provider's support.
+  - Every mutating command (provision-app / provision-worker / rotate) is ONE
+    transaction end-to-end: capability check, existence check, optional CREATE ROLE,
+    mutable-attribute normalization (NOCREATEDB NOCREATEROLE INHERIT), password+LOGIN,
+    membership normalization, and a FINAL in-transaction catalog contract assertion.
+    Any failure rolls back everything: a failed fresh provision leaves NO role behind;
+    a failed update leaves password, LOGIN state, attributes, and memberships untouched.
+  - `capability` (also enforced inside every mutating path BEFORE any write) proves
+    READ-ONLY that the current administrator can administer the target role and
+    grant/revoke every expected membership (CREATEROLE + ADMIN OPTION, or superuser).
+    rolcreaterole alone is NOT treated as sufficient for an existing role.
+  - The EXACT direct-membership set is enforced (unexpected memberships revoked;
+    ADMIN OPTION stripped).
   - `prove` connects AS the role, prints every attribute + the exact membership set, and
     VALIDATES the whole contract in code — exit 1 on ANY violation (the runbook gate is
     the exit code, not an operator eyeballing comments).
@@ -42,11 +58,21 @@ _FIXED_MANAGED = {"reorderos_app", "service_worker"}
 _VERSIONED_WORKER = re.compile(r"^service_worker_v[1-9][0-9]*$")  # N >= 1, no leading zero
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "", None}
 
-# Every dangerous attribute a runtime role must NOT have. Applied idempotently on BOTH
-# provision and rotate, so a pre-existing role that somehow acquired CREATEDB /
-# CREATEROLE / REPLICATION (or superuser/bypassrls) is NORMALIZED, not preserved,
-# across a rerun. INHERIT is intended (members inherit their group's grants).
-_HARDEN_ATTRS = "NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT"
+# Attributes every CREATEROLE administrator may legally set on roles it administers
+# (PG 16/17 rules), applied idempotently on every provision/rotate so a pre-existing
+# role that somehow acquired CREATEDB / CREATEROLE is NORMALIZED, not preserved.
+# INHERIT is intended (members inherit their group's grants). SUPERUSER / BYPASSRLS /
+# REPLICATION are deliberately ABSENT — see _VERIFY_ONLY_ATTRS.
+_MUTABLE_HARDEN_ATTRS = "NOCREATEDB NOCREATEROLE INHERIT"
+
+# Verify-only dangerous attributes: must ALREADY be False on the target role before any
+# mutation; never sent in ALTER. Precise PostgreSQL rule: SUPERUSER changes always
+# require a true superuser; REPLICATION and BYPASSRLS changes additionally require an
+# administrator that itself HOLDS the attribute. What a managed provider's admin holds
+# is not portable (DO's doadmin: BYPASSRLS yes, SUPERUSER/REPLICATION no — its combined
+# old ALTER failed live on the SUPERUSER clause, 2026-08-17), so ReorderOS policy is
+# uniform verify-only fail-closed regardless of which clauses would happen to be legal.
+_VERIFY_ONLY_ATTRS = ("rolsuper", "rolbypassrls", "rolreplication")
 
 
 def is_managed(role: str) -> bool:
@@ -89,36 +115,189 @@ def _ssl_for(host: str | None) -> Any:
 
 async def _normalize_memberships(conn: Any, role: str) -> None:
     """Enforce the exact membership set: revoke every unexpected direct membership and
-    strip ADMIN OPTION from allowed ones (revoke + plain re-grant). Group names come
-    from pg_roles itself and are still shape-checked before quoting."""
+    strip ADMIN OPTION from allowed ones. Names come from pg_roles itself and are still
+    shape-checked before quoting.
+
+    PG 16+ tracks (group, GRANTOR) per grant: the same membership can exist as MULTIPLE
+    rows under different grantors, and a plain REVOKE removes only the grants the
+    current administrator made. So every wrong grant row is revoked PRECISELY
+    (`GRANTED BY`), and an expected membership already present as exactly one plain
+    grant is LEFT UNTOUCHED — the old unconditional re-grant would duplicate it under a
+    second grantor. A grant this administrator cannot revoke (e.g. made by a superuser)
+    raises InsufficientPrivilege and rolls back the whole mutation — fail-closed;
+    remediation belongs to the original grantor or a true superuser."""
     expected = expected_memberships(role)
     rows = await conn.fetch(
-        "SELECT r.rolname AS grp, am.admin_option AS admin "
-        "FROM pg_auth_members am JOIN pg_roles r ON r.oid = am.roleid "
+        "SELECT r.rolname AS grp, am.admin_option AS admin, g.rolname AS grantor "
+        "FROM pg_auth_members am "
+        "JOIN pg_roles r ON r.oid = am.roleid "
+        "JOIN pg_roles g ON g.oid = am.grantor "
         "WHERE am.member = (SELECT oid FROM pg_roles WHERE rolname = $1)",
         role,
     )
+    grants: dict[str, list[tuple[str, bool]]] = {}
     for row in rows:
-        grp = str(row["grp"])
-        if not grp.replace("_", "").isalnum():
-            raise SystemExit(f"unexpected role name shape from catalog: {grp!r}")
-        if grp not in expected:
-            await conn.execute(f'REVOKE "{grp}" FROM "{role}"')
-        elif bool(row["admin"]):
-            await conn.execute(f'REVOKE "{grp}" FROM "{role}"')
-            await conn.execute(f'GRANT "{grp}" TO "{role}"')  # plain, no ADMIN OPTION
+        grp, grantor = str(row["grp"]), str(row["grantor"])
+        for name in (grp, grantor):
+            if not name.replace("_", "").isalnum():
+                raise SystemExit(f"unexpected role name shape from catalog: {name!r}")
+        grants.setdefault(grp, []).append((grantor, bool(row["admin"])))
+    for grp, grant_rows in grants.items():
+        exactly_one_plain = len(grant_rows) == 1 and grant_rows[0][1] is False
+        if grp in expected and exactly_one_plain:
+            continue  # already contract-shaped; re-granting would duplicate it
+        for grantor, _admin in grant_rows:
+            await conn.execute(f'REVOKE "{grp}" FROM "{role}" GRANTED BY "{grantor}"')
+        if grp in expected:
+            await conn.execute(f'GRANT "{grp}" TO "{role}"')  # exactly one plain grant
     for grp in expected:
-        await conn.execute(f'GRANT "{grp}" TO "{role}"')  # idempotent (no-op if present)
+        if grp not in grants:
+            await conn.execute(f'GRANT "{grp}" TO "{role}"')
 
 
-async def _harden_and_set_password(conn: Any, role: str, pw: str) -> None:
-    """ALTERs + membership normalization as ONE transaction: any failure (including a
-    failed membership revocation) rolls back everything — never a partially-changed
-    login role."""
-    async with conn.transaction():
-        await conn.execute(f'ALTER ROLE "{role}" {_HARDEN_ATTRS}')
-        await conn.execute(f"ALTER ROLE \"{role}\" LOGIN PASSWORD '{pw}'")  # pw validated hex
-        await _normalize_memberships(conn, role)
+def _create_role_sql(role: str) -> str:
+    # Callers constrain `role` to managed names before this is reached. The NO* keywords
+    # are the CREATE defaults and ARE permitted for a CREATEROLE non-superuser (unlike
+    # ALTER's SUPERUSER clause, which is superuser-only — the live B1 failure). CREATE
+    # ROLE is transactional DDL, so a later failure in the same transaction removes the
+    # role again.
+    return (
+        f'CREATE ROLE "{role}" NOLOGIN '
+        "NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT"
+    )
+
+
+async def _assert_verify_only_attrs_disabled(conn: Any, role: str) -> None:
+    """Fail-closed dangerous-attribute gate: rolsuper / rolbypassrls / rolreplication
+    must ALREADY be False (missing/unknown counts as failure).
+
+    Precise PostgreSQL rule (docs: ALTER ROLE / role attributes): changing SUPERUSER
+    always requires a true superuser; changing REPLICATION or BYPASSRLS additionally
+    requires an administrator that itself HOLDS that attribute. Which of those a
+    managed-PG administrator holds varies by provider and is NOT assumed portable, so
+    ReorderOS policy treats all three as VERIFY-ONLY for deterministic fail-closed
+    behavior: an enabled one refuses before mutation and requires deliberate
+    true-superuser / provider-support remediation. Silently preserving one is
+    forbidden. Prints role and attribute names/booleans only — never DSNs, passwords,
+    or catalog internals."""
+    row = await conn.fetchrow(
+        "SELECT rolsuper, rolbypassrls, rolreplication FROM pg_roles WHERE rolname = $1",
+        role,
+    )
+    if row is None:
+        raise SystemExit(
+            f"refusing to touch {role!r}: role not readable in pg_roles during mutation"
+        )
+    enabled = [a for a in _VERIFY_ONLY_ATTRS if row[a] is not False]
+    if enabled:
+        raise SystemExit(
+            f"refusing to touch {role!r}: verify-only dangerous attribute(s) enabled: "
+            + ", ".join(f"{a}={row[a]}" for a in enabled)
+            + " — this tool never alters SUPERUSER/BYPASSRLS/REPLICATION (SUPERUSER "
+            "needs a true superuser; BYPASSRLS/REPLICATION need an administrator that "
+            "itself holds the attribute — not assumed on managed PostgreSQL); "
+            "remediate via a true superuser or the database provider's support, "
+            "then re-run. Nothing was changed."
+        )
+
+
+async def admin_capability(conn: Any, role: str) -> dict[str, bool]:
+    """READ-ONLY administrative-capability report for mutating `role`.
+
+    PG 16+ CREATEROLE semantics: a non-superuser administrator may ALTER / GRANT /
+    REVOKE only roles it holds ADMIN OPTION on (creating a role auto-grants the creator
+    ADMIN OPTION on it) — rolcreaterole alone proves NOTHING about an existing role,
+    so it is never treated as sufficient. Reports booleans only."""
+    expected = expected_memberships(role)  # also refuses non-managed roles
+    row = await conn.fetchrow(
+        "SELECT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) AS su,"
+        " (SELECT rolcreaterole FROM pg_roles WHERE rolname = current_user) AS cr,"
+        " EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1) AS target_exists",
+        role,
+    )
+    is_super = row["su"] is True
+    createrole = row["cr"] is True
+    exists = row["target_exists"] is True
+    if exists:
+        admin_on_target = await conn.fetchval(
+            "SELECT pg_has_role(current_user, $1, 'MEMBER WITH ADMIN OPTION')", role
+        )
+        can_admin = is_super or (createrole and admin_on_target is True)
+    else:
+        # Creating: CREATEROLE suffices; PG 16+ auto-grants the creator ADMIN OPTION.
+        can_admin = is_super or createrole
+    caps: dict[str, bool] = {
+        "admin_is_superuser": is_super,
+        "admin_has_createrole": createrole,
+        "target_exists": exists,
+        "can_administer_target": can_admin,
+    }
+    for grp in sorted(expected):
+        has_admin_on_group = await conn.fetchval(
+            "SELECT pg_has_role(current_user, $1, 'MEMBER WITH ADMIN OPTION')", grp
+        )
+        caps[f"can_grant_{grp}"] = is_super or has_admin_on_group is True
+    return caps
+
+
+def capability_violations(caps: dict[str, bool]) -> list[str]:
+    """PURE check over an admin_capability() report — names/booleans only."""
+    violations: list[str] = []
+    if not caps.get("can_administer_target"):
+        violations.append(
+            "can_administer_target=False (needs CREATEROLE plus ADMIN OPTION on the "
+            "target role, or superuser)"
+        )
+    for key, value in caps.items():
+        if key.startswith("can_grant_") and value is not True:
+            violations.append(
+                f"{key}=False (needs ADMIN OPTION on {key[len('can_grant_') :]!r}, or superuser)"
+            )
+    return violations
+
+
+async def capability_report(admin_dsn: str, role: str) -> dict[str, bool]:
+    import asyncpg
+
+    conn = await asyncpg.connect(_plain(admin_dsn))
+    try:
+        return await admin_capability(conn, role)
+    finally:
+        await conn.close()
+
+
+async def _apply_role_contract(conn: Any, role: str, pw: str, *, allow_create: bool) -> None:
+    """The single mutation path for provision-app / provision-worker / rotate. MUST run
+    inside the caller's sole (non-nested) transaction so that every step — capability
+    check, existence check, optional CREATE, fail-closed dangerous-attribute gate,
+    mutable-attribute normalization, password + LOGIN, membership normalization, final
+    catalog contract assertion — commits or rolls back as ONE unit. A failure after
+    CREATE leaves no role; a failure while updating an existing role leaves its previous
+    password, LOGIN state, attributes, and memberships untouched."""
+    caps = await admin_capability(conn, role)
+    problems = capability_violations(caps)
+    if problems:
+        raise SystemExit(
+            f"refusing to touch {role!r}: administrator capability check failed: "
+            + "; ".join(problems)
+        )
+    if not caps["target_exists"]:
+        if not allow_create:
+            raise SystemExit(f"refusing to rotate {role!r}: role does not exist")
+        await conn.execute(_create_role_sql(role))
+    await _assert_verify_only_attrs_disabled(conn, role)
+    await conn.execute(f'ALTER ROLE "{role}" {_MUTABLE_HARDEN_ATTRS}')
+    await conn.execute(f"ALTER ROLE \"{role}\" LOGIN PASSWORD '{pw}'")  # pw validated hex
+    await _normalize_memberships(conn, role)
+    # Final in-transaction assertion: the COMPLETE contract (attributes, exact
+    # memberships, admin option, app_user closure) must hold before commit.
+    attrs = await _catalog_attributes(conn, role)
+    violations = check_contract(attrs, role)
+    if violations:
+        raise SystemExit(
+            f"post-mutation contract check failed for {role!r}; rolling back: "
+            + "; ".join(violations)
+        )
 
 
 async def provision_reorderos_app(admin_dsn: str, pw: str) -> None:
@@ -129,16 +308,8 @@ async def provision_reorderos_app(admin_dsn: str, pw: str) -> None:
 
     conn = await asyncpg.connect(_plain(admin_dsn))
     try:
-        await conn.execute(
-            # literal on purpose (matches _HARDEN_ATTRS; the transactional ALTER below
-            # normalizes a pre-existing role, so the CREATE branch never drifts from it)
-            "DO $$ BEGIN "
-            "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='reorderos_app') "
-            "THEN CREATE ROLE reorderos_app NOLOGIN "
-            "NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT; "
-            "END IF; END $$;"
-        )
-        await _harden_and_set_password(conn, "reorderos_app", pw)
+        async with conn.transaction():
+            await _apply_role_contract(conn, "reorderos_app", pw, allow_create=True)
     finally:
         await conn.close()
 
@@ -189,15 +360,9 @@ async def provision_versioned_worker(admin_dsn: str, role: str, pw: str) -> None
 
     conn = await asyncpg.connect(_plain(admin_dsn))
     try:
-        await _assert_parent_worker_contract(conn)
-        await conn.execute(
-            "DO $$ BEGIN "  # noqa: S608 - role is constrained by _VERSIONED_WORKER.
-            "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='" + role + "') "
-            'THEN CREATE ROLE "' + role + '" NOLOGIN '
-            "NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT; "
-            "END IF; END $$;"
-        )
-        await _harden_and_set_password(conn, role, pw)
+        async with conn.transaction():
+            await _assert_parent_worker_contract(conn)
+            await _apply_role_contract(conn, role, pw, allow_create=True)
     finally:
         await conn.close()
 
@@ -232,13 +397,17 @@ async def _catalog_attributes(conn: Any, role: str) -> dict[str, Any]:
 
 
 async def rotate_password(admin_dsn: str, role: str, pw: str) -> None:
+    """Rotation never creates: a missing role is a refusal (allow_create=False), and the
+    capability gate refuses BEFORE any write when the administrator cannot administer
+    the role — never inferred from rolcreaterole alone."""
     if not is_managed(role):
         raise SystemExit(f"refusing to touch non-managed role {role!r}")
     import asyncpg
 
     conn = await asyncpg.connect(_plain(admin_dsn))
     try:
-        await _harden_and_set_password(conn, role, pw)
+        async with conn.transaction():
+            await _apply_role_contract(conn, role, pw, allow_create=False)
     finally:
         await conn.close()
 
@@ -372,6 +541,12 @@ def main(argv: list[str] | None = None) -> int:
         "(run inside the live api container BEFORE any rotation)",
     )
     pf.add_argument("role")
+    cap = sub.add_parser(
+        "capability",
+        help="READ-ONLY: prove the current administrator can provision/rotate this role "
+        "(CREATEROLE + ADMIN OPTION, or superuser) — exit 1 if not; changes nothing",
+    )
+    cap.add_argument("role")
     args = p.parse_args(argv)
 
     if hasattr(args, "role") and not is_managed(args.role):
@@ -391,6 +566,18 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         print(f"preflight-rotate {args.role}: safe — no live DSN authenticates as it")
+        return 0
+
+    if args.cmd == "capability":  # needs the admin DSN but no $PW; strictly read-only
+        caps = asyncio.run(capability_report(_admin_dsn(), args.role))
+        for key in sorted(caps):
+            print(f"capability {args.role}: {key}={caps[key]}")
+        problems = capability_violations(caps)
+        if problems:
+            for problem in problems:
+                print(f"capability {args.role}: INSUFFICIENT: {problem}", file=sys.stderr)
+            return 1
+        print(f"capability {args.role}: ADMIN CAPABILITY OK")
         return 0
 
     pw = validate_pw(os.environ.get("PW"))

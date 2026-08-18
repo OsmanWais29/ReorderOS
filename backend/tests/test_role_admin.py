@@ -92,28 +92,69 @@ async def test_provision_and_prove_roundtrip() -> None:
         await _disable_login("reorderos_app")  # leave no usable login behind
 
 
-async def test_provision_strips_dangerous_attributes_from_preexisting_role() -> None:
-    """BITING (review finding 5): a pre-existing reorderos_app that somehow acquired
-    CREATEDB/CREATEROLE/REPLICATION (superuser/bypassrls likewise) must be NORMALIZED
-    by an idempotent provisioning rerun — never preserved."""
+async def test_provision_fails_closed_on_verify_only_attributes() -> None:
+    """CORRECTION ROUND (staging B1, 2026-08-17): SUPERUSER / BYPASSRLS / REPLICATION
+    are VERIFY-ONLY by policy (SUPERUSER changes always need a true superuser;
+    BYPASSRLS/REPLICATION need an administrator that itself holds the attribute — not
+    assumed portable across managed providers), so a pre-existing role carrying one
+    must REFUSE fail-closed with ZERO mutation (never silently preserved, never
+    partially changed), even when the connected administrator happens to be a true
+    superuser: remediation is a deliberate manual act, not an automatic side effect."""
     if not _is_local(DB_URL_SYNC):
         pytest.skip("mutates roles; only against a LOCAL database")
+    pw = secrets.token_hex(32)
+    await provision_reorderos_app(DB_URL_SYNC, pw)  # ensure the role exists, clean
+    await _admin_execute(
+        "ALTER ROLE reorderos_app SUPERUSER BYPASSRLS CREATEDB CREATEROLE REPLICATION"
+    )
     import asyncpg
 
     conn = await asyncpg.connect(DB_URL_SYNC)
     try:
-        await conn.execute(
-            "ALTER ROLE reorderos_app SUPERUSER BYPASSRLS CREATEDB CREATEROLE REPLICATION"
+        before = await conn.fetchrow(
+            "SELECT rolpassword, rolcanlogin, rolsuper, rolbypassrls, rolcreatedb,"
+            " rolcreaterole, rolreplication FROM pg_authid WHERE rolname='reorderos_app'"
         )
     finally:
         await conn.close()
-    pw = secrets.token_hex(32)
     try:
-        await provision_reorderos_app(DB_URL_SYNC, pw)
-        attrs = await role_attributes(DB_URL_SYNC, "reorderos_app", pw)
+        with pytest.raises(SystemExit) as exc:
+            await provision_reorderos_app(DB_URL_SYNC, secrets.token_hex(32))
+        message = str(exc.value)
+        assert "verify-only dangerous attribute" in message
+        for fragment in ("rolsuper=True", "rolbypassrls=True", "rolreplication=True"):
+            assert fragment in message
+        assert "postgresql://" not in message and "@" not in message
+        conn = await asyncpg.connect(DB_URL_SYNC)
+        try:
+            after = await conn.fetchrow(
+                "SELECT rolpassword, rolcanlogin, rolsuper, rolbypassrls, rolcreatedb,"
+                " rolcreaterole, rolreplication FROM pg_authid WHERE rolname='reorderos_app'"
+            )
+        finally:
+            await conn.close()
+        assert dict(before) == dict(after), "refusal must not change ANYTHING, mutable or not"
+    finally:
+        await _admin_execute("ALTER ROLE reorderos_app NOSUPERUSER NOBYPASSRLS NOREPLICATION")
+    # Mutable dirt (CREATEDB/CREATEROLE, still set from above) IS normalized by a rerun:
+    pw2 = secrets.token_hex(32)
+    try:
+        await provision_reorderos_app(DB_URL_SYNC, pw2)
+        attrs = await role_attributes(DB_URL_SYNC, "reorderos_app", pw2)
         _assert_hardened(attrs, role="reorderos_app", app_user_member=True)
     finally:
         await _disable_login("reorderos_app")
+
+
+async def test_rotate_refuses_missing_role() -> None:
+    """CORRECTION ROUND: rotation never creates — a managed-but-absent role is refused
+    by name, and nothing is created."""
+    if not _is_local(DB_URL_SYNC):
+        pytest.skip("mutates roles; only against a LOCAL database")
+    assert not await _role_exists("service_worker_v9")
+    with pytest.raises(SystemExit, match="does not exist"):
+        await rotate_password(DB_URL_SYNC, "service_worker_v9", secrets.token_hex(32))
+    assert not await _role_exists("service_worker_v9")
 
 
 async def test_rotate_also_normalizes_service_worker_attributes() -> None:

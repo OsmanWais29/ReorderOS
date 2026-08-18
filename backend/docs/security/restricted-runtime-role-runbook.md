@@ -200,8 +200,27 @@ gating command there carries its own explicit `|| { echo …; exit 1; }`.
   documented.
 - **No command prints, echoes, logs, or histories a password, DSN, token, or EV
   reference.** Bearer tokens for smokes are read with `read -s` into shell variables.
-- Role mutations are ATOMIC (single transaction: attrs + password + memberships) and
-  `prove` VALIDATES the full contract in code — its exit status is the gate.
+- Role mutations are ATOMIC end-to-end (ONE transaction: capability check, existence
+  check, optional CREATE ROLE, mutable-attribute normalization, password + LOGIN,
+  membership normalization, and a final in-transaction catalog contract assertion — a
+  failed fresh provision leaves NO role behind; a failed update leaves the previous
+  password, LOGIN state, attributes, and memberships untouched) and `prove` VALIDATES
+  the full contract in code — its exit status is the gate.
+- **`doadmin` is NOT a PostgreSQL superuser** (`rolsuper=False, rolcreaterole=True,
+  rolbypassrls=True` — proven live on managed PG 17.10, 2026-08-17, when the first B1
+  attempt failed). Precise PostgreSQL rule: changing `SUPERUSER` always requires a true
+  superuser — even the no-op `NOSUPERUSER` spelling (the observed failure); changing
+  `REPLICATION` or `BYPASSRLS` additionally requires an administrator that itself HOLDS
+  that attribute. What a managed provider's administrator holds must never be assumed
+  portable, so `role_admin` never sends ANY of those three clauses: they are VERIFY-ONLY
+  (required already-False, fail-closed with zero mutation; an enabled one requires
+  deliberate true-superuser / provider-support remediation). The read-only
+  `role_admin capability <role>` gate proves the administrator can actually administer
+  the role (CREATEROLE **plus ADMIN OPTION on it**, or superuser — never inferred from
+  `rolcreaterole` alone); B1 and B2 each run it before touching anything.
+- **Evidence freshness:** all runtime evidence (A0/A1 logs, B0 passed lists, prove
+  output) is bound to the exact certified SHA. Any new commit VOIDS all prior staging
+  evidence — re-certify from A0/A1 on the new SHA before resuming Phase B/C.
 - Stop on any failed gate via `abort`. **No intentional-failure paths.**
 - `deploy_on_push` stays **false** after the cutover until the deterministic workflow is
   proven; restoring it is a later, explicit founder decision.
@@ -458,6 +477,12 @@ versioned request-role plan — do not improvise one.
 > does not authorize disabling the login (B-alt.8 is unsupported — the control plane
 > offers no way to bind the checks to the DDL).
 
+> **Known staging residual (2026-08-17):** the first B1 attempt (pre-correction code)
+> left `reorderos_app` on staging as an INERT shell — NOLOGIN, no password, no
+> memberships, all dangerous attributes false. This is harmless and requires **no
+> manual `DROP ROLE`**: the corrected provisioner absorbs a pre-existing clean role
+> idempotently inside its one transaction.
+
 **B1/B2 — provision + rotate (atomic; `prove`'s exit code is the gate):**
 ```bash
 # [LOCAL MAC]
@@ -468,6 +493,8 @@ doctl apps console "$APP" api
 ```
 ```bash
 # [DO API SHELL]  (no set -e here — every command carries explicit failure handling)
+python -m scripts.role_admin capability reorderos_app \
+  || { echo "administrator CANNOT administer reorderos_app (needs ADMIN OPTION or superuser; provider support if absent) — STOP"; exit 1; }
 read -s PW; export PW           # paste (Cmd-V), Enter — hidden, not in history
 python -m scripts.role_admin provision-app || { echo "provision FAILED (atomic; nothing half-changed)"; exit 1; }
 python -m scripts.role_admin prove reorderos_app || { echo "reorderos_app CONTRACT VIOLATION — STOP -> R1"; exit 1; }
@@ -484,6 +511,8 @@ pbcopy < ~/.reorderos-cutover/service_worker.pw
 ```
 ```bash
 # [DO API SHELL]
+python -m scripts.role_admin capability service_worker \
+  || { echo "administrator CANNOT administer service_worker (ADMIN OPTION missing — do NOT infer capability from rolcreaterole) — STOP"; exit 1; }
 read -s PW; export PW
 python -m scripts.role_admin rotate service_worker || { echo "rotate FAILED (atomic; nothing half-changed)"; exit 1; }
 python -m scripts.role_admin prove service_worker || { echo "service_worker CONTRACT VIOLATION — STOP -> R2"; exit 1; }

@@ -87,15 +87,10 @@ def test_profiles_require_the_right_keys() -> None:
         "ANTHROPIC_API_KEY",
     } <= names["receipt_extraction_worker"]
     assert {"SERVICE_DATABASE_URL", "TOKEN_ENCRYPTION_KEY"} <= names["inbox_worker"]
-    # migrate needs DATABASE_URL plus the Settings fail-closed four (alembic
-    # env.py loads full Settings).
-    assert {
-        "DATABASE_URL",
-        "TOKEN_ENCRYPTION_KEY",
-        "SERVICE_DATABASE_URL",
-        "CLOVER_APP_SECRET",
-        "CLOVER_WEBHOOK_AUTH_CODE",
-    } == names["migrate_job"]
+    # migrate needs ONLY DATABASE_URL: alembic/env.py reads it directly and does NOT
+    # construct full Settings (the `settings` proxy is lazy), so the migrate job is not
+    # handed any runtime request/worker secret. No WorkOS/Clover/Postmark/token/service.
+    assert {"DATABASE_URL"} == names["migrate_job"]
     # predeploy gate covers every runtime profile
     union = set().union(*(names[p] for p in ("api", "receipt_extraction_worker", "inbox_worker")))
     assert union <= names["predeploy_env_check"]
@@ -131,3 +126,50 @@ def test_migrate_profile_gates_before_migration(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@h/db")
     assert main(["--profile", "migrate_job"]) == 0
+
+
+def test_migrate_job_needs_only_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DECOUPLE GUARD (security PR): the migrate job must run with ONLY DATABASE_URL — no
+    runtime request/worker secrets. alembic/env.py reads DATABASE_URL directly and the
+    `settings` proxy is lazy, so importing the app package for a migration does NOT run
+    config's production fail-closed check. This pins the minimal blast radius; the actual
+    end-to-end proof (a production-env migration reaching 0035 with only DATABASE_URL) is
+    tests/test_migration_roundtrip.py::test_migration_persists_under_production_env."""
+    for key in PROFILES["predeploy_env_check"]:
+        monkeypatch.delenv(key.name, raising=False)
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://doadmin:x@h/db")
+    r = check_env("migrate_job")
+    assert r.ready, r.failures
+    assert {v.name for v in PROFILES["migrate_job"]} == {"DATABASE_URL"}
+
+
+def test_alembic_env_reads_url_without_constructing_settings() -> None:
+    """DECOUPLE GUARD (biting, hermetic): alembic/env.py must NOT construct full Settings —
+    doing so would re-impose the production fail-closed check and force the migrate job to
+    carry runtime request/worker secrets. This static check fails deterministically if
+    someone re-couples env.py to `get_settings()` (the subprocess migration test can pass
+    vacuously because it inherits os.environ/.env, so THIS is the real regression guard)."""
+    import pathlib
+
+    src = pathlib.Path("alembic/env.py").read_text()
+    assert "get_settings(" not in src, (
+        "alembic/env.py re-coupled to full Settings — the migrate job would again require "
+        "WorkOS/Clover/Postmark/token/service secrets. Read DATABASE_URL directly instead."
+    )
+    assert "normalize_postgres_url" in src  # uses the lazy URL normalizer
+
+
+def test_api_profile_stays_aligned_with_config_fail_closed() -> None:
+    """FAIL-CLOSED DRIFT GUARD: the api profile MUST require every secret config's
+    production check demands unconditionally, so the API (which DOES use them) fails
+    loudly on a dangling secret. The decouple only relaxed the MIGRATE path — the API's
+    fail-closed contract is unchanged. If config gains a new unconditional required secret
+    not added to the api profile, this fails."""
+    api = {v.name for v in PROFILES["api"]}
+    assert {
+        "TOKEN_ENCRYPTION_KEY",
+        "SERVICE_DATABASE_URL",
+        "WORKOS_CLIENT_ID",
+        "WORKOS_JWKS_URL",
+    } <= api

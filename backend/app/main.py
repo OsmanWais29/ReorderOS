@@ -49,6 +49,21 @@ async def _assert_schema_at_head() -> None:
         )
 
 
+async def _assert_runtime_roles(log: Any) -> None:
+    """Fail-closed: prove BOTH DB pools run as their expected roles that are NEITHER
+    superuser NOR bypassrls, so RLS is the enforced tenant-isolation control (not
+    silently bypassed). Logs role names + booleans only — never DSNs/credentials."""
+    from app.core.database import get_sessionmaker
+    from app.core.rls_assert import assert_request_role_session, assert_service_role_session
+    from app.core.service_db import get_service_sessionmaker
+
+    async with get_sessionmaker()() as s:
+        cu = await assert_request_role_session(s, expected="reorderos_app")
+    async with get_service_sessionmaker()() as s:
+        scu = await assert_service_role_session(s)
+    log.info("role.ok", request_user=cu, service_user=scu)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
@@ -67,6 +82,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     log.info("startup", env=settings.app_env, version=__version__)
     await _assert_schema_at_head()
     log.info("schema.ok")
+    # Runtime-role gate — gated on RESTRICTED_RUNTIME_ROLES_ENABLED, NOT on APP_ENV:
+    # production currently runs (and must keep running) on its admin-bound
+    # DATABASE_URL with this flag false. Only a cutover environment that has
+    # provisioned reorderos_app/service_worker sets the flag true; the assertion is
+    # then mandatory and fail-closed (wrong/missing role prevents startup).
+    if settings.restricted_runtime_roles_enabled:
+        await _assert_runtime_roles(log)
     try:
         yield
     finally:

@@ -1,15 +1,24 @@
 services:
   db:
-    image: postgres:16-alpine
+    # PG 17 to match the DO managed staging cluster (17.x): the provider-shaped
+    # role-admin tests depend on PG 17 CREATEROLE semantics and fail loudly on any
+    # other major version. Fresh volume name — a PG 16 data dir cannot be opened by
+    # 17; run `alembic upgrade head` after first start.
+    image: postgres:17-alpine
     container_name: reorderos-db
     environment:
       POSTGRES_USER: reorderos
       POSTGRES_PASSWORD: reorderos
       POSTGRES_DB: reorderos
     ports:
-      - "5433:5432"
+      # The host port is a repository contract (default 5433 — .env.example and the
+      # test fallback in tests/conftest.py must agree; pinned by
+      # tests/test_dev_db_port_contract.py). If another service already binds 5433 on
+      # your machine, override per-machine with REORDEROS_DB_PORT and matching
+      # DATABASE_URL/SERVICE_DATABASE_URL env vars — the committed default stays 5433.
+      - "${REORDEROS_DB_PORT:-5433}:5432"
     volumes:
-      - reorderos-pg:/var/lib/postgresql/data
+      - reorderos-pg17:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U reorderos -d reorderos"]
       interval: 2s
@@ -39,4 +48,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  reorderos-pg:
+  reorderos-pg17:

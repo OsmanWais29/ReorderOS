@@ -2,9 +2,13 @@
 
 Born from the 2026-07-15 prod incident: DigitalOcean SECRET env vars silently
 decrypted to EMPTY STRINGS, every main deploy failed fail-closed and
-auto-rolled back for TEN DAYS, and nothing surfaced it. This module is the one
-place that knows what every component needs, and it reports readiness by KEY
-NAME ONLY — a secret value never appears in any output, log, or exception.
+auto-rolled back for TEN DAYS, and nothing surfaced it. Readiness is reported
+by KEY NAME ONLY — a secret value never appears in any output, log, or exception.
+
+WHAT each component requires is defined in ONE place —
+``app.core.component_requirements`` (code-backed, trace-documented) — shared with
+Settings' production fail-closed check so the two can never drift. This module adds
+the HOW: env inspection, rejection rules, CLI, and the predeploy union profile.
 
 Used four ways (same validation everywhere):
   - `python -m app.ops.env_check --profile <name>`  → predeploy job / CI gate
@@ -31,6 +35,10 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from app.core.component_requirements import COMPONENTS, Var, dedupe
+
+__all__ = ["PROFILES", "EnvReport", "Var", "check_env", "main"]
+
 # Values that mean "someone never set this for real". Compared case-insensitively
 # against the FULL value, so real secrets containing these substrings still pass.
 _PLACEHOLDERS = frozenset(
@@ -53,84 +61,13 @@ _PLACEHOLDERS = frozenset(
     }
 )
 
-
-@dataclass(frozen=True)
-class Var:
-    name: str
-    secret: bool = False  # secret keys get the production placeholder check
-    # Required only when this env var is truthy ("1"/"true"/"yes"/"on") —
-    # e.g. Clover secrets only matter when CLOVER_ENABLED=true.
-    when: str | None = None
-
-
-_DB = (Var("DATABASE_URL", secret=True),)
-_SERVICE_DB = (Var("SERVICE_DATABASE_URL", secret=True),)
-_SPACES = (
-    Var("DO_SPACES_ENDPOINT"),
-    Var("DO_SPACES_REGION"),
-    Var("DO_SPACES_BUCKET"),
-    Var("DO_SPACES_KEY", secret=True),
-    Var("DO_SPACES_SECRET", secret=True),
-)
-_CLOVER = (
-    Var("CLOVER_APP_ID", when="CLOVER_ENABLED"),
-    Var("CLOVER_APP_SECRET", secret=True, when="CLOVER_ENABLED"),
-    Var("CLOVER_WEBHOOK_AUTH_CODE", secret=True, when="CLOVER_ENABLED"),
-)
-_WORKOS = (
-    Var("WORKOS_CLIENT_ID"),
-    Var("WORKOS_JWKS_URL"),
-    Var("WORKOS_ISSUER"),
-    Var("WORKOS_SECRET_KEY", secret=True),
-)
-_TOKENS = (Var("TOKEN_ENCRYPTION_KEY", secret=True),)
-_POSTMARK = (
-    Var("POSTMARK_WEBHOOK_USER", secret=True, when="POSTMARK_INBOUND_ENABLED"),
-    Var("POSTMARK_WEBHOOK_PASSWORD", secret=True, when="POSTMARK_INBOUND_ENABLED"),
-)
-
-# alembic/env.py loads full Settings, whose production fail-closed check demands
-# these four — so the migrate job needs them even though alembic itself only
-# consumes DATABASE_URL. Checking here means the job dies with a NAMED report
-# instead of a pydantic traceback.
-_SETTINGS_FAIL_CLOSED = (
-    Var("TOKEN_ENCRYPTION_KEY", secret=True),
-    Var("SERVICE_DATABASE_URL", secret=True),
-    Var("CLOVER_APP_SECRET", secret=True, when="CLOVER_ENABLED"),
-    Var("CLOVER_WEBHOOK_AUTH_CODE", secret=True, when="CLOVER_ENABLED"),
-)
-
-
-def _dedupe(*groups: tuple[Var, ...]) -> tuple[Var, ...]:
-    seen: dict[str, Var] = {}
-    for g in groups:
-        for v in g:
-            # secret=True wins if the same key appears in multiple groups
-            if v.name not in seen or v.secret:
-                seen[v.name] = v
-    return tuple(seen.values())
-
-
-PROFILES: dict[str, tuple[Var, ...]] = {
-    "api": _dedupe(_DB, _SERVICE_DB, _TOKENS, _WORKOS, _CLOVER, _SPACES, _POSTMARK),
-    "receipt_extraction_worker": _dedupe(
-        _SERVICE_DB, _SPACES, (Var("ANTHROPIC_API_KEY", secret=True),)
-    ),
-    # Fan-out only: reads inbox rows, creates drafts + jobs. No Spaces (the
-    # webhook uploaded the bytes), no Anthropic (extraction is a separate worker).
-    "inbound_email_worker": _dedupe(_SERVICE_DB),
-    "inbox_worker": _dedupe(
-        _SERVICE_DB,
-        _TOKENS,
-        (
-            Var("CLOVER_APP_ID", when="CLOVER_ENABLED"),
-            Var("CLOVER_APP_SECRET", secret=True, when="CLOVER_ENABLED"),
-        ),
-    ),
-    "migrate_job": _dedupe(_DB, _SETTINGS_FAIL_CLOSED),
-}
-# Everything any prod component needs — the predeploy gate.
-PROFILES["predeploy_env_check"] = _dedupe(*PROFILES.values())
+# Profiles ARE the component requirement sets (single source of truth). Every runtime
+# component — including reconciliation_worker (previously missing) — has a profile and
+# a boot-time check_env gate in its runner.
+PROFILES: dict[str, tuple[Var, ...]] = dict(COMPONENTS)
+# Everything any prod component needs — the predeploy gate. ("legacy" adds nothing:
+# it is a subset of the api profile's key set, kept for completeness.)
+PROFILES["predeploy_env_check"] = dedupe(*COMPONENTS.values())
 PROFILES["production_deploy"] = PROFILES["predeploy_env_check"]  # alias
 
 

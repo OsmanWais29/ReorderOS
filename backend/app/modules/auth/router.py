@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.config import get_settings
 from app.core.database import get_session
+from app.core.rls import set_identity_read_context
 from app.core.security import Identity, Principal, get_identity, get_principal
 from app.modules.auth.models import User
 from app.modules.auth.repo import upsert_user
@@ -144,6 +145,9 @@ async def me(
     user = await upsert_user(db, identity)
     await db.commit()
 
+    # Identity-read context must be set AFTER the commit (SET LOCAL reset on commit)
+    # and BEFORE listing memberships, so the membership-aware tenants policy applies.
+    await set_identity_read_context(db, str(user.id))
     tenants = await list_tenants_for_user(db, user.id)
     return MeResponse(
         user=UserOut.from_orm(user),

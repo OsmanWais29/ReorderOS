@@ -5,11 +5,11 @@ from __future__ import annotations
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_sessionmaker
-from app.core.rls import set_identity_context, set_rls_context
+from app.core.rls import set_identity_context, set_identity_read_context, set_rls_context
 from app.core.security import Identity, Principal, Role
 from app.modules.auth.models import User
 from app.modules.auth.repo import upsert_user
@@ -49,9 +49,10 @@ async def resolve_principal(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="X-Tenant-Id must be a valid UUID") from exc
 
-        # Check membership directly (no RLS context needed — user_tenants
-        # SELECT policy allows rows where user_id matches app.user_id, but
-        # we set it here only for verification).
+        # Establish identity-read context (app.user_id only) BEFORE the membership
+        # query: the user_tenant_select policy keys on app.user_id, so without this
+        # the query returns 0 rows under a non-BYPASSRLS role (403 on every request).
+        await set_identity_read_context(session, str(user.id))
         membership = await session.execute(
             select(UserTenant).where(
                 UserTenant.user_id == user.id,
@@ -89,9 +90,17 @@ async def register_tenant(
     user = await upsert_user(session, identity)
     await set_identity_context(session, user_id=str(user.id))
 
-    tenant = Tenant(slug=slug, name=name)
+    # Client-generate the tenant id so we can bind app.tenant_id to it BEFORE the
+    # INSERT ... RETURNING. That makes the RETURNING readable via the narrow
+    # `id = app.tenant_id` arm of tenant_select — no unconditional bootstrap
+    # carve-out (which would make the whole tenants table visible while register
+    # mode is live). tenant_insert's WITH CHECK still keys on rls_mode='register'.
+    tenant = Tenant(id=uuid.uuid4(), slug=slug, name=name)
+    await session.execute(
+        text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": str(tenant.id)}
+    )
     session.add(tenant)
-    await session.flush()  # populate tenant.id
+    await session.flush()  # INSERT ... RETURNING, visible via id = app.tenant_id
 
     membership = UserTenant(
         user_id=user.id,

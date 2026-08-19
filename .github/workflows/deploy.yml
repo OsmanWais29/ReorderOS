@@ -1,4 +1,26 @@
+# Production deploy — deterministic, no head-1 race, no "unknown commit" tolerance.
+#
+# ── HARD PRE-MERGE GATE (do not weaken) ────────────────────────────────────────
+# This workflow may become the production deploy path ONLY AFTER the LIVE production
+# app spec has been reconciled in a separately approved session to:
+#   1. deploy_on_push: false on every component  (kills DigitalOcean's independent
+#      auto-deploy — a repository variable cannot stop that race; the live spec must)
+#   2. SOURCE_COMMIT: ${_self.COMMIT_HASH} on api (so /version reports the built SHA)
+# Until then, this code/workflow lineage MUST NOT be merged to main. Merging first and
+# relying on the validate-only job is explicitly forbidden. After reconciliation, the
+# founder sets the repository variable PROD_SPEC_RECONCILED=true; while it is anything
+# else the deploy job FAILS LOUDLY (never silently green, never skipped).
+#
+# Repository-spec validation below is NOT live-spec application: .do/app.yaml is the
+# declared architecture; changing the live spec always requires an approved
+# `doctl apps update --spec` rollout with its own runbook.
+
 name: deploy-digitalocean
+
+# Least-privilege token: no permissions by default; each job declares exactly what it
+# needs. validate only reads the repo; deploy talks to DigitalOcean via secrets and
+# never touches the repository, so its GITHUB_TOKEN gets nothing.
+permissions: {}
 
 on:
   push:
@@ -14,10 +36,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: deploy + smoke
+  validate:
+    name: validate committed spec
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,35 +52,65 @@ jobs:
         with:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
 
-      - name: Validate app spec
+      - name: doctl spec validate
         run: doctl apps spec validate .do/app.yaml
 
-      - name: Wait for deployment triggered by push
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: deploy_verify contract (complete validator, both committed specs)
+        run: |
+          set -euo pipefail
+          pip install pyyaml >/dev/null
+          cd backend
+          python -m scripts.deploy_verify ../.do/app.yaml
+          python -m scripts.deploy_verify ../.do/staging.app.yaml
+
+  deploy:
+    name: deploy + verify SHA
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions: {}
+    steps:
+      - name: Require live-spec reconciliation (fail loudly, never silently green)
+        run: |
+          set -euo pipefail
+          if [ "${{ vars.PROD_SPEC_RECONCILED }}" != "true" ]; then
+            echo "::error::PROD_SPEC_RECONCILED is not 'true'."
+            echo "The LIVE production spec has not been reconciled (deploy_on_push=false"
+            echo "+ SOURCE_COMMIT on api). Until that separately approved rollout is done,"
+            echo "this workflow must not deploy — and DigitalOcean's own deploy_on_push"
+            echo "may still be racing pushes. See the header of this file and"
+            echo "backend/docs/security/restricted-runtime-role-runbook.md."
+            exit 1
+          fi
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Create deployment (explicit, ID captured from the command itself)
         id: deploy
         env:
           APP_ID: ${{ secrets.DIGITALOCEAN_APP_ID }}
         run: |
           set -euo pipefail
           if [ -z "${APP_ID}" ]; then
-            echo "DIGITALOCEAN_APP_ID secret is empty. First-time setup: run"
-            echo "  doctl apps create --spec .do/app.yaml"
-            echo "and store the returned app id as the GitHub secret."
+            echo "::error::DIGITALOCEAN_APP_ID secret is empty."
             exit 1
           fi
-          # deploy_on_push: true already started a deployment from the git push.
-          # Give DO a moment to register it before we query.
-          sleep 15
-          set +o pipefail
-          DEP_ID=$(doctl apps list-deployments "$APP_ID" --format ID --no-header 2>/dev/null | head -1)
-          set -o pipefail
-          if [ -z "$DEP_ID" ]; then
-            echo "No deployment found."
-            exit 1
-          fi
+          # deploy_on_push is false on the reconciled live spec, so THIS command is the
+          # one and only deployment trigger — and it returns the deployment id directly
+          # (no list-diff, no head -1, no after-the-fact searching).
+          DEP_ID=$(doctl apps create-deployment "$APP_ID" --update-sources --format ID --no-header)
+          test -n "$DEP_ID" || { echo "::error::create-deployment returned no id"; exit 1; }
           echo "deployment_id=$DEP_ID" >> "$GITHUB_OUTPUT"
           echo "Tracking deployment: $DEP_ID"
 
-      - name: Wait for deployment to go live
+      - name: Wait for THAT deployment to go ACTIVE
         env:
           APP_ID: ${{ secrets.DIGITALOCEAN_APP_ID }}
           DEP_ID: ${{ steps.deploy.outputs.deployment_id }}
@@ -67,11 +121,11 @@ jobs:
             echo "[$i/60] phase=$phase"
             case "$phase" in
               ACTIVE) exit 0 ;;
-              ERROR|CANCELED|SUPERSEDED) exit 1 ;;
+              ERROR|CANCELED|SUPERSEDED) echo "::error::deployment $DEP_ID ended $phase"; exit 1 ;;
             esac
             sleep 15
           done
-          echo "Deployment did not reach ACTIVE in 15 minutes."
+          echo "::error::deployment $DEP_ID did not reach ACTIVE in 15 minutes."
           exit 1
 
       - name: Resolve live URL
@@ -83,44 +137,48 @@ jobs:
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "Live URL: $URL"
 
-      - name: Smoke /health/live
+      - name: Verify /version commit EQUALS the pushed SHA (no tolerance)
         env:
           URL: ${{ steps.url.outputs.url }}
         run: |
           set -euo pipefail
-          body=$(curl -fsS --retry 5 --retry-delay 5 --max-time 10 "$URL/health/live")
-          echo "live: $body"
-          [ "$body" = '{"status":"ok"}' ]
+          # The reconciled live spec injects SOURCE_COMMIT=${_self.COMMIT_HASH}; /version
+          # reports it. Equality is REQUIRED — "unknown" or any mismatch fails. (If a
+          # newer push landed while this run waited, --update-sources deployed that tip;
+          # this run then fails and the newer run is the one that must go green.)
+          for i in $(seq 1 10); do
+            body=$(curl -fsS --max-time 10 "$URL/version" || true)
+            commit=$(printf '%s' "$body" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("commit",""))' 2>/dev/null || true)
+            echo "[$i/10] /version commit=$commit expected=$GITHUB_SHA"
+            if [ "$commit" = "$GITHUB_SHA" ]; then exit 0; fi
+            sleep 6
+          done
+          echo "::error::/version commit '$commit' != pushed SHA '$GITHUB_SHA' (no 'unknown' tolerance)."
+          exit 1
 
-      - name: Smoke /health/ready (DB connectivity)
+      - name: Smoke /health/live + /health/ready
         env:
           URL: ${{ steps.url.outputs.url }}
         run: |
           set -euo pipefail
-          body=$(curl -fsS --retry 5 --retry-delay 5 --max-time 10 "$URL/health/ready")
-          echo "ready: $body"
-          echo "$body" | grep -q '"status":"ok"'
-          echo "$body" | grep -q '"db":"ok"'
-
-      - name: Smoke /version
-        env:
-          URL: ${{ steps.url.outputs.url }}
-        run: |
-          set -euo pipefail
-          body=$(curl -fsS --retry 5 --retry-delay 5 --max-time 10 "$URL/version")
-          echo "version: $body"
-          echo "$body" | grep -q '"version"'
+          live=$(curl -fsS --retry 5 --retry-delay 5 --max-time 10 "$URL/health/live")
+          echo "live: $live"
+          [ "$live" = '{"status":"ok"}' ]
+          ready=$(curl -fsS --retry 5 --retry-delay 5 --max-time 10 "$URL/health/ready")
+          echo "ready: $ready"
+          echo "$ready" | grep -q '"status":"ok"'
+          echo "$ready" | grep -q '"db":"ok"'
 
       - name: Summary
         if: always()
         env:
           URL: ${{ steps.url.outputs.url }}
+          DEP_ID: ${{ steps.deploy.outputs.deployment_id }}
         run: |
           {
             echo "## Deploy summary"
             echo ""
+            echo "- Deployment: ${DEP_ID:-none} (captured from create-deployment itself)"
             echo "- App URL: ${URL:-unknown}"
-            echo "- /health/live: see above"
-            echo "- /health/ready: see above (proves Postgres connectivity)"
-            echo "- /version: see above"
+            echo "- /version commit verified == \$GITHUB_SHA (hard equality)"
           } >> "$GITHUB_STEP_SUMMARY"

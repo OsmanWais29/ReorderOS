@@ -138,11 +138,16 @@ def make_bound_session(conn: AsyncConnection) -> AsyncSession:
     DEFERRED) only fire at the real outer COMMIT, not at SAVEPOINT RELEASE.
     They will not be exercised by tests using this session factory.
     """
-    return AsyncSession(
+    session = AsyncSession(
         bind=conn,
         expire_on_commit=False,
         join_transaction_mode="create_savepoint",
     )
+    # Marker so read-path dependencies that must be the FIRST statement of a fresh
+    # transaction (e.g. SET TRANSACTION ISOLATION LEVEL) can detect that this
+    # session shares an already-open outer transaction and skip that setup.
+    session.info["is_bound_test_session"] = True
+    return session
 
 
 class _EngineProxy:

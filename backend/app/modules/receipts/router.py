@@ -68,6 +68,7 @@ async def upload_receipt(
         ) from None
     except storage.SpacesNotConfigured as exc:
         raise HTTPException(status_code=503, detail="Receipt storage is not configured") from exc
+    await db.commit()
     return result
 
 
@@ -86,6 +87,7 @@ async def create_manual_receipt(
         invoice_date=body.invoice_date,
         created_by=UUID(principal.user_id),
     )
+    await db.commit()
     return {
         "receipt_id": receipt_id,
         "photo_object_key": "",
@@ -103,7 +105,7 @@ async def extract_receipt(
     """Enqueue extraction (idempotent). 202 — the worker processes it asynchronously.
     409 if a human has already begun review (use reset-extraction instead)."""
     try:
-        return await services.enqueue_extraction(
+        result = await services.enqueue_extraction(
             db, tenant_id=UUID(principal.tenant_id), receipt_id=receipt_id
         )
     except services.ReceiptNotFound:
@@ -116,6 +118,8 @@ async def extract_receipt(
                 "message": "Review already started; use reset-extraction to start over.",
             },
         ) from None
+    await db.commit()
+    return result
 
 
 @router.get("", response_model=list[ReceiptListItem])
@@ -191,6 +195,7 @@ async def update_receipt_line(
         raise HTTPException(
             status_code=409, detail={"code": "UNIT_TYPE_CONFLICT", "message": str(exc)}
         ) from None
+    await db.commit()
     return result
 
 
@@ -219,6 +224,7 @@ async def add_receipt_line(
             status_code=422,
             detail={"code": "RECEIPT_UNKNOWN_ITEM", "message": "No such active inventory item."},
         ) from None
+    await db.commit()
     return result
 
 
@@ -232,7 +238,7 @@ async def reset_receipt_extraction(
     """Destructive start-over-from-the-machine: requires {discard_edits: true} or
     409s — operator work is never discarded implicitly. Notes are preserved."""
     try:
-        return await services.reset_extraction(
+        result = await services.reset_extraction(
             db,
             tenant_id=UUID(principal.tenant_id),
             receipt_id=receipt_id,
@@ -253,6 +259,8 @@ async def reset_receipt_extraction(
             status_code=409,
             detail={"code": "RECEIPT_NOT_EDITABLE", "message": "Receipt is no longer editable."},
         ) from None
+    await db.commit()
+    return result
 
 
 @router.post("/{receipt_id}/notes", response_model=NoteOut, status_code=201)
@@ -264,7 +272,7 @@ async def add_receipt_note(
 ) -> dict[str, Any]:
     """Append to the notes_log audit trail (any commit_state)."""
     try:
-        return await services.append_note(
+        note = await services.append_note(
             db,
             tenant_id=UUID(principal.tenant_id),
             receipt_id=receipt_id,
@@ -273,6 +281,8 @@ async def add_receipt_note(
         )
     except services.ReceiptNotFound:
         raise HTTPException(status_code=404, detail="Receipt not found") from None
+    await db.commit()
+    return note
 
 
 @router.delete("/{receipt_id}", status_code=204)
@@ -286,6 +296,7 @@ async def delete_receipt(
         raise HTTPException(status_code=404, detail="Receipt not found")
     if outcome == "conflict":
         raise HTTPException(status_code=409, detail="Only a draft receipt can be deleted")
+    await db.commit()
 
 
 @router.post("/{receipt_id}/cancel", status_code=200)
@@ -298,6 +309,7 @@ async def cancel_receipt(
         db, UUID(principal.tenant_id), receipt_id, new_state="cancelled"
     )
     _raise_for_state_outcome(outcome)
+    await db.commit()
     return {"status": "cancelled"}
 
 
@@ -316,6 +328,7 @@ async def dismiss_receipt(
         dismissed_reason=body.reason,
     )
     _raise_for_state_outcome(outcome)
+    await db.commit()
     return {"status": "dismissed"}
 
 
